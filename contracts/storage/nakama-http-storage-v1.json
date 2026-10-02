@@ -40,6 +40,27 @@
       "path": "codec.go",
       "blob": "080059592f4114e341f7ff2b39c56ae44883d6a2",
       "purpose": "Independently implemented text formats from the dependency pinned by Nakama go.mod at v5.4.0."
+    },
+    {
+      "repository": "grpc-ecosystem/grpc-gateway",
+      "commit": "ba9b55c1c15c84633be18c45463e123f31a5e999",
+      "path": "runtime/query.go",
+      "source_sha256": "sha256:cdb3c973f81862d47dacf2056cf0ac58c66c98f9c0b609efc9bc6f10f69510c6",
+      "purpose": "v2.29.0 query parsing source comparison; no accepted gateway execution credit."
+    },
+    {
+      "repository": "golang/go",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "path": "src/encoding/gob/decode.go",
+      "source_sha256": "sha256:99c8b170d943f63d0c7a63b06774cb574238faf76ddca738d81a91ccc89251f7",
+      "purpose": "Go 1.26.5 gob decoder source and scratch observation provenance; not full Nakama server oracle evidence."
+    },
+    {
+      "repository": "golang/go",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "path": "src/encoding/base64/base64.go",
+      "source_sha256": "sha256:e6437c7716ecd1ae91c9d10037362cab186e5873a6365b713e2d8c57d8fc32fc",
+      "purpose": "Go 1.26.5 RawURLEncoding source comparison; no accepted wire credit."
     }
   ],
   "task_ids": [
@@ -54,7 +75,9 @@
   "parity_ids": [
     "TG-D1-2940D4CEAACA4051",
     "TG-D1-7A7BFBFD85579A6A",
-    "TG-D1-46DC42DFD49DB606"
+    "TG-D1-46DC42DFD49DB606",
+    "TG-D1-AFA018F59B7ADE31",
+    "TG-D1-A50F25193A8E9535"
   ],
   "routes": [
     {
@@ -74,6 +97,18 @@
       "path": "/v2/storage/delete",
       "request": "DeleteStorageObjectsRequest",
       "response": "google.protobuf.Empty"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/storage/{collection}",
+      "request": "ListStorageObjectsRequest",
+      "response": "StorageObjectList"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/storage/{collection}/{user_id}",
+      "request": "ListStorageObjectsRequest",
+      "response": "StorageObjectList"
     }
   ],
   "authentication": "Verify signed candidate access principal and persisted active family before decoding business input; bind mutations and authorize requested read owners against that principal. Operator credentials do not substitute.",
@@ -103,37 +138,52 @@
       "key",
       "user_id"
     ],
-    "read_owner": "Omitted/empty/null owner selects server/global UUID zero; explicit zero UUID is invalid. Nonempty owner follows pinned gofrs UUID string formats."
+    "read_owner": "Omitted/empty/null owner selects server/global UUID zero; explicit zero UUID is invalid. Nonempty owner follows pinned gofrs UUID string formats.",
+    "list_query": "Path binds collection and optional owner. Limit defaults to 1; supplied limit or limit.value is signed decimal int32 in 1..100. Cursor is an unsigned gob offset. Unknown query names are ignored; duplicate known scalars/aliases are rejected by this candidate. Gateway alias-map order, malformed wording and non-UTF8 behavior remain unqualified.",
+    "list_owner": "Omitted or empty owner selects publicly readable objects across all owners, including global UUID zero. Own owner selects read >= 1. Foreign and explicit zero UUID owners select read = 2. Nonempty owner uses pinned gofrs UUID string formats."
   },
   "response_contract": {
     "write": "Nonempty acks preserve request order and include collection,key,version,user_id as a dashed UUID. Timestamp divergence remains explicit.",
     "delete": "{}",
     "empty": "{}",
     "rejection": "storage-specific code 3 / HTTP 400 for OCC, write permission or delete notfound/version/permission rejection; internal repository details redacted",
-    "read": "Return requested visible objects only; include collection,key,user_id,value,version and nonzero permission scalars. Timestamp, duplicate multiplicity and ordering differences remain unqualified."
+    "read": "Return requested visible objects only; include collection,key,user_id,value,version and nonzero permission scalars. Timestamp, duplicate multiplicity and ordering differences remain unqualified.",
+    "list": "Return one bounded visible page with original value bytes, public MD5 version, dashed owner UUID and nonzero permission scalars. A next cursor identifies the last returned object only when a visible limit+1 sentinel exists. Empty objects and terminal cursor are omitted. No create_time/update_time is fabricated."
   },
   "resource_limits": {
     "maximum_operations": 100,
     "maximum_value_bytes": 1048576,
     "json_recursion": "RawValue uses an iterative scanner bounded by request/value byte budgets; no 128-level recursion claim is made.",
     "database_budget": "PooledRepository::run_with_deadline",
-    "http_body": "ServerConfig max_request_bytes"
+    "http_body": "ServerConfig max_request_bytes",
+    "list_maximum_limit": 100,
+    "list_maximum_collection_bytes": 4096,
+    "list_maximum_cursor_key_bytes": 4096,
+    "list_maximum_target_bytes": 32768,
+    "cursor_maximum_encoded_bytes": 16384,
+    "cursor_maximum_decoded_bytes": 12288,
+    "cursor_maximum_messages": 64,
+    "cursor_maximum_types": 64,
+    "cursor_maximum_fields": 64,
+    "cursor_maximum_depth": 16,
+    "cursor_maximum_items": 1024
   },
-  "durability": "Build success only after the atomic repository call returns committed receipts; do not retry storage mutations through the generic command supervisor.",
+  "durability": "Construct mutation success only after atomic committed receipts; construct read/list success after the bounded readonly repository transaction completes. Do not retry storage mutations or this client-list projection through the generic command supervisor.",
   "migration_impact": "No DDL or migration digest change in this tranche. Blind no-op handling preserves the existing legacy updated_at_ms; upstream database timestamp precision and historical created-time gaps remain open.",
   "rollback": "Revert this route/codec/bridge tranche together; existing persisted storage remains readable by the prior repository. Removing routes is not an accepted production cutover/rollback.",
   "limitations": [
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
     "Write acknowledgements and read objects omit upstream create_time/update_time because the authoritative schema and receipt/object types do not retain these timestamps. No timestamp is fabricated.",
-    "List route, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
-    "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
+    "List route/query/gob cursor and SQL client projection are bounded source candidates; exact gateway, gob, collation, pagination under concurrent changes and oracle/SDK qualification remain open. Search/index and Runtime before/after hooks remain unfinished.",
+    "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. The separate client-list request accepts empty/dot/control collection text up to 4096 bytes and decodes authoritative Unicode-character-bounded rows. Budgets and path/query restrictions still differ from upstream.",
     "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
     "Strict trailing-JSON rejection and malformed protobuf-JSON decoder error wording differ from the single-Decode upstream gateway and need immutable-oracle qualification.",
     "Batch read uses bounded per-key statements in one readonly transaction, while upstream chooses a single query shape. Duplicate multiplicity, returned ordering and concurrency behavior require immutable differential.",
     "Quoted integer trailing-token forms such as permissionRead:\"1 true\" are rejected; the pinned decoder can consume the first number token. Exact malformed decoder parity remains open.",
-    "Blind no-op selection is implemented, but legacy updated_at_ms is an explicit caller time rather than the pinned upstream database create_time/update_time contract."
+    "Blind no-op selection is implemented, but legacy updated_at_ms is an explicit caller time rather than the pinned upstream database create_time/update_time contract.",
+    "Unsigned Nakama cursor offsets deliberately differ from the internal authenticated scope-bound cursor profile. Independent security/protocol review and immutable differential remain required; malformed gob and query errors are not globally qualified."
   ],
   "claims": {
     "compatibility_credit": false,
@@ -150,8 +200,22 @@
       "cockroachdb"
     ],
     "execution_required": "Require TRNM_REQUIRE_LIVE_DATABASE=1, exact test result count of one and matching success marker; zero/missing/optional-skip results fail closed.",
-    "scope": "Canonical Rust HTTP application + actual repository SQL. TCP, pool/deadline, SDK and immutable oracle are separate obligations.",
-    "accepted_evidence": false
+    "scope": "Canonical Rust HTTP application + actual repository SQL, with a separate exact client-list projection fixture on each profile. TCP, pool/deadline, SDK and immutable oracle are separate obligations.",
+    "accepted_evidence": false,
+    "client_list_repository_test": "crates/trnm-persistence-pg/tests/authority_storage_parts/03_storage_list.rs::nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
+    "client_list_execution_required": "The same live harness requires TRNM_REQUIRE_LIVE_DATABASE=1, one exact authority_storage repository test with zero failed/ignored, matching nakama_client_list_projection_executed profile marker, explicit skip rejection and a sealed nakama-client-list-projection.log. Source checks and local results do not admit exact-object live or independent evidence."
   },
-  "mutation_repository": "Authorization, OCC and stored integrity checks precede no-op selection. Blind writes with unchanged value and ACLs preserve the persisted update time; exact-version writes and value/ACL changes update it. Atomic batch commit still precedes success."
+  "mutation_repository": "Authorization, OCC and stored integrity checks precede no-op selection. Blind writes with unchanged value and ACLs preserve the persisted update time; exact-version writes and value/ACL changes update it. Atomic batch commit still precedes success.",
+  "list_repository": {
+    "method": "PgRepository::list_storage_objects_nakama",
+    "transaction": "One bounded readonly SERIALIZABLE query under the pooled deadline; no generic retry. Existing typed byte-order list remains a separate contract.",
+    "ordering": "Use SQL text collation: public-all ORDER BY read,key,user_id; own-owner ORDER BY read,key; foreign/global-owner ORDER BY key. ACL is applied before limit+1. Actual profile text ordering still requires immutable-oracle qualification.",
+    "decoding": "Decode returned rows only, verifying owner/key, original value bytes, SHA-256 and ACL while recomputing public MD5. Do not decode a sentinel or hidden row. The Nakama row factory follows authoritative 1..128 Unicode-character collection/key constraints and allows dot/control text; old typed factory restrictions remain unchanged."
+  },
+  "list_cursor": {
+    "format": "Unpadded URL-base64 of ordinary Go gob storageCursor {Key string, UserID UUID binary bytes, Read int32}. Decode compatible field descriptors rather than a fixed type ID or prefix.",
+    "scope": "Explicit Nakama client-profile exception: cursor is an unsigned untrusted position without actor, owner, collection, profile or project binding. SQL always applies the current authenticated principal ACL. The internal typed list keeps its scope-bound cursor contract.",
+    "ignored_fields": "Public-all ignores cursor Read; own-owner ignores cursor UserID; foreign/global-owner ignores both Read and UserID. Arbitrary int32 Read and empty Key are positions rather than identities. Clear the next cursor when its literal encoding equals the supplied cursor.",
+    "qualification": "Ordinary source vectors and scratch Go observations are diagnostic inputs only. Interface values, reserved metadata value types, multi-kind or unknown wire descriptors, invalid UTF-8 Go strings, stronger budgets and exact encoder/wire behavior remain unqualified."
+  }
 }

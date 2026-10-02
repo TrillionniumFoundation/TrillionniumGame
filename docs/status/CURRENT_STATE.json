@@ -85,7 +85,10 @@
     "database_recovery_and_endurance_harness_source_candidate": true,
     "cutover_state_machine_source_candidate": true,
     "storage_http_mutation_source_candidate": true,
-    "storage_http_read_source_candidate": true
+    "storage_http_read_source_candidate": true,
+    "storage_http_list_source_candidate": true,
+    "storage_client_list_sql_projection_source_candidate": true,
+    "storage_unsigned_client_list_offset_source_candidate": true
   },
   "scope": {
     "baseline": "heroiclabs/nakama@v3.40.0",
@@ -136,5 +139,11 @@
     "classify and independently lock every D0-D8 leaf and obtain a distinct global SG1 acceptance",
     "complete the remaining competition multiplayer protocol RTAPI Runtime Console provider IAP migration HA endurance canary cutover and retirement surfaces"
   ],
-  "fail_closed": true
+  "fail_closed": true,
+  "storage_listing_profile_boundary": {
+    "internal_typed": "Existing actor/owner/collection-bound cursor and UTF-8 byte ordering remain source candidates.",
+    "nakama_client": "Separate unsigned original gob offset; current authenticated principal independently selects SQL ACL and text ordering.",
+    "accepted": false,
+    "compatibility_credit": false
+  }
 }

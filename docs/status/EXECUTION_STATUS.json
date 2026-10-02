@@ -24,37 +24,270 @@
     "superseded"
   ],
   "default_task_state": "planned",
-  "task_overrides": [{"id":"TG-W4-002","status":"ready","owner_role":"storage-data","source_candidate":{"contract":"contracts/storage/nakama-http-storage-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A","TG-D1-46DC42DFD49DB606"],"accepted":false,"gap_closed":false},"evidence_ids":[],"limitations":["Bounded HTTP read/write/delete wiring is a source candidate; timestamps, list, hooks, exact differential and complete work-package acceptance remain open."]}],
+  "task_overrides": [
+    {
+      "id": "TG-W4-002",
+      "status": "ready",
+      "owner_role": "storage-data",
+      "source_candidate": {
+        "contract": "contracts/storage/nakama-http-storage-v1.json",
+        "source": "crates/trnm-server/src/runtime/storage_api.rs",
+        "tests": "crates/trnm-server/src/runtime/storage_api_tests.rs",
+        "status": "source-candidate",
+        "parity_ids": [
+          "TG-D1-2940D4CEAACA4051",
+          "TG-D1-7A7BFBFD85579A6A",
+          "TG-D1-46DC42DFD49DB606",
+          "TG-D1-AFA018F59B7ADE31",
+          "TG-D1-A50F25193A8E9535"
+        ],
+        "accepted": false,
+        "gap_closed": false,
+        "list_source": "crates/trnm-server/src/runtime/storage_list_api.rs",
+        "list_tests": "crates/trnm-server/src/runtime/storage_list_api_tests.rs",
+        "cursor_source": "crates/trnm-server/src/runtime/storage_cursor.rs"
+      },
+      "evidence_ids": [],
+      "limitations": [
+        "Bounded HTTP read/write/delete/list and unsigned gob-offset projection are source candidates; timestamps, exact gateway/gob/collation/concurrent-page differential, hooks and complete work-package acceptance remain open."
+      ]
+    }
+  ],
   "workstreams": [
-    {"id":"W0","status":"in-progress","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-PLAN-001","GAP-P0-EVIDENCE-001","GAP-P0-SCOPE-001"]},
-    {"id":"W1","status":"in-progress","blocking_gaps":["GAP-P0-DATA-001","GAP-P1-PG-001"]},
-    {"id":"W2","status":"source-candidate","blocking_gaps":["GAP-P0-CI-001","GAP-P0-SCOPE-001","GAP-P0-SERVER-001"]},
-    {"id":"W3","status":"source-candidate","blocking_gaps":["GAP-P0-CRYPTO-001","GAP-P1-CRYPTO-002","GAP-P0-SERVER-001"]},
-    {"id":"W4","status":"source-candidate","blocking_gaps":["GAP-P1-STORAGE-001","GAP-P0-DATA-001","GAP-P0-SERVER-001"]},
-    {"id":"W5","status":"planned","blocking_gaps":["GAP-P0-SCOPE-001"]},
-    {"id":"W6","status":"source-candidate","blocking_gaps":["GAP-P0-SERVER-001","GAP-P0-SCOPE-001"]},
-    {"id":"W7","status":"planned","blocking_gaps":["GAP-P0-SCOPE-001"]},
-    {"id":"W8","status":"planned","blocking_gaps":["GAP-P0-SCOPE-001"]},
-    {"id":"W9","status":"planned","blocking_gaps":["GAP-P0-SERVER-001"]},
-    {"id":"W10","status":"planned","blocking_gaps":["GAP-P0-SERVER-001"]},
-    {"id":"W11","status":"planned","blocking_gaps":["GAP-P0-CRYPTO-001","GAP-P0-SERVER-001","GAP-P0-SCOPE-001"]},
-    {"id":"W12","status":"planned","blocking_gaps":["GAP-P0-DATA-001","GAP-P0-SERVER-001"]},
-    {"id":"W13","status":"planned","blocking_gaps":["GAP-P0-SERVER-001"]},
-    {"id":"W14","status":"in-progress","blocking_gaps":["GAP-P0-DATA-001","GAP-P1-PG-001"]},
-    {"id":"W15","status":"in-progress","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-CRYPTO-001","GAP-P1-REVIEW-001"]},
-    {"id":"W16","status":"planned","blocking_gaps":["GAP-P0-SERVER-001","GAP-P1-PG-001"]}
+    {
+      "id": "W0",
+      "status": "in-progress",
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-GOV-001",
+        "GAP-P0-PLAN-001",
+        "GAP-P0-EVIDENCE-001",
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "W1",
+      "status": "in-progress",
+      "blocking_gaps": [
+        "GAP-P0-DATA-001",
+        "GAP-P1-PG-001"
+      ]
+    },
+    {
+      "id": "W2",
+      "status": "source-candidate",
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-SCOPE-001",
+        "GAP-P0-SERVER-001"
+      ]
+    },
+    {
+      "id": "W3",
+      "status": "source-candidate",
+      "blocking_gaps": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002",
+        "GAP-P0-SERVER-001"
+      ]
+    },
+    {
+      "id": "W4",
+      "status": "source-candidate",
+      "blocking_gaps": [
+        "GAP-P1-STORAGE-001",
+        "GAP-P0-DATA-001",
+        "GAP-P0-SERVER-001"
+      ]
+    },
+    {
+      "id": "W5",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "W6",
+      "status": "source-candidate",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "W7",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "W8",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "W9",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001"
+      ]
+    },
+    {
+      "id": "W10",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001"
+      ]
+    },
+    {
+      "id": "W11",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "W12",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-DATA-001",
+        "GAP-P0-SERVER-001"
+      ]
+    },
+    {
+      "id": "W13",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001"
+      ]
+    },
+    {
+      "id": "W14",
+      "status": "in-progress",
+      "blocking_gaps": [
+        "GAP-P0-DATA-001",
+        "GAP-P1-PG-001"
+      ]
+    },
+    {
+      "id": "W15",
+      "status": "in-progress",
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-GOV-001",
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-REVIEW-001"
+      ]
+    },
+    {
+      "id": "W16",
+      "status": "planned",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P1-PG-001"
+      ]
+    }
   ],
   "stage_gates": [
-    {"id":"SG0","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-PR-001","GAP-P1-IDENTITY-001","GAP-P1-BRANCH-001"]},
-    {"id":"SG1","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-PLAN-001","GAP-P0-EVIDENCE-001","GAP-P0-SCOPE-001"]},
-    {"id":"SG2","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-EVIDENCE-001","GAP-P0-SCOPE-001"]},
-    {"id":"SG3","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-SCOPE-001","GAP-P0-CRYPTO-001"]},
-    {"id":"SG4","status":"blocked","blocking_gaps":["GAP-P0-SERVER-001","GAP-P0-DATA-001","GAP-P1-OUTBOX-001","GAP-P1-PG-001"]},
-    {"id":"SG5","status":"blocked","blocking_gaps":["GAP-P0-SERVER-001","GAP-P1-STORAGE-001","GAP-P0-CRYPTO-001"]},
-    {"id":"SG6","status":"blocked","blocking_gaps":["GAP-P0-SERVER-001","GAP-P0-SCOPE-001"]},
-    {"id":"SG7","status":"blocked","blocking_gaps":["GAP-P0-SERVER-001","GAP-P0-SCOPE-001"]},
-    {"id":"SG8","status":"blocked","blocking_gaps":["GAP-P0-DATA-001","GAP-P1-PG-001","GAP-P1-REVIEW-001"]},
-    {"id":"SG9","status":"blocked","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-SERVER-001","GAP-P1-REVIEW-001"]}
+    {
+      "id": "SG0",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-GOV-001",
+        "GAP-P0-PR-001",
+        "GAP-P1-IDENTITY-001",
+        "GAP-P1-BRANCH-001"
+      ]
+    },
+    {
+      "id": "SG1",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-PLAN-001",
+        "GAP-P0-EVIDENCE-001",
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "SG2",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-EVIDENCE-001",
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "SG3",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-SCOPE-001",
+        "GAP-P0-CRYPTO-001"
+      ]
+    },
+    {
+      "id": "SG4",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001",
+        "GAP-P1-OUTBOX-001",
+        "GAP-P1-PG-001"
+      ]
+    },
+    {
+      "id": "SG5",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P1-STORAGE-001",
+        "GAP-P0-CRYPTO-001"
+      ]
+    },
+    {
+      "id": "SG6",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "SG7",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-SERVER-001",
+        "GAP-P0-SCOPE-001"
+      ]
+    },
+    {
+      "id": "SG8",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-DATA-001",
+        "GAP-P1-PG-001",
+        "GAP-P1-REVIEW-001"
+      ]
+    },
+    {
+      "id": "SG9",
+      "status": "blocked",
+      "blocking_gaps": [
+        "GAP-P0-CI-001",
+        "GAP-P0-GOV-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P1-REVIEW-001"
+      ]
+    }
   ],
   "coverage": {
     "specified_leaf_count": null,

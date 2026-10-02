@@ -17,7 +17,12 @@
     "contracts/realtime/trnm-authority-envelope-v1.proto",
     "crates/trnm-server/src/runtime/storage_api.rs",
     "crates/trnm-server/src/runtime/storage_api_tests.rs",
-    "contracts/storage/nakama-http-storage-v1.json"
+    "contracts/storage/nakama-http-storage-v1.json",
+    "crates/trnm-server/src/runtime/storage_list_api.rs",
+    "crates/trnm-server/src/runtime/storage_list_query.rs",
+    "crates/trnm-server/src/runtime/storage_list_api_tests.rs",
+    "crates/trnm-server/src/runtime/storage_cursor.rs",
+    "crates/trnm-server/src/runtime/storage_cursor_tests.rs"
   ],
   "implemented_source": [
     "explicit check-config, migrate and serve commands",
@@ -75,7 +80,10 @@
     "Nakama-shaped POST read and PUT write/delete adapters with bounded JSON decoding, principal-bound ACL and default permissions",
     "storage-specific gateway errors, atomic committed acknowledgements and no generic storage mutation retry",
     "canonical Rust application + database fixture with required exact execution marker in both live profile lanes",
-    "blind writes with identical content and ACL preserve legacy update time after authorization and integrity checks; exact-version writes still update"
+    "blind writes with identical content and ACL preserve legacy update time after authorization and integrity checks; exact-version writes still update",
+    "two canonical GET storage list templates with authenticated client-profile owner modes, bounded query parsing and original unsigned gob offset subset",
+    "readonly serializable client-list SQL projection with text ordering, ACL before limit+1 and returned-row-only integrity decoding",
+    "separate authoritative Unicode-character row-key factory for client-list decoding; existing typed list contract retained"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this source synchronization",
@@ -99,12 +107,13 @@
     "independent security review and exact oracle differential for the session HTTP and realtime source candidates",
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
     "Write acknowledgements and read objects omit upstream create_time/update_time because the authoritative schema and receipt/object types do not retain these timestamps. No timestamp is fabricated.",
-    "List route, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
-    "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
+    "Client-list/query/gob/SQL projection are bounded source candidates; exact gateway, unsupported gob types, profile collation and concurrent-pagination behavior still require immutable differential. Search/index and Runtime before/after hooks remain unfinished.",
+    "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. Client-list queries use 4096-byte offsets/collection budgets and decode authoritative Unicode-character-bounded rows. Bounds and exact malformed wire behavior remain unqualified.",
     "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
-    "Blind no-op selection is a source candidate; upstream database timestamp origin/precision, historical creation times and exact oracle acceptance remain open."
+    "Blind no-op selection is a source candidate; upstream database timestamp origin/precision, historical creation times and exact oracle acceptance remain open.",
+    "unsigned Nakama client cursor exception independently reviewed against the internal scope-bound profile; gob interface/reserved metadata/noncanonical descriptor/invalid UTF-8 and stronger budget differences remain open"
   ],
   "gap_ids": [
     "GAP-P0-SERVER-001",
@@ -145,7 +154,10 @@
     "storage_http_mutation_source_candidate": true,
     "storage_http_read_source_candidate": true,
     "canonical_storage_database_fixture_source_candidate": true,
-    "storage_blind_noop_source_candidate": true
+    "storage_blind_noop_source_candidate": true,
+    "storage_http_list_source_candidate": true,
+    "storage_client_list_sql_projection_source_candidate": true,
+    "storage_unsigned_client_list_offset_source_candidate": true
   },
   "dependency_contract_source_candidate": {
     "policy_source": "scripts/check-rust-foundation.py::EXPECTED_DEPENDENCIES",
@@ -180,5 +192,33 @@
     "accepted": false,
     "gap_closed": false
   },
-  "storage_http_mutations": {"contract":"contracts/storage/nakama-http-storage-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A","TG-D1-46DC42DFD49DB606"],"accepted":false,"gap_closed":false}
+  "storage_http_mutations": {
+    "contract": "contracts/storage/nakama-http-storage-v1.json",
+    "source": "crates/trnm-server/src/runtime/storage_api.rs",
+    "tests": "crates/trnm-server/src/runtime/storage_api_tests.rs",
+    "status": "source-candidate",
+    "parity_ids": [
+      "TG-D1-2940D4CEAACA4051",
+      "TG-D1-7A7BFBFD85579A6A",
+      "TG-D1-46DC42DFD49DB606"
+    ],
+    "accepted": false,
+    "gap_closed": false
+  },
+  "storage_http_list": {
+    "contract": "contracts/storage/nakama-http-storage-v1.json",
+    "source": "crates/trnm-server/src/runtime/storage_list_api.rs",
+    "query": "crates/trnm-server/src/runtime/storage_list_query.rs",
+    "tests": "crates/trnm-server/src/runtime/storage_list_api_tests.rs",
+    "cursor": "crates/trnm-server/src/runtime/storage_cursor.rs",
+    "cursor_tests": "crates/trnm-server/src/runtime/storage_cursor_tests.rs",
+    "repository_test": "crates/trnm-persistence-pg/tests/authority_storage_parts/03_storage_list.rs::nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
+    "status": "source-candidate",
+    "parity_ids": [
+      "TG-D1-AFA018F59B7ADE31",
+      "TG-D1-A50F25193A8E9535"
+    ],
+    "accepted": false,
+    "gap_closed": false
+  }
 }

@@ -50,6 +50,14 @@ DOCUMENT = '''<!-- trnm-server-cli:start -->
 | `TRNM_SERVER_BIND` | Loopback bind |
 <!-- trnm-server-config:end -->
 '''
+LIST_ROUTES = '''pub(crate) const STORAGE_LIST_ROUTES: [(&str, &str); 2] = [
+    ("GET", "/v2/storage/{collection}"),
+    ("GET", "/v2/storage/{collection}/{user_id}"),
+];
+'''
+LIST_DOCUMENT_ROWS = '''| `GET` | `/v2/storage/{collection}` | Public client list |
+| `GET` | `/v2/storage/{collection}/{user_id}` | Owner client list |
+'''
 
 
 def put(root: Path, path: str, value: object) -> None:
@@ -106,6 +114,86 @@ class ReadinessUnitTests(unittest.TestCase):
     def rejected(self) -> None:
         with self.assertRaises(MODULE.ValidationError):
             MODULE.inspect(self.root)
+
+    def list_fixture(self) -> str:
+        source = LIST_ROUTES + APP.replace(
+            '            _ =>',
+            '            ("GET", target) if storage_list_api::is_list_target(target) => list(),\n            _ =>',
+        )
+        put(self.root, "crates/trnm-server/src/runtime/mod.rs", '''pub(crate) mod app;
+#[cfg(test)]
+mod unrelated_tests;
+pub(crate) mod storage_list_api;
+''')
+        put(self.root, "crates/trnm-server/src/runtime/app.rs", source)
+        put(self.root, "docs/DEVELOPMENT.md", DOCUMENT.replace(
+            "<!-- trnm-server-routes:end -->", LIST_DOCUMENT_ROWS + "<!-- trnm-server-routes:end -->"))
+        return source
+
+    def test_integrated_dynamic_list_routes_are_extracted_from_the_owned_constant(self) -> None:
+        self.list_fixture()
+        result = MODULE.inspect(self.root)
+        self.assertEqual(result["server_interface"]["routes"], [
+            ("GET", "/healthz"),
+            ("GET", "/v2/storage/{collection}"),
+            ("GET", "/v2/storage/{collection}/{user_id}"),
+            ("POST", "/v1/authority/commit"),
+        ])
+        self.assertIs(result["claim_credit"], False)
+
+    def test_integrated_list_routes_require_the_authoritative_constant(self) -> None:
+        source = self.list_fixture()
+        put(self.root, "crates/trnm-server/src/runtime/app.rs", source.removeprefix(LIST_ROUTES))
+        self.rejected()
+
+    def test_integrated_list_constant_requires_a_dispatcher_guard(self) -> None:
+        self.list_fixture()
+        put(self.root, "crates/trnm-server/src/runtime/app.rs", LIST_ROUTES + APP)
+        self.rejected()
+
+    def test_wrong_list_template_is_rejected(self) -> None:
+        source = self.list_fixture()
+        put(self.root, "crates/trnm-server/src/runtime/app.rs", source.replace(
+            "/v2/storage/{collection}/{user_id}", "/v2/storage/{collection}/{owner}"))
+        self.rejected()
+
+    def test_duplicate_list_template_is_rejected(self) -> None:
+        source = self.list_fixture()
+        put(self.root, "crates/trnm-server/src/runtime/app.rs", source.replace(
+            "/v2/storage/{collection}/{user_id}", "/v2/storage/{collection}"))
+        self.rejected()
+
+    def test_extra_list_constant_and_duplicate_literal_are_rejected(self) -> None:
+        source = self.list_fixture()
+        for changed in [LIST_ROUTES + source, source.replace(
+            '            _ =>', '            ("GET", "/v2/storage/{collection}") => unreachable(),\n            _ =>')]:
+            with self.subTest(source=changed):
+                put(self.root, "crates/trnm-server/src/runtime/app.rs", changed)
+                self.rejected()
+
+    def test_list_constant_inside_tests_or_dispatcher_cannot_advertise_routes(self) -> None:
+        source = self.list_fixture()
+        for changed in [
+            source.removeprefix(LIST_ROUTES) + "\n#[cfg(test)]\nmod tests {\n" + LIST_ROUTES + "}\n",
+            source.removeprefix(LIST_ROUTES).replace("            _ =>", LIST_ROUTES + "            _ =>"),
+        ]:
+            with self.subTest(source=changed):
+                put(self.root, "crates/trnm-server/src/runtime/app.rs", changed)
+                self.rejected()
+
+    def test_unintegrated_constant_does_not_add_inventory_credit(self) -> None:
+        put(self.root, "crates/trnm-server/src/runtime/app.rs", LIST_ROUTES + APP)
+        result = MODULE.inspect(self.root)
+        self.assertEqual(result["server_interface"]["routes"], [
+            ("GET", "/healthz"), ("POST", "/v1/authority/commit")])
+        put(self.root, "docs/DEVELOPMENT.md", DOCUMENT.replace(
+            "<!-- trnm-server-routes:end -->", LIST_DOCUMENT_ROWS + "<!-- trnm-server-routes:end -->"))
+        self.rejected()
+
+    def test_test_only_list_module_does_not_add_inventory_credit(self) -> None:
+        self.list_fixture()
+        put(self.root, "crates/trnm-server/src/runtime/mod.rs", "#[cfg(test)]\nmod storage_list_api;\n")
+        self.rejected()
 
     def test_positive_inventory_is_read_only_and_has_no_credit(self) -> None:
         before = {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}

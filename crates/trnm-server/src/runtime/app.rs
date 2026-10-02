@@ -6,8 +6,8 @@ use trnm_contracts::{
 use trnm_persistence_pg::{
     CommitOutcome, CommitReceipt, CommitRequest, EntityHead, EntityId, EventId, EventInput,
     IntentId, IntentKind, OutboxInput, PgRepository, RefreshRotationOutcome, RotateRefreshToken,
-    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageMutationReceipt,
-    StorageObject, StorageObjectKey,
+    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageClientListPage,
+    StorageListPosition, StorageMutationReceipt, StorageObject, StorageObjectKey,
 };
 use trnm_session_core::RevocationReason;
 
@@ -17,7 +17,13 @@ use super::error::InputError;
 use super::http::{Request, Response};
 use super::json::Object;
 use super::session_api::{SessionApi, SessionError};
-use super::storage_api;
+use super::{storage_api, storage_list_api};
+
+// Authoritative dynamic route templates consumed by the live matcher.
+pub(super) const STORAGE_LIST_ROUTES: [(&str, &str); 2] = [
+    ("GET", "/v2/storage/{collection}"),
+    ("GET", "/v2/storage/{collection}/{user_id}"),
+];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RepositoryOperationalMetrics {
@@ -55,6 +61,22 @@ pub trait Repository: std::fmt::Debug {
         keys: &[StorageObjectKey],
     ) -> Result<Vec<StorageObject>, DomainError> {
         let _ = (actor, keys);
+        Err(DomainError::new(
+            StableCode::Unimplemented,
+            "storage_repository_unavailable",
+            RetryClass::Never,
+        ))
+    }
+
+    fn list_storage_objects_nakama(
+        &mut self,
+        actor: StorageActor,
+        collection: &str,
+        owner: Option<UserId>,
+        after: Option<&StorageListPosition>,
+        limit: usize,
+    ) -> Result<StorageClientListPage, DomainError> {
+        let _ = (actor, collection, owner, after, limit);
         Err(DomainError::new(
             StableCode::Unimplemented,
             "storage_repository_unavailable",
@@ -131,6 +153,17 @@ impl Repository for PgRepository {
         keys: &[StorageObjectKey],
     ) -> Result<Vec<StorageObject>, DomainError> {
         PgRepository::read_storage_objects(self, actor, keys)
+    }
+
+    fn list_storage_objects_nakama(
+        &mut self,
+        actor: StorageActor,
+        collection: &str,
+        owner: Option<UserId>,
+        after: Option<&StorageListPosition>,
+        limit: usize,
+    ) -> Result<StorageClientListPage, DomainError> {
+        PgRepository::list_storage_objects_nakama(self, actor, collection, owner, after, limit)
     }
 
     fn apply_storage_batch(
@@ -374,6 +407,9 @@ impl<R: Repository> App<R> {
             ("POST", "/v2/storage") | ("PUT", "/v2/storage") | ("PUT", "/v2/storage/delete") => {
                 self.storage_request(request)
             }
+            ("GET", target) if storage_list_api::is_list_target(target) => {
+                self.storage_request(request)
+            }
             ("PUT", target) if storage_path(target) => self.storage_request(request),
             ("POST", target) if target.split('?').next() == Some("/v2/storage") => {
                 self.storage_request(request)
@@ -523,6 +559,9 @@ trnm_server_session_logout_revoked_total {}\n",
         // Session verification and persisted revocation precede all business
         // decoding. The operator credential cannot act as a storage owner.
         match self.sessions.authenticate(&mut self.repository, request) {
+            Ok(principal) if request.method == "GET" => {
+                storage_list_api::handle(&mut self.repository, request, principal.user)
+            }
             Ok(principal) => storage_api::handle(&mut self.repository, request, principal.user),
             Err(SessionError::Domain(error)) => storage_api::authentication_error(error),
             Err(SessionError::Input(_)) => {

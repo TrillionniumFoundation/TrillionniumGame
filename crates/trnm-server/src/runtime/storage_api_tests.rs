@@ -8,9 +8,9 @@ use trnm_contracts::{
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, ContentVersion, CreateSessionFamily, DatabaseProfile, EntityHead,
     EntityId, IntegrityDigest, PgRepository, ReadPermission, RefreshTokenCredential,
-    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageMutationReceipt,
-    StorageObject, StorageObjectKey, StorageState, StorageWriteOperation, VersionCheck,
-    WritePermission,
+    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageClientListPage,
+    StorageListPosition, StorageMutationReceipt, StorageObject, StorageObjectKey, StorageState,
+    StorageWriteOperation, VersionCheck, WritePermission,
 };
 use trnm_session_core::RevocationReason;
 use trnm_token_jwt_adapter::json::JsonValue;
@@ -36,6 +36,7 @@ struct RepositoryState {
     verified_sessions: usize,
     storage_batches: usize,
     storage_reads: usize,
+    storage_lists: usize,
     last_actor: Option<StorageActor>,
     last_read_keys: Vec<StorageObjectKey>,
 }
@@ -140,6 +141,30 @@ impl Repository for StorageRepository {
         }
         Ok(objects)
     }
+
+    fn list_storage_objects_nakama(
+        &mut self,
+        actor: StorageActor,
+        collection: &str,
+        owner: Option<UserId>,
+        after: Option<&StorageListPosition>,
+        limit: usize,
+    ) -> Result<StorageClientListPage, DomainError> {
+        // This mock only witnesses App routing, principal and drain policy.
+        // SQL ACL, ordering and pagination belong to the real DB fixtures.
+        assert_eq!(actor, StorageActor::User(USER));
+        assert_eq!(collection, "inventory");
+        assert_eq!(owner, None);
+        assert!(after.is_none());
+        assert_eq!(limit, 1);
+        let mut state = self.state();
+        state.storage_lists += 1;
+        state.last_actor = Some(actor);
+        Ok(StorageClientListPage {
+            objects: Vec::new(),
+            next: None,
+        })
+    }
 }
 
 fn unimplemented_domain() -> DomainError {
@@ -165,6 +190,7 @@ fn app() -> (App<StorageRepository>, StorageRepository) {
         verified_sessions: 0,
         storage_batches: 0,
         storage_reads: 0,
+        storage_lists: 0,
         last_actor: None,
         last_read_keys: Vec::new(),
     })));
@@ -237,6 +263,12 @@ fn request(path: &str, authorization: Option<&str>, body: &str) -> Request {
 fn read_request(path: &str, authorization: Option<&str>, body: &str) -> Request {
     let mut request = request(path, authorization, body);
     request.method = "POST".to_owned();
+    request
+}
+
+fn list_request(path: &str, authorization: Option<&str>) -> Request {
+    let mut request = request(path, authorization, "");
+    request.method = "GET".to_owned();
     request
 }
 
@@ -840,9 +872,20 @@ fn draining_allows_authenticated_storage_reads_and_still_enforces_authentication
     let malformed = app.handle(&read_request("/v2/storage", Some(&credential), "not-json"));
     assert_eq!(malformed.status, 400);
     assert_eq!(json(&malformed)["code"], 3);
+    let listed = app.handle(&list_request("/v2/storage/inventory", Some(&credential)));
+    assert_eq!(listed.status, 200);
+    assert_eq!(listed.body, b"{}");
+    let unauthenticated_list = app.handle(&list_request(
+        "/v2/storage/inventory?limit=bad&cursor=!",
+        None,
+    ));
+    assert_eq!(unauthenticated_list.status, 401);
+    assert_eq!(json(&unauthenticated_list)["code"], 16);
     let state = repository.state();
-    assert_eq!(state.verified_sessions, 2);
+    assert_eq!(state.verified_sessions, 3);
     assert_eq!(state.storage_reads, 1);
+    assert_eq!(state.storage_lists, 1);
+    assert_eq!(state.last_actor, Some(StorageActor::User(USER)));
     assert_eq!(state.storage_batches, 0);
     assert_eq!(state.storage.object_count(), 1);
 }
@@ -853,6 +896,40 @@ const LIVE_OTHER: UserId = UserId::new([0xd2; 16]);
 const LIVE_FAMILY: SessionFamilyId = SessionFamilyId::new([0xe1; 16]);
 const LIVE_USER_UUID: &str = "d1d1d1d1-d1d1-d1d1-d1d1-d1d1d1d1d1d1";
 const LIVE_OTHER_UUID: &str = "d2d2d2d2-d2d2-d2d2-d2d2-d2d2d2d2d2d2";
+const LIVE_GLOBAL_UUID: &str = "00000000-0000-0000-0000-000000000000";
+
+fn storage_live_list_page(response: &Response) -> (Vec<(String, String, i32)>, Option<String>) {
+    assert_eq!(response.status, 200);
+    let body = json(response);
+    let objects = body["objects"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|object| {
+            assert_eq!(object["collection"], LIVE_COLLECTION);
+            let value = object["value"].as_str().unwrap();
+            assert_eq!(
+                object["version"],
+                ContentVersion::from_value(value.as_bytes()).as_str()
+            );
+            // The schema has no genuine original times yet. This candidate
+            // must omit those fields until a real migration supplies them.
+            assert!(object.get("create_time").is_none());
+            assert!(object.get("update_time").is_none());
+            (
+                object["key"].as_str().unwrap().to_owned(),
+                object["user_id"].as_str().unwrap().to_owned(),
+                i32::try_from(object["permission_read"].as_i64().unwrap()).unwrap(),
+            )
+        })
+        .collect();
+    let cursor = body.get("cursor").map(|cursor| {
+        let cursor = cursor.as_str().unwrap();
+        assert!(!cursor.is_empty());
+        cursor.to_owned()
+    });
+    (objects, cursor)
+}
 
 fn storage_live_environment() -> Option<(String, DatabaseProfile)> {
     let required = match std::env::var("TRNM_REQUIRE_LIVE_DATABASE") {
@@ -1005,6 +1082,9 @@ fn canonical_storage_api_live_database() {
             ),
             ("other-hidden", LIVE_OTHER, ReadPermission::None, "{}"),
             ("own-hidden", LIVE_USER, ReadPermission::None, "{}"),
+            ("a-own-public", LIVE_USER, ReadPermission::Public, "{}"),
+            ("z-own-private", LIVE_USER, ReadPermission::Owner, "{}"),
+            ("other-public-2", LIVE_OTHER, ReadPermission::Public, "{}"),
             (
                 "global-public",
                 UserId::new([0; 16]),
@@ -1015,6 +1095,12 @@ fn canonical_storage_api_live_database() {
                 "global-private",
                 UserId::new([0; 16]),
                 ReadPermission::Owner,
+                "{}",
+            ),
+            (
+                "global-public-2",
+                UserId::new([0; 16]),
+                ReadPermission::Public,
                 "{}",
             ),
         ] {
@@ -1184,6 +1270,167 @@ fn canonical_storage_api_live_database() {
             ])
         );
 
+        // List observes its own source-defined projection: missing owner only
+        // exposes public rows, and own lists order read permission before key.
+        // All requests enter canonical App authentication and the real DB.
+        let own_path = format!("/v2/storage/{LIVE_COLLECTION}/{LIVE_USER_UUID}?limit=2");
+        let own_first = app.handle(&list_request(&own_path, Some(&credential)));
+        let (own_objects, own_cursor) = storage_live_list_page(&own_first);
+        assert_eq!(
+            own_objects,
+            vec![
+                ("sword".to_owned(), LIVE_USER_UUID.to_owned(), 1),
+                ("z-own-private".to_owned(), LIVE_USER_UUID.to_owned(), 1),
+            ]
+        );
+        let own_cursor = own_cursor.unwrap();
+        let own_position = super::storage_cursor::decode_cursor(&own_cursor).unwrap();
+        assert_eq!(own_position.key, "z-own-private");
+        assert_eq!(own_position.user_id, LIVE_USER);
+        assert_eq!(own_position.read, 1);
+        let own_reencoded = super::storage_cursor::encode_cursor(&own_position).unwrap();
+        let own_next = app.handle(&list_request(
+            &format!("{own_path}&cursor={own_reencoded}"),
+            Some(&credential),
+        ));
+        let (own_objects, own_cursor) = storage_live_list_page(&own_next);
+        assert_eq!(
+            own_objects,
+            vec![("a-own-public".to_owned(), LIVE_USER_UUID.to_owned(), 2)]
+        );
+        assert!(own_cursor.is_none());
+
+        let all_path = format!("/v2/storage/{LIVE_COLLECTION}?limit=2");
+        let all_first = app.handle(&list_request(&all_path, Some(&credential)));
+        let (all_objects, all_cursor) = storage_live_list_page(&all_first);
+        assert_eq!(
+            all_objects,
+            vec![
+                ("a-own-public".to_owned(), LIVE_USER_UUID.to_owned(), 2),
+                ("global-public".to_owned(), LIVE_GLOBAL_UUID.to_owned(), 2),
+            ]
+        );
+        let all_position = super::storage_cursor::decode_cursor(&all_cursor.unwrap()).unwrap();
+        assert_eq!(all_position.key, "global-public");
+        assert_eq!(all_position.user_id, UserId::new([0; 16]));
+        assert_eq!(all_position.read, 2);
+        let all_second = app.handle(&list_request(
+            &format!(
+                "{all_path}&cursor={}",
+                super::storage_cursor::encode_cursor(&all_position).unwrap()
+            ),
+            Some(&credential),
+        ));
+        let (all_objects, all_cursor) = storage_live_list_page(&all_second);
+        assert_eq!(
+            all_objects,
+            vec![
+                ("global-public-2".to_owned(), LIVE_GLOBAL_UUID.to_owned(), 2),
+                ("other-public".to_owned(), LIVE_OTHER_UUID.to_owned(), 2),
+            ]
+        );
+        let all_third = app.handle(&list_request(
+            &format!("{all_path}&cursor={}", all_cursor.unwrap()),
+            Some(&credential),
+        ));
+        let (all_objects, all_cursor) = storage_live_list_page(&all_third);
+        assert_eq!(
+            all_objects,
+            vec![("other-public-2".to_owned(), LIVE_OTHER_UUID.to_owned(), 2)]
+        );
+        assert!(all_cursor.is_none());
+
+        // Explicit foreign and global owners both use public-only, key-order
+        // pagination. Their private/hidden rows never consume the sentinel.
+        for (owner, owner_id, first_key, second_key) in [
+            (
+                LIVE_OTHER_UUID,
+                LIVE_OTHER,
+                "other-public",
+                "other-public-2",
+            ),
+            (
+                LIVE_GLOBAL_UUID,
+                UserId::new([0; 16]),
+                "global-public",
+                "global-public-2",
+            ),
+        ] {
+            let path = format!("/v2/storage/{LIVE_COLLECTION}/{owner}?limit=1");
+            let first = app.handle(&list_request(&path, Some(&credential)));
+            let (objects, cursor) = storage_live_list_page(&first);
+            assert_eq!(objects, vec![(first_key.to_owned(), owner.to_owned(), 2)]);
+            let position = super::storage_cursor::decode_cursor(&cursor.unwrap()).unwrap();
+            assert_eq!(position.key, first_key);
+            assert_eq!(position.user_id, owner_id);
+            assert_eq!(position.read, 2);
+            let second = app.handle(&list_request(
+                &format!(
+                    "{path}&cursor={}",
+                    super::storage_cursor::encode_cursor(&position).unwrap()
+                ),
+                Some(&credential),
+            ));
+            let (objects, cursor) = storage_live_list_page(&second);
+            assert_eq!(objects, vec![(second_key.to_owned(), owner.to_owned(), 2)]);
+            assert!(cursor.is_none());
+        }
+
+        let empty_owner = app.handle(&list_request(
+            &format!("/v2/storage/{LIVE_COLLECTION}?user_id=&limit=100"),
+            Some(&credential),
+        ));
+        let (objects, cursor) = storage_live_list_page(&empty_owner);
+        assert_eq!(objects.len(), 5);
+        assert!(objects.iter().all(|object| object.2 == 2));
+        assert!(cursor.is_none());
+        let omitted_limit = app.handle(&list_request(
+            &format!("/v2/storage/{LIVE_COLLECTION}"),
+            Some(&credential),
+        ));
+        let (objects, cursor) = storage_live_list_page(&omitted_limit);
+        assert_eq!(
+            objects,
+            vec![("a-own-public".to_owned(), LIVE_USER_UUID.to_owned(), 2)]
+        );
+        assert!(cursor.is_some());
+        let missing_collection = app.handle(&list_request(
+            &format!("/v2/storage/{LIVE_COLLECTION}-empty"),
+            Some(&credential),
+        ));
+        assert_eq!(missing_collection.status, 200);
+        assert_eq!(missing_collection.body, b"{}");
+
+        let persisted_before_bad_list = storage_live_row_count(&mut control);
+        for (path, message) in [
+            (
+                format!("/v2/storage/{LIVE_COLLECTION}/not-a-uuid"),
+                "Invalid user ID - make sure user ID is a valid UUID.",
+            ),
+            (
+                format!("/v2/storage/{LIVE_COLLECTION}?limit=0"),
+                "Invalid limit - limit must be between 1 and 100.",
+            ),
+            (
+                format!("/v2/storage/{LIVE_COLLECTION}?cursor=!"),
+                "Malformed cursor was used.",
+            ),
+        ] {
+            let malformed = app.handle(&list_request(&path, Some(&credential)));
+            assert_eq!(malformed.status, 400);
+            assert_eq!(json(&malformed)["code"], 3);
+            assert_eq!(json(&malformed)["message"], message);
+            for auth in [None, Some("Bearer invalid")] {
+                let unauthenticated = app.handle(&list_request(&path, auth));
+                assert_eq!(unauthenticated.status, 401);
+                assert_eq!(json(&unauthenticated)["code"], 16);
+            }
+        }
+        assert_eq!(
+            storage_live_row_count(&mut control),
+            persisted_before_bad_list
+        );
+
         let rollback_body = serde_json::json!({"objects":[
             {"collection":LIVE_COLLECTION,"key":"sword","value":"{\"level\":2}"},
             {"collection":LIVE_COLLECTION,"key":"shield","value":"{}","version":"00000000000000000000000000000000"}
@@ -1255,6 +1502,20 @@ fn canonical_storage_api_live_database() {
             request("/v2/storage", Some(&credential), "not-json"),
             request("/v2/storage/delete", Some(&credential), "not-json"),
             read_request("/v2/storage", Some(&credential), "not-json"),
+            list_request(&all_path, Some(&credential)),
+            list_request(&own_path, Some(&credential)),
+            list_request(
+                &format!("/v2/storage/{LIVE_COLLECTION}/{LIVE_GLOBAL_UUID}"),
+                Some(&credential),
+            ),
+            list_request(
+                &format!("/v2/storage/{LIVE_COLLECTION}?limit=bad&cursor=!"),
+                Some(&credential),
+            ),
+            list_request(
+                &format!("/v2/storage/{LIVE_COLLECTION}/not-a-uuid"),
+                Some(&credential),
+            ),
         ] {
             let response = app.handle(&request);
             assert_eq!(response.status, 401);

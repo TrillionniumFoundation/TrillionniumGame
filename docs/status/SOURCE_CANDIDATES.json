@@ -11,7 +11,10 @@
   "candidates": [
     {
       "id": "SRC-PLAN-V3-CONTROL",
-      "gap_ids": ["GAP-P0-PLAN-001", "GAP-P0-EVIDENCE-001"],
+      "gap_ids": [
+        "GAP-P0-PLAN-001",
+        "GAP-P0-EVIDENCE-001"
+      ],
       "paths": [
         "CURRENT_PLAN.md",
         "docs/README.md",
@@ -25,11 +28,17 @@
         "scripts/derive-gates.py"
       ],
       "status": "source-candidate",
-      "required_next": ["exact-head control-plane run", "artifact digest", "independent governance review"]
+      "required_next": [
+        "exact-head control-plane run",
+        "artifact digest",
+        "independent governance review"
+      ]
     },
     {
       "id": "SRC-SCHEMA-AUTHORITY",
-      "gap_ids": ["GAP-P0-DATA-001"],
+      "gap_ids": [
+        "GAP-P0-DATA-001"
+      ],
       "paths": [
         "docs/development/SCHEMA_AUTHORITY.json",
         "docs/ARCHITECTURE.md",
@@ -38,43 +47,68 @@
         "scripts/check-schema-authority.py"
       ],
       "status": "source-candidate",
-      "required_next": ["exact-head schema checker", "both live catalog profiles", "database review"]
+      "required_next": [
+        "exact-head schema checker",
+        "both live catalog profiles",
+        "database review"
+      ]
     },
     {
       "id": "SRC-JWT-LENGTH-FIX",
-      "gap_ids": ["GAP-P1-CRYPTO-002", "GAP-P0-CRYPTO-001"],
+      "gap_ids": [
+        "GAP-P1-CRYPTO-002",
+        "GAP-P0-CRYPTO-001"
+      ],
       "paths": [
         "crates/trnm-token-jwt-adapter/src/sha256.rs",
         "docs/SECURITY_AND_PRIVACY.md"
       ],
       "status": "fixed-source",
-      "required_next": ["unit and fuzz execution", "cryptography decision", "independent security review"]
+      "required_next": [
+        "unit and fuzz execution",
+        "cryptography decision",
+        "independent security review"
+      ]
     },
     {
       "id": "SRC-OUTBOX-ATTEMPT-FIX",
-      "gap_ids": ["GAP-P1-OUTBOX-001"],
+      "gap_ids": [
+        "GAP-P1-OUTBOX-001"
+      ],
       "paths": [
         "crates/trnm-persistence-core/src/lib.rs",
         "docs/ARCHITECTURE.md",
         "docs/OPERATIONS_AND_RELEASE.md"
       ],
       "status": "fixed-source",
-      "required_next": ["unit/property execution", "database parity", "data-integrity review"]
+      "required_next": [
+        "unit/property execution",
+        "database parity",
+        "data-integrity review"
+      ]
     },
     {
       "id": "SRC-LIVE-DATABASE-REQUIRED",
-      "gap_ids": ["GAP-P1-TEST-001"],
+      "gap_ids": [
+        "GAP-P1-TEST-001"
+      ],
       "paths": [
         "crates/trnm-persistence-pg/tests/runtime.rs",
         "crates/trnm-persistence-pg/tests/fault_matrix.rs",
         "docs/TESTING_AND_EVIDENCE.md"
       ],
       "status": "fixed-source",
-      "required_next": ["CI environment proof", "missing-environment negative run", "both database profiles"]
+      "required_next": [
+        "CI environment proof",
+        "missing-environment negative run",
+        "both database profiles"
+      ]
     },
     {
       "id": "SRC-RUST-SERVER-V1",
-      "gap_ids": ["GAP-P0-SERVER-001"],
+      "gap_ids": [
+        "GAP-P0-SERVER-001"
+      ],
       "paths": [
         "crates/trnm-server",
         "contracts/server/vertical-slice-v1.json",
@@ -93,7 +127,9 @@
     },
     {
       "id": "SRC-STORAGE-PUBLIC-VERSION-V1",
-      "gap_ids": ["GAP-P1-STORAGE-001"],
+      "gap_ids": [
+        "GAP-P1-STORAGE-001"
+      ],
       "paths": [
         "crates/trnm-storage-nakama-version",
         "contracts/storage/nakama-public-version-v1.json",
@@ -111,16 +147,78 @@
     },
     {
       "id": "SRC-CANDIDATE-IDENTITY-V1",
-      "gap_ids": ["GAP-P0-EVIDENCE-001", "GAP-P0-CI-001"],
+      "gap_ids": [
+        "GAP-P0-EVIDENCE-001",
+        "GAP-P0-CI-001"
+      ],
       "paths": [
         "scripts/generate-candidate-manifest.py",
         "docs/TESTING_AND_EVIDENCE.md",
         ".github/workflows/candidate-identity-manifest.yml"
       ],
       "status": "source-candidate",
-      "required_next": ["non-empty exact-head run", "artifact digest", "evidence-index registration"]
+      "required_next": [
+        "non-empty exact-head run",
+        "artifact digest",
+        "evidence-index registration"
+      ]
     },
-    {"id":"SRC-STORAGE-HTTP-MUTATIONS","gap_ids":["GAP-P1-STORAGE-001","GAP-P0-SERVER-001","GAP-P0-DATA-001"],"paths":["crates/trnm-server/src/runtime/storage_api.rs","crates/trnm-server/src/runtime/storage_api_tests.rs","crates/trnm-persistence-pg/src/storage_parts/01_repository.rs","crates/trnm-persistence-pg/src/storage_parts/03_write.rs","crates/trnm-persistence-pg/tests/authority_storage_parts/02_storage_batch.rs","scripts/ci-trnm-server-live.sh","contracts/storage/nakama-http-storage-v1.json"],"status":"source-candidate","required_next":["exact-head build/test/Clippy and actual prospective merge","timestamp/receipt and remaining storage domain implementation","separate PostgreSQL and CockroachDB live packets","immutable Nakama wire/database differential","conflict-free protocol/database/security acceptance"]}
+    {
+      "id": "SRC-STORAGE-HTTP-MUTATIONS",
+      "gap_ids": [
+        "GAP-P1-STORAGE-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001"
+      ],
+      "paths": [
+        "crates/trnm-server/src/runtime/storage_api.rs",
+        "crates/trnm-server/src/runtime/storage_api_tests.rs",
+        "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs",
+        "crates/trnm-persistence-pg/src/storage_parts/03_write.rs",
+        "crates/trnm-persistence-pg/tests/authority_storage_parts/02_storage_batch.rs",
+        "scripts/ci-trnm-server-live.sh",
+        "contracts/storage/nakama-http-storage-v1.json"
+      ],
+      "status": "source-candidate",
+      "required_next": [
+        "exact-head build/test/Clippy and actual prospective merge",
+        "timestamp/receipt and remaining storage domain implementation",
+        "separate PostgreSQL and CockroachDB live packets",
+        "immutable Nakama wire/database differential",
+        "conflict-free protocol/database/security acceptance"
+      ]
+    },
+    {
+      "id": "SRC-STORAGE-HTTP-LIST",
+      "gap_ids": [
+        "GAP-P1-STORAGE-001",
+        "GAP-P0-SERVER-001",
+        "GAP-P0-DATA-001"
+      ],
+      "paths": [
+        "crates/trnm-server/src/runtime/storage_list_api.rs",
+        "crates/trnm-server/src/runtime/storage_list_query.rs",
+        "crates/trnm-server/src/runtime/storage_list_api_tests.rs",
+        "crates/trnm-server/src/runtime/storage_cursor.rs",
+        "crates/trnm-server/src/runtime/storage_cursor_tests.rs",
+        "crates/trnm-storage-core/src/lib.rs",
+        "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs",
+        "crates/trnm-persistence-pg/src/storage_parts/02_list_helpers.rs",
+        "crates/trnm-persistence-pg/src/storage_parts/05_decode_errors.rs",
+        "crates/trnm-persistence-pg/tests/authority_storage_parts/03_storage_list.rs",
+        "contracts/storage/nakama-http-storage-v1.json"
+      ],
+      "status": "source-candidate",
+      "required_next": [
+        "exact-head build/test/Clippy and actual prospective merge",
+        "separate retained PostgreSQL and CockroachDB list packets",
+        "original gateway/gob/profile-text-collation/concurrent-page immutable differential",
+        "timestamp and remaining storage domain implementation",
+        "official SDK black-box execution and conflict-free protocol/database/security acceptance"
+      ],
+      "accepted": false,
+      "gap_closed": false
+    }
   ],
   "claims": {
     "source_progress_recorded": true,

@@ -1,7 +1,7 @@
 # Architecture
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-12
+Revision: 2026-10-02
 
 ## 1. Current runtime reality
 
@@ -176,7 +176,9 @@ The current source includes a bounded worker and fault profiles for crash-before
 ## 9. Protocol adapters
 
 The canonical process includes bounded storage source adapters for
-`POST /v2/storage`, `PUT /v2/storage` and `PUT /v2/storage/delete`. They verify the existing signed
+`POST /v2/storage`, `PUT /v2/storage`, `PUT /v2/storage/delete`,
+`GET /v2/storage/{collection}` and `GET /v2/storage/{collection}/{user_id}`.
+They verify the existing signed
 access principal and persisted session family before decoding business input,
 bind every mutation owner to that principal, and invoke the serializable batch
 repository through the deadline-aware pool. The generic retry supervisor
@@ -186,6 +188,22 @@ Reads use one bounded readonly serializable transaction under the pool deadline.
 They omit missing and ACL-hidden rows before decoding, and fail the whole batch
 on SQL or integrity errors. Requested owners include server/global objects;
 returned objects must pass requested-key, ACL, UTF-8 and digest checks.
+Client listing uses a separate `list_storage_objects_nakama` projection on the
+same authoritative table. Public-all queries order by read/key/user ID, own-owner
+queries by read/key, and foreign/global-owner queries by key, using SQL text
+collation. ACL precedes the bounded sentinel; only returned rows are decoded.
+One readonly serializable transaction completes before list success is built.
+The existing typed list keeps its UTF-8 byte ordering and scope-bound cursor.
+
+The Nakama client-list profile is an explicit cursor exception: the original
+unsigned gob/base64 offset carries key, UUID and read permission without actor,
+owner-filter, collection, profile or project authentication. It never supplies
+authorization; every request verifies the session and repeats the current ACL in
+SQL. A separate row-key factory follows the existing authoritative character
+constraints and permits Unicode/dot/control text. Cursor/query byte and work
+budgets remain candidate restrictions, and unsupported gob descriptors, invalid
+UTF-8 Go strings and exact gateway alias behavior require independent review and
+immutable differential.
 The live database harness also executes a canonical Rust application fixture,
 separately from its retained diagnostic process. A required profile-specific
 success marker prevents optional no-database skips from becoming live results.
@@ -197,7 +215,8 @@ timestamps because the authoritative schema does not retain `create_time`.
 Blind writes with identical value and ACLs preserve the stored legacy update time
 after authorization, OCC and integrity checks. Exact-version writes still update
 it. This does not supply the missing upstream database timestamp contract.
-Timestamp origin/precision, bounds, list/cursor, read query shape/order/multiplicity, hooks, index,
+Timestamp origin/precision, bounds, exact list/query/gob/collation behavior,
+read query shape/order/multiplicity, hooks, index,
 ambiguous-commit reconciliation and official token differences remain blockers.
 This wiring does not grant a storage or repository-wide compatibility claim.
 
@@ -256,7 +275,7 @@ The following are implementation obligations, not claims that the adapters alrea
 | --- | --- | --- |
 | Authentication to service | Construct trusted project/user/session/profile context only after credential verification; do not accept caller fingerprints as authenticated command identity. | Forged identity, wrong project/profile, disabled account and stale session generation cannot call a mutation. |
 | Refresh to persistence | Atomically persist rotation or replay-triggered revocation; separately bind a durable operation identity for approved response-loss recovery. | Crash after commit before credential response; simultaneous refresh; consumed-token retry; Err must not discard intentional revocation. |
-| Storage to wire | Authenticate the complete opaque cursor identity including actor, owner filter, collection, project/profile and key position; define concurrent-mutation semantics. | Tampering, cross-scope replay, deletion between pages, same-key owner ordering, ACL filtering before the limit sentinel. |
+| Storage to wire | Internal typed cursors authenticate actor, owner filter, collection, project/profile and position. The Nakama client-list exception accepts unsigned offsets while independently revalidating the principal and SQL ACL; concurrent-page semantics remain unqualified. | Cross-scope offsets cannot grant visibility; deletion between pages, same-key owner ordering, ACL before the limit sentinel, bounded malformed gob and independent protocol/security qualification. |
 | Service to repository | Shared typed commands/results and one total deadline; profile adapters own SQL, retries and receipt reconciliation. | Pool exhaustion, statement cancellation, stale authority and uncertain commit must not become fabricated success or blind retry. |
 | Outbox to provider | Stable idempotency key, immutable subject/payload, exact dispatch identity, authenticated outcome query and explicit quarantine. | Provider succeeds then response is lost; expired lease; stale owner publishes; terminal attempt with unknown visible effect. |
 | Revoke to realtime | Durable revocation generation drives bounded fanout and actual socket termination; restore checkpoints before accepting routes. | Node restart, delayed old-generation messages, reconnect storm, full revocation-history capacity. |

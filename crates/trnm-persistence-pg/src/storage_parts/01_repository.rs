@@ -132,6 +132,77 @@ impl PgRepository {
         Ok(finish_storage_page(objects, actor, owner, limit))
     }
 
+    /// List a bounded Nakama client page under one read-only serializable snapshot.
+    /// Public-all, own-owner and foreign/global-owner listings use the pinned
+    /// SQL text ordering and independently filter ACL before the limit sentinel.
+    /// The cursor is an untrusted offset rather than a scope-bound credential.
+    pub fn list_storage_objects_nakama(
+        &mut self,
+        actor: Actor,
+        collection: &str,
+        owner: Option<UserId>,
+        after: Option<&StorageListPosition>,
+        limit: usize,
+    ) -> Result<StorageClientListPage, DomainError> {
+        let user = validate_client_list_request(actor, collection, after, limit)?;
+        let fetch_limit =
+            i64::try_from(limit + 1).map_err(|_| invalid("invalid_storage_list_limit"))?;
+        let after_key = after.map(|position| position.key.as_str());
+        let mut transaction = self
+            .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .read_only(true)
+            .start()
+            .map_err(map_postgres_error)?;
+        let rows = match owner {
+            None => {
+                let after_user = after.map_or_else(
+                    || vec![0_u8; 16],
+                    |position| position.user_id.as_bytes().to_vec(),
+                );
+                transaction.query(
+                    storage_client_list_public_query(),
+                    &[&collection, &after_key, &after_user, &fetch_limit],
+                )
+            }
+            Some(owner) if owner == user => {
+                let after_read = after.map_or(0, |position| position.read);
+                transaction.query(
+                    storage_client_list_own_query(),
+                    &[
+                        &collection,
+                        &owner.as_bytes().as_slice(),
+                        &after_key,
+                        &after_read,
+                        &fetch_limit,
+                    ],
+                )
+            }
+            Some(owner) => transaction.query(
+                storage_client_list_foreign_query(),
+                &[
+                    &collection,
+                    &owner.as_bytes().as_slice(),
+                    &after_key,
+                    &fetch_limit,
+                ],
+            ),
+        }
+        .map_err(map_postgres_error)?;
+
+        // A sentinel proves another visible row exists. It is not part of the
+        // response, so its owner, value and integrity bytes must not be decoded.
+        let objects = rows
+            .iter()
+            .take(limit)
+            .map(|row| decode_nakama_listed_storage_object(collection, row))
+            .collect::<Result<Vec<_>, _>>()?;
+        let page = finish_client_storage_page(objects, rows.len() > limit);
+        transaction.commit().map_err(map_postgres_error)?;
+        Ok(page)
+    }
+
     pub fn apply_storage_batch(
         &mut self,
         actor: Actor,

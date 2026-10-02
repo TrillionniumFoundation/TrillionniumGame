@@ -168,6 +168,28 @@ if grep -Fq 'canonical_storage_api_live_skipped' "$evidence/canonical-storage-ap
   exit 1
 fi
 
+# Execute the dedicated client list projection once, without replaying the
+# other authority_storage fixtures or their independently owned identities.
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-persistence-pg --locked --test authority_storage \
+    nakama_client_listing_modes_cursors_and_integrity_are_database_projected \
+    -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/nakama-client-list-projection.log"
+nakama_client_list_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/nakama-client-list-projection.log"
+)
+[[ "$nakama_client_list_test_count" =~ ^[0-9]+$ ]]
+test "$nakama_client_list_test_count" -eq 1
+grep -Fxq "nakama_client_list_projection_executed profile=${profile}" \
+  "$evidence/nakama-client-list-projection.log"
+if grep -Fq 'nakama_client_list_projection_skipped' "$evidence/nakama-client-list-projection.log"; then
+  echo 'Nakama client list projection database lane skipped instead of executing' >&2
+  exit 1
+fi
+
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
@@ -317,7 +339,7 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
   >> "$evidence/database-assertions.txt"
 
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \

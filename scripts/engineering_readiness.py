@@ -92,7 +92,7 @@ def doc_block(document: str, name: str) -> str:
                    f"<!-- trnm-server-{name}:end -->")
 
 
-def source_interface(config: str, app: str) -> dict[str, Any]:
+def source_interface(config: str, app: str, *, list_integrated: bool = False) -> dict[str, Any]:
     # These owned regions deliberately exclude unit fixtures and unrelated
     # routing helpers. A source layout change requires reviewing this extractor.
     command_region = between(config, "let command = match arguments {",
@@ -108,6 +108,33 @@ def source_interface(config: str, app: str) -> dict[str, Any]:
     )
     routes = re.findall(r'\("(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)", "(/[^"\s]*)"\)',
                         route_region)
+    if list_integrated:
+        production_app = app.split("\n#[cfg(test)]", 1)[0]
+        declarations = list(re.finditer(
+            r'^\s*(?:pub(?:\([^)]*\))?\s+)?const STORAGE_LIST_ROUTES\b[^\n=]*=\s*&?\[',
+            production_app, re.MULTILINE,
+        ))
+        require(len(declarations) == 1, "integrated storage list needs one route constant")
+        declaration = declarations[0]
+        end = production_app.find("];", declaration.end())
+        dispatch = production_app.find(
+            "let response = match (request.method.as_str(), request.target.as_str()) {"
+        )
+        require(declaration.end() <= end < dispatch,
+                "storage list route constant must precede the dispatcher")
+        list_routes = re.findall(
+            r'\("(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)", "(/[^"\s]*)"\)',
+            production_app[declaration.end():end],
+        )
+        require(len(list_routes) == 2 and set(list_routes) == {
+            ("GET", "/v2/storage/{collection}"),
+            ("GET", "/v2/storage/{collection}/{user_id}"),
+        }, "storage list route constant differs from the two pinned templates")
+        require(bool(re.search(
+            r'\("GET",\s*target\)\s+if\s+(?:[A-Za-z_][A-Za-z_0-9]*::)*is_list_target\(target\)\s*=>',
+            route_region,
+        )), "storage list route constant needs the integrated guarded dispatcher")
+        routes.extend(list_routes)
     require(commands and len(commands) == len(set(commands)), "missing or duplicate CLI arms")
     require(routes and len(routes) == len(set(routes)), "missing or duplicate route arms")
     production_config = config.split("\n#[cfg(test)]", 1)[0]
@@ -164,9 +191,24 @@ def inspect(root: Path) -> dict[str, Any]:
                 and bool(row["remaining_design_work"])
                 and all(isinstance(item, str) and item.strip() for item in row["remaining_design_work"]),
                 "component remaining design work must be explicit")
+    module_path = "crates/trnm-server/src/runtime/mod.rs"
+    module_source = text(root, module_path) if (root / module_path).is_file() else ""
+    # Test-only module declarations do not advertise a production route.
+    # Unlike module-source ordering, the full module root contains additional
+    # production declarations after cfg(test) siblings; remove those attributes
+    # with their single following module declaration before checking integration.
+    production_modules = re.sub(
+        r'#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z_0-9]*\s*;',
+        "", module_source,
+    ).split("\n#[cfg(test)]", 1)[0]
+    list_integrated = bool(re.search(
+        r'^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+storage_list_api\s*;',
+        production_modules, re.MULTILINE,
+    ))
     interface = source_interface(
         text(root, "crates/trnm-server/src/runtime/config.rs"),
         text(root, "crates/trnm-server/src/runtime/app.rs"),
+        list_integrated=list_integrated,
     )
     check_documented_interface(interface, text(root, "docs/DEVELOPMENT.md"))
     gaps = rows(load(root, "docs/status/GAP_REGISTER.json").get("gaps"), "gaps")

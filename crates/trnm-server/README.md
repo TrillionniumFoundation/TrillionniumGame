@@ -57,6 +57,7 @@ The source includes:
 - `GET /v1/session/me`, `POST /v1/session/refresh`, and `POST /v1/session/logout`;
 - session-bound `PUT /v2/storage` and `PUT /v2/storage/delete` source adapters;
 - session-bound `POST /v2/storage` batch read with requested-owner ACL checks;
+- session-bound `GET /v2/storage/{collection}` and `GET /v2/storage/{collection}/{user_id}` client-list projections;
 - generated Nakama Healthcheck gRPC service on a separately configured listener;
 - bounded WebSocket JSON and schema-bound protobuf-envelope candidate subprotocols.
 
@@ -68,11 +69,32 @@ original value bytes for public MD5 versions. Owners come from a verified,
 persisted candidate session principal. Calls use the bounded pool and are never
 automatically retried by the generic command supervisor. The source contract is
 `contracts/storage/nakama-http-storage-v1.json`. Official tokens, acknowledgement
-timestamps, list/cursors, exact read query/order/multiplicity, hooks/index, ambiguous-commit reconciliation and
+timestamps, exact list/query/gob/collation and read query/order/multiplicity,
+hooks/index, ambiguous-commit reconciliation and
 exact database/oracle evidence remain open.
 The database live harness includes a canonical Rust application fixture for
 these routes, with required database configuration and a checked execution
 marker. This does not establish TCP, SDK or immutable-oracle equivalence.
+
+`STORAGE_LIST_ROUTES` supplies the two live GET templates. The list adapter
+verifies the current principal before query and cursor parsing, then calls one
+readonly serializable repository projection through the pool without generic
+retry. Omitted owner lists public objects across owners; own owner lists readable
+private/public objects; foreign or explicit zero owner lists public objects for
+that owner. SQL applies ACL before `limit + 1`, uses text ordering and decodes only
+returned rows. The sentinel supplies the next position from the last returned row.
+
+This Nakama profile accepts the original unsigned gob/base64 cursor as an
+untrusted key/UUID/read offset. It is an explicit exception to the internal typed
+list's scope-bound cursor: the offset never supplies a principal or ACL authority.
+The row-key projection preserves authoritative Unicode-character bounds and
+permits dot/control identifiers. Collection and cursor key requests are bounded
+at 4096 bytes, page limits at 100, and gob nesting/type/container work is bounded.
+Unsupported gob descriptors, non-UTF8 Go strings, query alias/malformed behavior,
+concurrent pagination, timestamps and exact oracle/SDK qualification remain open.
+The live harness requires one exact client-list repository test, its matching
+profile marker and no skip, and seals its log with the existing artifact packet.
+These source controls do not grant live or independent acceptance.
 
 ## Operations
 

@@ -16,6 +16,11 @@ pub(crate) mod session_api;
 pub(crate) mod storage_api;
 #[cfg(test)]
 mod storage_api_tests;
+mod storage_cursor;
+mod storage_list_api;
+#[cfg(test)]
+mod storage_list_api_tests;
+mod storage_list_query;
 pub(crate) mod websocket;
 
 use std::env;

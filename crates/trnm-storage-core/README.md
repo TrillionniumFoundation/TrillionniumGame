@@ -30,6 +30,13 @@ For the pinned Nakama profile, public ContentVersion is lowercase MD5 over exact
 
 Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
 
+`StorageObjectKey::new_nakama` is a narrow projection for rows already governed by
+the authoritative schema's 1–128 Unicode-character collection/key constraints.
+It permits dot/control text and does not replace the original typed constructor's
+128-byte and identifier policy. The client-list adapter uses this factory to
+decode valid persisted Unicode identifiers. It grants no complete HTTP write,
+index, migration or SDK compatibility claim.
+
 ## Correctness and failure model
 
 Blind, create-only, and exact-version writes are distinct. Batch failure is atomic; ACL and version results must be deterministic.
@@ -62,7 +69,9 @@ The owning adapter or process must define readiness impact, drain behavior, metr
 
 ## Compatibility and evidence
 
-JSON object validation, database/index integration, cursors, ACL effects, and wire/database oracle differential remain open.
+The separate bounded client-list SQL/gob projection exists as a source candidate.
+Complete JSON validation, database/index behavior, cursor/gateway qualification,
+ACL concurrency effects and wire/database oracle differential remain open.
 
 Evidence must bind the exact repository, source commit, tree, workflow/run/job/attempt, environment, commands, assertions, retained artifact digests, limitations, expiry, and independent review decision.
 

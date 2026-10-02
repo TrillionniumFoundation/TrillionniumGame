@@ -9,6 +9,17 @@ fn decode_listed_storage_object(collection: &str, row: &Row) -> Result<StorageOb
     decode_storage_object_at(key, row, 2)
 }
 
+fn decode_nakama_listed_storage_object(
+    collection: &str,
+    row: &Row,
+) -> Result<StorageObject, DomainError> {
+    let object_key: String = row.get(0);
+    let user = decode_id16(row.get(1), UserId::new, "invalid_storage_user_id")?;
+    let key = StorageObjectKey::new_nakama(collection.to_owned(), object_key, user)
+        .map_err(|_| data_loss("invalid_storage_key_material"))?;
+    decode_storage_object_at(key, row, 2)
+}
+
 fn decode_storage_object_at(
     key: StorageObjectKey,
     row: &Row,

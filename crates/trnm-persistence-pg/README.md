@@ -156,10 +156,39 @@ These paths are source candidates. PostgreSQL/CockroachDB live execution, exact-
 
 ## Canonical storage integrity boundary
 
-Storage write callers provide exact value bytes, public OCC intent and ACLs; they do not provide an internal integrity digest. Both the in-memory domain boundary and this adapter derive SHA-256 over the exact value bytes. The adapter persists that digest separately from the Nakama-compatible public MD5 content version and recomputes SHA-256 on every database read, returning `DataLoss / storage_integrity_digest_mismatch` before an object can be authorized or returned when stored bytes disagree. This is corruption detection, not source authentication or a MAC, and does not replace database access control, encryption, backup validation or immutable-oracle differential evidence.
+Storage write callers provide exact value bytes, public OCC intent and ACLs; they do not provide an internal integrity digest. Both the in-memory domain boundary and this adapter derive SHA-256 over the exact value bytes. The adapter persists that digest separately from the Nakama-compatible public MD5 content version and recomputes SHA-256 on returned database objects, returning `DataLoss / storage_integrity_digest_mismatch` before an object is returned when stored bytes disagree. Batch-read and client-list SQL filter inaccessible rows before integrity decoding. This is corruption detection, not source authentication or a MAC, and does not replace database access control, encryption, backup validation or immutable-oracle differential evidence.
 
 ## Scope-bound storage listing cursor
 
 `PgRepository::list_storage_objects` returns a scope-bound `(StorageActor, Option<UserId>, StorageObjectKey)` tuple rather than a bare object key. The cursor binds the exact `StorageActor`, optional owner filter and last `(collection, object_key, user_id)` key that produced the page. Continuation under a different authenticated actor, owner scope or collection fails closed with `storage_cursor_scope_mismatch`; zero actors and zero owner identities are rejected before SQL execution. ACL filtering remains inside the query before the bounded `limit + 1` sentinel is applied.
 
-This is an in-process source contract. Public HTTP/gRPC adapters must encode and authenticate the complete cursor tuple and reject tampering, profile changes and cross-project replay. The typed Rust value does not by itself establish Nakama wire compatibility, snapshot isolation across concurrent mutations, a stable public cursor format or accepted PostgreSQL/CockroachDB evidence.
+This is an in-process source contract. Adapters exposing this typed profile must encode and authenticate the complete cursor tuple and reject tampering, profile changes and cross-project replay. The separate Nakama client-list projection below uses the original unsigned-offset profile and independently applies current principal ACL. The typed Rust value does not by itself establish Nakama wire compatibility, snapshot isolation across concurrent mutations, a stable public cursor format or accepted PostgreSQL/CockroachDB evidence.
+
+## Nakama client-list projection
+
+`PgRepository::list_storage_objects_nakama` accepts only a nonzero user actor and
+returns `StorageClientListPage { objects, next }`, where the next
+`StorageListPosition { key, user_id, read }` is an untrusted offset. Omitted owner
+selects public objects across owners; own owner selects read permissions 1 and 2;
+foreign and explicit zero owners select public objects for that owner.
+One readonly serializable query applies ACL before the `limit + 1` sentinel.
+The three modes order by SQL text read/key/user ID, read/key and key respectively.
+Only returned rows are decoded, and the next offset is the last returned row.
+Hidden and sentinel rows cannot cause a value/digest decoding failure.
+
+The client query admits empty/dot/control collection text up to 4096 UTF-8 bytes;
+cursor key offsets have the same byte budget, and read offsets accept every int32.
+Returned keys use `StorageObjectKey::new_nakama` for the authoritative 1–128
+Unicode-character constraints. The old typed API's byte ordering and identifier
+validation remain separate. This adds no DDL or writer authority and has no
+automatic retry. Pool deadlines, pagination under concurrent writes, exact
+profile collation, gateway/gob differences, timestamps and immutable-oracle
+qualification remain open.
+
+`nakama_client_listing_modes_cursors_and_integrity_are_database_projected`
+requires the selected live profile when `TRNM_REQUIRE_LIVE_DATABASE=1`, checks
+three modes and cursor fields, independently seeds Unicode/dot/control rows,
+and damages hidden, sentinel and returned digests. Its dedicated namespace is
+cleaned after success or panic; a profile-specific execution marker follows the
+assertions and cleanup. This source regression does not supply accepted live or
+independent review evidence.

@@ -19,6 +19,7 @@ pub use session::{
     CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,
     SessionFamilyRecord,
 };
+pub use storage::{StorageClientListPage, StorageListPosition};
 pub use trnm_storage_core::{
     Actor as StorageActor, BatchOperation as StorageBatchOperation, ContentVersion,
     DeleteOperation as StorageDeleteOperation, IntegrityDigest,

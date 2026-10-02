@@ -30,6 +30,11 @@ EXPECTED_RUNTIME_FILES = {
     "session_api.rs",
     "storage_api.rs",
     "storage_api_tests.rs",
+    "storage_list_api.rs",
+    "storage_list_query.rs",
+    "storage_list_api_tests.rs",
+    "storage_cursor.rs",
+    "storage_cursor_tests.rs",
     "websocket.rs",
 }
 EXPECTED_DEPENDENCIES: dict[str, object] = {

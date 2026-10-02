@@ -102,3 +102,81 @@ fn finish_storage_page(
     });
     (objects, next)
 }
+
+fn validate_client_list_request(
+    actor: Actor,
+    collection: &str,
+    after: Option<&StorageListPosition>,
+    limit: usize,
+) -> Result<UserId, DomainError> {
+    let user = match actor {
+        Actor::User(user) if !user.is_zero() => user,
+        _ => return Err(invalid("invalid_storage_actor")),
+    };
+    if collection.len() > MAX_CLIENT_LIST_COLLECTION_BYTES {
+        return Err(invalid("invalid_storage_collection"));
+    }
+    if limit == 0 || limit > MAX_LIST_LIMIT {
+        return Err(invalid("invalid_storage_list_limit"));
+    }
+    if after.is_some_and(|position| position.key.len() > MAX_LIST_POSITION_KEY_BYTES) {
+        return Err(invalid("invalid_storage_list_position"));
+    }
+    Ok(user)
+}
+
+// These queries intentionally use SQL text ordering, as the pinned Nakama
+// client-list projection does. The existing typed list retains byte ordering.
+fn storage_client_list_public_query() -> &'static str {
+    "SELECT object_key, user_id, value_bytes, version_digest, \
+            read_permission, write_permission \
+     FROM trnm_storage_objects \
+     WHERE collection = $1 AND read_permission = 2 \
+       AND ($2::TEXT IS NULL \
+            OR (collection, read_permission, object_key, user_id) > ($1, 2, $2, $3)) \
+     ORDER BY read_permission ASC, object_key ASC, user_id ASC \
+     LIMIT $4"
+}
+
+fn storage_client_list_own_query() -> &'static str {
+    "SELECT object_key, user_id, value_bytes, version_digest, \
+            read_permission, write_permission \
+     FROM trnm_storage_objects \
+     WHERE collection = $1 AND user_id = $2 AND read_permission >= 1 \
+       AND ($3::TEXT IS NULL \
+            OR (collection, user_id, read_permission, object_key) > ($1, $2, $4::INT4, $3)) \
+     ORDER BY read_permission ASC, object_key ASC \
+     LIMIT $5"
+}
+
+fn storage_client_list_foreign_query() -> &'static str {
+    "SELECT object_key, user_id, value_bytes, version_digest, \
+            read_permission, write_permission \
+     FROM trnm_storage_objects \
+     WHERE collection = $1 AND user_id = $2 AND read_permission = 2 \
+       AND ($3::TEXT IS NULL \
+            OR (collection, read_permission, user_id, object_key) > ($1, 2, $2, $3)) \
+     ORDER BY object_key ASC \
+     LIMIT $4"
+}
+
+fn finish_client_storage_page(
+    objects: Vec<StorageObject>,
+    has_more: bool,
+) -> StorageClientListPage {
+    let next = has_more.then(|| {
+        let object = objects
+            .last()
+            .expect("validated positive list limit retains a last page object");
+        StorageListPosition {
+            key: object.key.key().to_owned(),
+            user_id: object.key.user_id(),
+            read: match object.read_permission {
+                ReadPermission::None => 0,
+                ReadPermission::Owner => 1,
+                ReadPermission::Public => 2,
+            },
+        }
+    });
+    StorageClientListPage { objects, next }
+}

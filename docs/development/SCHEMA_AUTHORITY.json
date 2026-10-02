@@ -206,7 +206,22 @@
       "authority_lease_takeover_fences_entity_generation": true,
       "session_family_and_refresh_rotation_transactional": true,
       "storage_occ_acl_batch_transactional": true,
-      "independently_accepted": false
+      "independently_accepted": false,
+      "storage_client_list_sql_projection": true
+    },
+    "storage_client_list_projection_source_candidate": {
+      "table": "trnm_storage_objects",
+      "method": "PgRepository::list_storage_objects_nakama",
+      "schema_changed": false,
+      "row_identifier_constraint": "Existing collection/object_key length 1..128 Unicode characters; separate Nakama decode factory permits valid dot/control text.",
+      "query_semantics": [
+        "nonzero authenticated user actor; optional zero owner remains global",
+        "ACL before bounded limit+1 sentinel",
+        "SQL text ordering for public-all, own and foreign/global owner modes",
+        "readonly serializable query; decode returned rows only; no automatic retry"
+      ],
+      "accepted": false,
+      "compatibility_credit": false
     }
   },
   "change_control": {

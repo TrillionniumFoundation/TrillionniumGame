@@ -24,11 +24,20 @@ AUTHORITY_STORAGE_PARTS = tuple(
     AUTHORITY_STORAGE_ROOT.parent / "authority_storage_parts" / name
     for name in ("00_helpers.rs", "01_authority.rs", "02_storage_batch.rs", "03_storage_list.rs")
 )
+STORAGE_PARTS = tuple(
+    PERSISTENCE_ROOT / "storage_parts" / name
+    for name in (
+        "00_prelude.rs", "01_repository.rs", "02_list_helpers.rs",
+        "03_write.rs", "04_delete_authorize.rs", "05_decode_errors.rs",
+    )
+)
+STORAGE_LIVE_HARNESS = ROOT / "scripts/ci-trnm-server-live.sh"
 REQUIRED_FILES = {
     POOL_ROOT,
     *POOL_PARTS,
     PERSISTENCE_ROOT / "session.rs",
     PERSISTENCE_ROOT / "storage.rs",
+    *STORAGE_PARTS,
     AUTHORITY_STORAGE_ROOT,
     *AUTHORITY_STORAGE_PARTS,
     PERSISTENCE_ROOT / "auth.rs",
@@ -50,9 +59,39 @@ REQUIRED_FILES = {
     MODULE_ROOT / "websocket.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_api.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_api_tests.rs",
+    ROOT / "crates/trnm-server/src/runtime/storage_list_api.rs",
+    ROOT / "crates/trnm-server/src/runtime/storage_list_query.rs",
+    ROOT / "crates/trnm-server/src/runtime/storage_list_api_tests.rs",
+    ROOT / "crates/trnm-server/src/runtime/storage_cursor.rs",
+    ROOT / "crates/trnm-server/src/runtime/storage_cursor_tests.rs",
+    ROOT / "crates/trnm-storage-core/src/lib.rs",
+    STORAGE_LIVE_HARNESS,
 }
 REQUIRED_TESTS = {
     "canonical_storage_api_live_database",
+    "nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
+    "nakama_row_identifier_projection_keeps_unicode_schema_bounds_separate",
+    "storage_list_default_page_and_original_gob_continuation_are_bounded",
+    "storage_list_offset_never_supplies_principal_owner_or_collection_authority",
+    "storage_list_validation_rejects_before_repository_and_redacts_failures",
+    "storage_list_response_defends_against_acl_scope_and_integrity_violations",
+    "storage_list_visibility_and_equal_literal_cursor_guard_match_projection",
+    "storage_list_dynamic_route_templates_are_used_by_live_matcher",
+    "list_query_defaults_wrappers_aliases_and_path_binding",
+    "list_query_path_and_query_escaping_follow_legacy_gateway",
+    "list_query_rejects_known_duplicates_and_invalid_decimal_limits",
+    "unknown_wrapper_fields_only_allocate_and_preserve_a_known_limit",
+    "linebreak_query_names_do_not_match_the_gateway_bracket_regexp",
+    "routing_shape_unescapes_static_segments_and_slashes_once",
+    "frozen_go_query_observations_and_named_candidate_residuals",
+    "go_vectors_decode_and_encoder_matches_fresh_process",
+    "all_framed_prefix_truncations_fail_without_panicking",
+    "unknown_interface_is_an_explicit_subset_limit_even_when_omitted",
+    "bounded_keys_and_encoded_cursor_text_fail_closed",
+    "type_message_and_descriptor_field_budgets_fail_closed",
+    "nested_unknown_type_and_container_work_budgets_fail_closed",
+    "invalid_gob_integer_widths_and_partial_bytes_fail_closed",
+    "mutation_corpus_is_bounded_and_never_panics",
     "fixed_hex_round_trip_is_lowercase_and_exact_width",
     "duplicate_nested_escaped_and_noncanonical_numbers_fail_closed",
     "default_candidate_config_is_loopback_bounded_and_redacted",
@@ -143,6 +182,88 @@ def require_markers(label: str, text: str, markers: tuple[str, ...]) -> None:
             fail(f"{label}: missing marker {marker!r}")
 
 
+def validate_storage_live_harness(source: str) -> None:
+    """Check the two owned live fixture lanes, without granting execution credit.
+
+    This accepts the repository's bounded shell layout rather than evaluating
+    shell code. Required environment, exact selectors, count/marker/skip guards
+    and sealing remain separately subject to real native execution.
+    """
+    commands: list[str] = []
+    pending = ""
+    for raw in source.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("\\"):
+            pending += line[:-1].rstrip() + " "
+        else:
+            commands.append(pending + line)
+            pending = ""
+    if pending:
+        fail("storage live harness has an incomplete continued command")
+
+    def once(command: str) -> int:
+        if commands.count(command) != 1:
+            fail("storage live harness missing or duplicate guard: " + command)
+        return commands.index(command)
+
+    once("set -euo pipefail")
+    migration = once('"$binary" migrate > "$evidence/migrate.log" 2>&1')
+    prefix = (
+        'CARGO_TERM_COLOR=never TRNM_REQUIRE_LIVE_DATABASE=1 '
+        'TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" '
+    )
+    lanes = (
+        (
+            'cargo test -p trnm-server --locked --lib '
+            'runtime::storage_api_tests::canonical_storage_api_live_database',
+            "canonical-storage-app.log", "canonical_storage_test_count",
+            "canonical_storage_api_live_executed", "canonical_storage_api_live_skipped",
+        ),
+        (
+            'cargo test -p trnm-persistence-pg --locked --test authority_storage '
+            'nakama_client_listing_modes_cursors_and_integrity_are_database_projected',
+            "nakama-client-list-projection.log", "nakama_client_list_test_count",
+            "nakama_client_list_projection_executed", "nakama_client_list_projection_skipped",
+        ),
+    )
+    previous_end = migration
+    for cargo, logfile, counter, marker, skip in lanes:
+        start = once(
+            prefix + cargo + ' -- --exact --nocapture --test-threads=1 2>&1 | '
+            f'tee "$evidence/{logfile}"'
+        )
+        assignment = once(counter + "=$(")
+        count = once(
+            "sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\\1/p' "
+            f'"$evidence/{logfile}"'
+        )
+        numeric = once(f'[[ "${counter}" =~ ^[0-9]+$ ]]')
+        exact = once(f'test "${counter}" -eq 1')
+        executed = once(f'grep -Fxq "{marker} profile=${{profile}}" "$evidence/{logfile}"')
+        reject_skip = once(f"if grep -Fq '{skip}' \"$evidence/{logfile}\"; then")
+        try:
+            end = commands.index("fi", reject_skip + 1)
+        except ValueError:
+            fail("storage live harness skip guard has no terminal block")
+        if "exit 1" not in commands[reject_skip + 1:end] or "exit 0" in commands[reject_skip + 1:end]:
+            fail("storage live harness must reject an optional fixture skip")
+        if not previous_end < start < assignment < count < numeric < exact < executed < reject_skip < end:
+            fail("storage live harness fixture/guard order drifted")
+        previous_end = end
+    summary = [index for index, command in enumerate(commands)
+               if '"nakama_client_list_projection":true' in command and command.startswith("{")]
+    if len(summary) != 1 or summary[0] <= previous_end:
+        fail("storage live summary must follow the checked client-list execution")
+    seal = once(
+        'find "$evidence" -type f ! -name SHA256SUMS -print0 '
+        '| sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"'
+    )
+    if seal <= summary[0]:
+        fail("storage live fixture logs must be included in the final checksum seal")
+
+
 def expected_persistence_dependencies() -> dict[str, object]:
     """Read the same closed dependency policy used by the foundation checker.
 
@@ -194,6 +315,7 @@ def main() -> int:
         path.relative_to(ROOT): path.read_text(encoding="utf-8")
         for path in sorted(REQUIRED_FILES)
     }
+    validate_storage_live_harness(sources[STORAGE_LIVE_HARNESS.relative_to(ROOT)])
     pool_root_key = POOL_ROOT.relative_to(ROOT)
     expected_pool_root = "\n".join(
         f'include!("pool_parts/{part.name}");' for part in POOL_PARTS
@@ -256,6 +378,48 @@ def main() -> int:
     )
 
     marker_groups = {
+        "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs": (
+            "pub fn list_storage_objects_nakama(",
+            "validate_client_list_request",
+            ".read_only(true)",
+            ".take(limit)",
+            "decode_nakama_listed_storage_object",
+            "transaction.commit()",
+        ),
+        "crates/trnm-persistence-pg/src/storage_parts/02_list_helpers.rs": (
+            "storage_client_list_public_query",
+            "storage_client_list_own_query",
+            "storage_client_list_foreign_query",
+            "ORDER BY read_permission ASC, object_key ASC, user_id ASC",
+            "ORDER BY read_permission ASC, object_key ASC",
+            "ORDER BY object_key ASC",
+        ),
+        "crates/trnm-persistence-pg/src/storage_parts/05_decode_errors.rs": (
+            "decode_nakama_listed_storage_object",
+            "StorageObjectKey::new_nakama",
+            "decode_storage_object_at(key, row, 2)",
+        ),
+        "crates/trnm-server/src/runtime/storage_list_api.rs": (
+            "STORAGE_LIST_ROUTES",
+            "pub(super) fn is_list_target",
+            "list_storage_objects_nakama",
+            "decode_cursor",
+            "encode_cursor",
+            "cursor != query.cursor",
+        ),
+        "crates/trnm-server/src/runtime/storage_list_query.rs": (
+            "const MAX_COLLECTION_BYTES: usize = 4096;",
+            "pub(super) fn parse",
+            "1..=100",
+            "parse_uuid",
+        ),
+        "crates/trnm-server/src/runtime/storage_cursor.rs": (
+            "pub(super) fn decode_cursor",
+            "pub(super) fn encode_cursor",
+            "const MAX_KEY_BYTES: usize = 4096;",
+            "const MAX_DEPTH: usize = 16;",
+            "const MAX_ITEMS: usize = 1024;",
+        ),
         "crates/trnm-persistence-pg/src/session.rs": (
             "pub struct CreateSessionFamily",
             "pub enum RefreshRotationOutcome",
@@ -468,7 +632,9 @@ def main() -> int:
     if storage_contract.get("composition") != "crates/trnm-server::trnm-server":
         fail("storage HTTP API must use the canonical process authority")
     expected_storage_routes = {
-        ("POST", "/v2/storage"), ("PUT", "/v2/storage"), ("PUT", "/v2/storage/delete")
+        ("POST", "/v2/storage"), ("PUT", "/v2/storage"), ("PUT", "/v2/storage/delete"),
+        ("GET", "/v2/storage/{collection}"),
+        ("GET", "/v2/storage/{collection}/{user_id}"),
     }
     if {
         (row.get("method"), row.get("path"))
@@ -481,6 +647,8 @@ def main() -> int:
         fail("storage mutation component state is missing")
     if status.get("claims", {}).get("storage_http_read_source_candidate") is not True:
         fail("storage read component state is missing")
+    if status.get("claims", {}).get("storage_http_list_source_candidate") is not True:
+        fail("storage list component state is missing")
     if status.get("stage") != "canonical-http-grpc-websocket-session-database-source-candidate":
         fail("unexpected server status stage")
     claims = status.get("claims", {})

@@ -224,6 +224,36 @@ impl StorageObjectKey {
         })
     }
 
+    /// Decode an authoritative Nakama-profile row using the immutable schema's
+    /// Unicode character bounds. The internal constructor retains its stricter
+    /// byte and identifier policy; this projection accepts dot/control names.
+    pub fn new_nakama(
+        collection: impl Into<String>,
+        key: impl Into<String>,
+        user_id: UserId,
+    ) -> Result<Self, DomainError> {
+        let collection = collection.into();
+        let key = key.into();
+        for (value, reason) in [
+            (&collection, "invalid_storage_collection"),
+            (&key, "invalid_storage_key"),
+        ] {
+            let count = value.chars().take(129).count();
+            if !(1..=128).contains(&count) {
+                return Err(error(
+                    StableCode::InvalidArgument,
+                    reason,
+                    RetryClass::Never,
+                ));
+            }
+        }
+        Ok(Self {
+            collection,
+            key,
+            user_id,
+        })
+    }
+
     #[must_use]
     pub fn collection(&self) -> &str {
         &self.collection
@@ -602,6 +632,19 @@ const fn error(code: StableCode, reason: &'static str, retry: RetryClass) -> Dom
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nakama_row_identifier_projection_keeps_unicode_schema_bounds_separate() {
+        let owner = UserId::new([1; 16]);
+        let name = "中".repeat(128);
+        assert!(StorageObjectKey::new_nakama(&name, &name, owner).is_ok());
+        assert!(StorageObjectKey::new(&name, "key", owner).is_err());
+        assert!(StorageObjectKey::new_nakama(".a\u{1}", ".key\u{2}", owner).is_ok());
+        for name in [String::new(), "中".repeat(129)] {
+            assert!(StorageObjectKey::new_nakama(&name, "key", owner).is_err());
+            assert!(StorageObjectKey::new_nakama("collection", &name, owner).is_err());
+        }
+    }
 
     fn user(value: u8) -> UserId {
         UserId::new([value; 16])

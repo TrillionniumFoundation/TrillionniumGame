@@ -1,7 +1,7 @@
 # Development guide
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-12
+Revision: 2026-10-02
 
 ## 1. Development contract
 
@@ -135,6 +135,8 @@ This table documents the bounded HTTP application dispatcher in `crates/trnm-ser
 | `PUT` | `/v2/storage` | Bounded candidate-session storage write batch; timestamps and complete parity remain open. |
 | `POST` | `/v2/storage` | Bounded candidate-session read batch; missing/hidden objects omitted, timestamps remain open. |
 | `PUT` | `/v2/storage/delete` | Bounded candidate-session storage delete batch. |
+| `GET` | `/v2/storage/{collection}` | Nakama client-profile public list with unsigned gob position and authenticated SQL ACL. |
+| `GET` | `/v2/storage/{collection}/{user_id}` | Nakama client-profile own/foreign/global owner list; timestamps and exact differential remain open. |
 <!-- trnm-server-routes:end -->
 
 A known path with an unsupported method currently returns HTTP 405; an unknown dispatcher path returns 404. These custom routes cannot inflate Nakama parity. Authentication, error precedence, headers and exact response bytes still require their native tests and oracle/profile decisions.
@@ -205,8 +207,11 @@ retry-wrapper regressions:
 
 ```bash
 cargo test -p trnm-server --locked storage_api
+cargo test -p trnm-server --locked storage_list
+cargo test -p trnm-server --locked storage_cursor
 cargo test -p trnm-server --locked storage_write_and_delete_are_never_automatically_retried
 cargo test -p trnm-server --lib --locked runtime::storage_api_tests::canonical_storage_api_live_database -- --exact --nocapture
+cargo test -p trnm-persistence-pg --test authority_storage --locked nakama_client_listing_modes_cursors_and_integrity_are_database_projected -- --exact --nocapture --test-threads=1
 ```
 
 They exercise original value bytes, default/zero permissions, duplicate known
@@ -231,6 +236,36 @@ regressions also cover ACL changes, authorization/OCC rejection and rollback.
 These assertions do not prove the missing upstream public timestamp fields.
 This exercises the HTTP application and repository together; TCP ingress,
 pooled deadlines, SDK and immutable Nakama differential remain separate checks.
+
+The two GET list templates are owned by `STORAGE_LIST_ROUTES` and dispatched
+through the live list matcher. The read-only engineering inventory extracts that
+constant and the guarded dispatcher when the production list module is integrated;
+unreachable literal arms and test-only constants do not establish routes.
+List limits default to one and accept 1–100. Omitted owner lists public objects
+across owners; own owner lists read permissions 1 and 2; foreign or explicit zero
+owner lists permission 2. One readonly serializable SQL query applies ACL before
+its `limit + 1` sentinel and uses database text ordering. It decodes returned rows
+only, so hidden and sentinel integrity failures do not affect earlier pages.
+
+The Nakama list profile uses an unsigned URL-base64/gob position containing key,
+owner UUID and read permission. This is an explicit exception to the internal
+typed list's authenticated scope-bound cursor requirement: every request verifies
+the principal, and SQL applies its ACL independently of the offset. Cursor fields
+ignored by each upstream mode supply no authorization. The candidate accepts
+arbitrary int32 read offsets and empty keys under a 4096-byte key budget.
+Collection queries accept empty/dot/control text up to 4096 UTF-8 bytes. Returned
+rows use a separate Nakama key projection matching the authoritative 1–128 Unicode
+character constraints, including dot/control text; the old typed API keeps its
+byte bounds. Request targets, gob streams, types, fields, nesting and container
+work have explicit budgets in the storage contract. Exact gateway alias behavior,
+non-UTF8 Go strings, unsupported gob descriptors, collation, concurrent-page
+behavior, timestamps, official SDK and immutable-oracle evidence remain open.
+
+The repository list fixture requires the live environment above and emits
+`nakama_client_list_projection_executed profile=...` only after assertions and
+scoped cleanup. It independently seeds Unicode/dot/control rows and damages
+visible, hidden and sentinel digests. Source presence and local execution do not
+admit a live packet or establish compatibility.
 
 [`roadmap/ENGINEERING_EXIT_CONTRACTS.json`](roadmap/ENGINEERING_EXIT_CONTRACTS.json) supplies concrete implementation steps, checks and external obligations for every registered gap, plus the full eleven domain work packages. It is subordinate engineering detail, not an alternate queue or a reduced proof obligation. `NEXT_MILESTONE.json` and the approved architecture overlay still control dependency readiness. No advisory priority can bypass their acceptance conditions. The read-only inventory rejects a missing gap or omitted work package.
 

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use trnm_contracts::{Digest32, DomainError, RetryClass, SessionFamilyId, StableCode, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, RefreshRotationOutcome, RotateRefreshToken,
-    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageMutationReceipt,
-    StorageObject, StorageObjectKey,
+    SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageClientListPage,
+    StorageListPosition, StorageMutationReceipt, StorageObject, StorageObjectKey,
 };
 use trnm_session_core::RevocationReason;
 
@@ -103,6 +103,20 @@ impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
         execute_with_metrics(policy, metrics.as_ref(), |remaining| {
             self.inner.commit_command_with_budget(request, remaining)
         })
+    }
+
+    fn list_storage_objects_nakama(
+        &mut self,
+        actor: StorageActor,
+        collection: &str,
+        owner: Option<UserId>,
+        after: Option<&StorageListPosition>,
+        limit: usize,
+    ) -> Result<StorageClientListPage, DomainError> {
+        // Preserve the complete readonly page snapshot and its one pool
+        // deadline. No implicit authority-command retry or cursor replay.
+        self.inner
+            .list_storage_objects_nakama(actor, collection, owner, after, limit)
     }
 
     fn apply_storage_batch(
@@ -309,6 +323,26 @@ mod tests {
             Err(self.failure)
         }
 
+        fn list_storage_objects_nakama(
+            &mut self,
+            actor: StorageActor,
+            collection: &str,
+            owner: Option<UserId>,
+            after: Option<&StorageListPosition>,
+            limit: usize,
+        ) -> Result<StorageClientListPage, DomainError> {
+            self.calls += 1;
+            assert_eq!(actor, self.actor);
+            assert_eq!(collection, self.operation.key().collection());
+            assert_eq!(owner, Some(self.operation.key().user_id()));
+            assert_eq!(
+                after.map(|position| position.key.as_str()),
+                Some(self.operation.key().key())
+            );
+            assert_eq!(limit, 100);
+            Err(self.failure)
+        }
+
         fn read_storage_objects(
             &mut self,
             actor: StorageActor,
@@ -458,6 +492,24 @@ mod tests {
                 .unwrap_err();
             assert_eq!(returned, failure);
             assert_eq!(repository.inner.calls, 1);
+            let after = StorageListPosition {
+                key: key.key().to_owned(),
+                user_id: UserId::new([2; 16]),
+                read: -10,
+            };
+            assert_eq!(
+                repository
+                    .list_storage_objects_nakama(
+                        actor,
+                        key.collection(),
+                        Some(key.user_id()),
+                        Some(&after),
+                        100
+                    )
+                    .unwrap_err(),
+                failure
+            );
+            assert_eq!(repository.inner.calls, 2);
             assert_eq!(repository.operational_metrics().retry_attempts, 0);
         }
     }

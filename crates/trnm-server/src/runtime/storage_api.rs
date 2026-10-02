@@ -255,7 +255,7 @@ fn decode_read_key(object: &JsonObject) -> Result<StorageObjectKey, ApiError> {
 
 /// Independent implementation of the six text formats accepted by the pinned
 /// gofrs/uuid v5.4.0 parser. Hex digits are case insensitive; urn:uuid: is exact.
-fn parse_uuid(text: &str) -> Option<UserId> {
+pub(super) fn parse_uuid(text: &str) -> Option<UserId> {
     let bytes = text.as_bytes();
     let body = match bytes.len() {
         32 | 36 => bytes,
@@ -308,55 +308,61 @@ fn read_response(keys: &[StorageObjectKey], objects: &[StorageObject], user: Use
         *count -= 1;
         let allowed = object.read_permission == ReadPermission::Public
             || (object.read_permission == ReadPermission::Owner && object.key.user_id() == user);
-        if !allowed
-            || object.value.len() > MAX_VALUE_BYTES
-            || object.version != ContentVersion::from_value(&object.value)
-            || !object.integrity_digest.matches_value(&object.value)
-        {
+        if !allowed {
             return gateway_error(500, 13, "Error reading storage objects.");
         }
-        let Ok(value) = std::str::from_utf8(&object.value) else {
+        let Some(object) = encode_storage_object(object) else {
             return gateway_error(500, 13, "Error reading storage objects.");
         };
-        let mut fields = vec![
-            format!(
-                "\"collection\":{}",
-                serde_json::Value::from(object.key.collection())
-            ),
-            format!("\"key\":{}", serde_json::Value::from(object.key.key())),
-            format!(
-                "\"user_id\":{}",
-                serde_json::Value::from(uuid_string(object.key.user_id()))
-            ),
-        ];
-        if !value.is_empty() {
-            fields.push(format!("\"value\":{}", serde_json::Value::from(value)));
-        }
-        fields.push(format!(
-            "\"version\":{}",
-            serde_json::Value::from(object.version.as_str())
-        ));
-        if object.read_permission != ReadPermission::None {
-            fields.push(format!(
-                "\"permission_read\":{}",
-                object.read_permission as u8
-            ));
-        }
-        if object.write_permission != WritePermission::None {
-            fields.push(format!(
-                "\"permission_write\":{}",
-                object.write_permission as u8
-            ));
-        }
-        // No invented create_time/update_time: the current Rust schema does not
-        // carry the upstream timestamp contract. This remains a wire gap.
-        encoded.push(format!("{{{}}}", fields.join(",")));
+        encoded.push(object);
     }
     if encoded.is_empty() {
         Response::json(200, b"{}".to_vec())
     } else {
         Response::json(200, format!("{{\"objects\":[{}]}}", encoded.join(",")))
     }
+}
+
+pub(super) fn encode_storage_object(object: &StorageObject) -> Option<String> {
+    if object.value.len() > MAX_VALUE_BYTES
+        || object.version != ContentVersion::from_value(&object.value)
+        || !object.integrity_digest.matches_value(&object.value)
+    {
+        return None;
+    }
+    let value = std::str::from_utf8(&object.value).ok()?;
+    let mut fields = vec![
+        format!(
+            "\"collection\":{}",
+            serde_json::Value::from(object.key.collection())
+        ),
+        format!("\"key\":{}", serde_json::Value::from(object.key.key())),
+        format!(
+            "\"user_id\":{}",
+            serde_json::Value::from(uuid_string(object.key.user_id()))
+        ),
+    ];
+    if !value.is_empty() {
+        fields.push(format!("\"value\":{}", serde_json::Value::from(value)));
+    }
+    fields.push(format!(
+        "\"version\":{}",
+        serde_json::Value::from(object.version.as_str())
+    ));
+    if object.read_permission != ReadPermission::None {
+        fields.push(format!(
+            "\"permission_read\":{}",
+            object.read_permission as u8
+        ));
+    }
+    if object.write_permission != WritePermission::None {
+        fields.push(format!(
+            "\"permission_write\":{}",
+            object.write_permission as u8
+        ));
+    }
+    // The immutable schema has no authoritative upstream timestamps yet.
+    Some(format!("{{{}}}", fields.join(",")))
 }
 
 struct ParsedWrite {
