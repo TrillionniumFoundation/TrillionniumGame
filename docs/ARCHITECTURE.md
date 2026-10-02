@@ -208,7 +208,7 @@ The live database harness also executes a canonical Rust application fixture,
 separately from its retained diagnostic process. A required profile-specific
 success marker prevents optional no-database skips from becoming live results.
 The same harness separately executes and retains the repository ACL/OCC rollback
-fixture once per profile, including insert-only rejection and persisted times.
+fixture once per profile, including insert-only rejection and persisted times. The canonical application fixture also requires a profile-specific marker for original-string condition inputs and rollback checks.
 
 `contracts/storage/nakama-http-storage-v1.json` records pinned source
 identities, request/response boundaries and residual differences. The routes
@@ -220,8 +220,14 @@ database update time. The append-only timestamp migration and writer barrier are
 described below; their exact upstream differential remains open.
 After binding the actor to the owner, an insert-only write rejects an existing
 object as a version conflict regardless of that row's write ACL. Blind and exact
-writes retain permission rejection before an OCC mismatch. Opaque input versions
-and database-native JSONB value/version separation remain unfinished.
+writes retain permission rejection before an OCC mismatch. Incoming exact
+conditions use an independent `ExpectedVersion` string: no MD5 parser, case
+folding, trimming or 32-character restriction is applied. Empty write conditions
+are blind, `*` writes are insert-only, and every nonempty delete condition,
+including `*`, is literal. Existing generated `ContentVersion` values remain
+lowercase request-byte MD5. Database-native JSONB value/version separation,
+historical opaque stored versions and native SQL rejection of NUL input remain
+unfinished; in-memory comparison does not qualify those database semantics.
 Timestamp origin/precision and bounds under independent differential, exact list/query/gob/collation behavior,
 read query shape/order/multiplicity, hooks, index,
 ambiguous-commit reconciliation and official token differences remain blockers.

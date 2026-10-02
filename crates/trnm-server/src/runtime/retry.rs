@@ -409,7 +409,7 @@ mod tests {
             }),
             StorageBatchOperation::Delete(StorageDeleteOperation {
                 key,
-                expected_version: Some(ContentVersion::from_value(br#"{"score":0}"#)),
+                expected_version: Some(ContentVersion::from_value(br#"{"score":0}"#).into()),
             }),
         ];
         for operation in operations {

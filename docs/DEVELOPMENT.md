@@ -218,7 +218,13 @@ They exercise original value bytes, default/zero permissions, duplicate known
 fields and aliases, exact integer parsing, empty batches, ownership, persisted
 revocation, authentication precedence, atomic failure, drain and retry
 suppression. Read regressions cover global/default owners, pinned UUID forms,
-hidden/missing objects and defensive response validation. Mock repositories and the real storage state model provide local
+hidden/missing objects and defensive response validation. Exact version inputs
+retain uppercase, nonhexadecimal, Unicode and long strings through the API and
+repository. They must reach ordinary OCC and permission evaluation rather than
+an early MD5-format rejection. Write empty/star mapping differs from delete,
+where `*` is an exact condition. Prefixes and suffixes must not be truncated or
+normalized. These tests do not qualify NUL handling by native SQL or historical
+opaque stored versions. Mock repositories and the real storage state model provide local
 feedback; live database and immutable-oracle evidence remain separate. Read
 `contracts/storage/nakama-http-storage-v1.json` and the open
 `DIV-STORAGE-HTTP-*` records before changing these endpoints. Schema v2 appends nullable storage timestamps and a shared migration engine.
@@ -229,7 +235,7 @@ The last command requires `TRNM_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and
 `TRNM_REQUIRE_LIVE_DATABASE=1` to prove actual database execution. The existing
 live harness runs this canonical Rust application fixture for each database
 profile and rejects zero tests, optional skips and missing execution markers.
-It uses dedicated fixture rows and verifies persisted effects and revocation.
+It uses dedicated fixture rows and verifies persisted effects and revocation. The same fixture must emit its original-condition marker after all 15 write, 18 delete and two rollback cases have passed; the native harness checks the exact profile and counts before sealing the log.
 Independent SQL sentinels verify that a blind unchanged value/ACL preserves
 legacy update time while an exact-version write still refreshes it. The live harness also requires the exact repository ACL/OCC fixture once per
 profile, retaining its log and rejecting empty or skipped execution. It checks

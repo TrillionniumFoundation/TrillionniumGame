@@ -16,16 +16,32 @@
                 .reason(),
             "storage_read_permission_denied"
         );
-        validate_version(Some(&object), VersionCheck::Exact(object.version)).unwrap();
+        validate_version(Some(&object), &VersionCheck::Exact(object.version.into())).unwrap();
         assert_eq!(
             validate_version(
                 Some(&object),
-                VersionCheck::Exact(ContentVersion::from_value(b"other")),
+                &VersionCheck::Exact(ContentVersion::from_value(b"other").into()),
             )
             .unwrap_err()
             .reason(),
             "storage_version_mismatch"
         );
+        let tokens = [
+            "non-hex-version".to_owned(),
+            object.version.as_str().to_ascii_uppercase(),
+            "版本🍀".to_owned(),
+            format!("{}suffix", object.version.as_str()),
+            "x".repeat(4096),
+        ];
+        for token in tokens {
+            assert_ne!(token, object.version.as_str());
+            let check = VersionCheck::Exact(token.into());
+            for existing in [Some(&object), None] {
+                let error = validate_version(existing, &check).unwrap_err();
+                assert_eq!(error.code(), StableCode::FailedPrecondition);
+                assert_eq!(error.reason(), "storage_version_mismatch");
+            }
+        }
     }
 
     #[test]
@@ -58,8 +74,7 @@
         let global = StorageObjectKey::new("system", "global", UserId::new([0; 16])).unwrap();
         validate_read_batch(actor, &vec![global.clone(); MAX_BATCH_OPERATIONS]).unwrap();
         validate_read_batch(Actor::Server, std::slice::from_ref(&global)).unwrap();
-        let error = validate_read_batch(actor, &vec![global; MAX_BATCH_OPERATIONS + 1])
-            .unwrap_err();
+        let error = validate_read_batch(actor, &vec![global; MAX_BATCH_OPERATIONS + 1]).unwrap_err();
         assert_eq!(error.code(), StableCode::InvalidArgument);
         assert_eq!(error.reason(), "invalid_storage_batch_size");
     }

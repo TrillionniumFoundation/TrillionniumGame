@@ -206,6 +206,8 @@ canonical_storage_test_count=$(
 test "$canonical_storage_test_count" -eq 1
 grep -Fxq "canonical_storage_api_live_executed profile=${profile}" \
   "$evidence/canonical-storage-app.log"
+grep -Fxq "storage_opaque_conditions_live_executed profile=${profile} write_cases=15 delete_cases=18 batch_cases=2" \
+  "$evidence/canonical-storage-app.log"
 if grep -Fq 'canonical_storage_api_live_skipped' "$evidence/canonical-storage-app.log"; then
   echo 'canonical storage App database lane skipped instead of executing' >&2
   exit 1
@@ -443,7 +445,7 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
   >> "$evidence/database-assertions.txt"
 
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \

@@ -40,7 +40,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             &[StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
                 value: b"v2".to_vec(),
-                expected: VersionCheck::Exact(version),
+                expected: VersionCheck::Exact(version.into()),
                 read_permission: ReadPermission::Public,
                 write_permission: WritePermission::Owner,
             })],
@@ -59,7 +59,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             &[StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
                 value: b"v3".to_vec(),
-                expected: VersionCheck::Exact(version),
+                expected: VersionCheck::Exact(version.into()),
                 read_permission: ReadPermission::Owner,
                 write_permission: WritePermission::Owner,
             })],
@@ -84,7 +84,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             StorageActor::User(user),
             &[StorageBatchOperation::Delete(StorageDeleteOperation {
                 key: key.clone(),
-                expected_version: Some(current),
+                expected_version: Some(current.into()),
             })],
             40,
         )
@@ -294,7 +294,7 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 StorageActor::User(owner),
                 &[write(
                     &key,
-                    VersionCheck::Exact(version),
+                    VersionCheck::Exact(version.into()),
                     ReadPermission::Owner,
                     WritePermission::Owner,
                 )],
@@ -311,7 +311,7 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
             ),
             (
                 StorageActor::User(owner),
-                VersionCheck::Exact(stale),
+                VersionCheck::Exact(stale.into()),
                 StableCode::FailedPrecondition,
             ),
             (
@@ -335,6 +335,96 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
             assert_eq!(error.code(), code);
             assert_eq!(timestamp(&mut control), 30);
         }
+
+        // The incoming exact condition is an opaque, case-sensitive token.
+        // Its shape must not produce a parse error or a varchar(32) SQL cast.
+        let opaque_tokens = [
+            "non-hex-version".to_owned(),
+            version.as_str().to_ascii_uppercase(),
+            "版本🍀".to_owned(),
+            format!("{}suffix", version.as_str()),
+            "x".repeat(4096),
+        ];
+        let before_opaque_rejection = snapshot(&mut control);
+        for token in &opaque_tokens {
+            assert_ne!(token, version.as_str());
+            for actor in [StorageActor::User(owner), StorageActor::Server] {
+                let exact_write = write(
+                    &key,
+                    VersionCheck::Exact(token.clone().into()),
+                    ReadPermission::Public,
+                    WritePermission::None,
+                );
+                let conditional_delete = StorageBatchOperation::Delete(StorageDeleteOperation {
+                    key: key.clone(),
+                    expected_version: Some(token.clone().into()),
+                });
+                for rejected_operation in [exact_write, conditional_delete] {
+                    for prefixed in [false, true] {
+                        let mut operations = Vec::new();
+                        if prefixed {
+                            operations.push(write(
+                                &staged_key,
+                                VersionCheck::MustNotExist,
+                                ReadPermission::Owner,
+                                WritePermission::Owner,
+                            ));
+                        }
+                        operations.push(rejected_operation.clone());
+                        let error = repository
+                            .apply_storage_batch(actor, &operations, 36)
+                            .unwrap_err();
+                        assert_eq!(error.code(), StableCode::FailedPrecondition);
+                        assert_eq!(error.reason(), "storage_version_mismatch");
+                        assert_eq!(snapshot(&mut control), before_opaque_rejection);
+                        assert_eq!(
+                            repository
+                                .read_storage_object(StorageActor::Server, &staged_key)
+                                .unwrap_err()
+                                .code(),
+                            StableCode::NotFound
+                        );
+                    }
+                }
+            }
+            let missing_write = repository
+                .apply_storage_batch(
+                    StorageActor::User(owner),
+                    &[write(
+                        &missing,
+                        VersionCheck::Exact(token.clone().into()),
+                        ReadPermission::Owner,
+                        WritePermission::Owner,
+                    )],
+                    37,
+                )
+                .unwrap_err();
+            assert_eq!(missing_write.code(), StableCode::FailedPrecondition);
+            assert_eq!(missing_write.reason(), "storage_version_mismatch");
+            assert_eq!(snapshot(&mut control), before_opaque_rejection);
+            assert_eq!(
+                repository
+                    .read_storage_object(StorageActor::Server, &missing)
+                    .unwrap_err()
+                    .code(),
+                StableCode::NotFound
+            );
+        }
+        // '*' has insert-only meaning for writes, but is a literal delete
+        // condition. It cannot turn a conditional delete into an unconditional one.
+        let delete_star = repository
+            .apply_storage_batch(
+                StorageActor::User(owner),
+                &[StorageBatchOperation::Delete(StorageDeleteOperation {
+                    key: key.clone(),
+                    expected_version: Some("*".into()),
+                })],
+                38,
+            )
+            .unwrap_err();
+        assert_eq!(delete_star.code(), StableCode::FailedPrecondition);
+        assert_eq!(delete_star.reason(), "storage_version_mismatch");
+        assert_eq!(snapshot(&mut control), before_opaque_rejection);
 
         for (updated_at_ms, read_permission, write_permission) in [
             (40, ReadPermission::Public, WritePermission::Owner),
@@ -373,13 +463,13 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
             ),
             (
                 StorageActor::User(owner),
-                VersionCheck::Exact(version),
+                VersionCheck::Exact(version.into()),
                 StableCode::PermissionDenied,
                 "storage_write_permission_denied",
             ),
             (
                 StorageActor::User(owner),
-                VersionCheck::Exact(stale),
+                VersionCheck::Exact(stale.into()),
                 StableCode::PermissionDenied,
                 "storage_write_permission_denied",
             ),
@@ -407,7 +497,7 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     actor,
                     &[write(
                         &key,
-                        expected,
+                        expected.clone(),
                         ReadPermission::Owner,
                         WritePermission::Owner,
                     )],
@@ -446,6 +536,87 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                         .code(),
                     StableCode::NotFound
                 );
+            }
+        }
+        for expected_version in [None, Some(version.into()), Some(stale.into())] {
+            let error = repository
+                .apply_storage_batch(
+                    StorageActor::User(owner),
+                    &[
+                        write(
+                            &staged_key,
+                            VersionCheck::MustNotExist,
+                            ReadPermission::Owner,
+                            WritePermission::Owner,
+                        ),
+                        StorageBatchOperation::Delete(StorageDeleteOperation {
+                            key: key.clone(),
+                            expected_version,
+                        }),
+                    ],
+                    76,
+                )
+                .unwrap_err();
+            assert_eq!(error.code(), StableCode::PermissionDenied);
+            assert_eq!(error.reason(), "storage_write_permission_denied");
+            assert_eq!(snapshot(&mut control), before_rejection);
+            assert_eq!(
+                repository
+                    .read_storage_object(StorageActor::Server, &staged_key)
+                    .unwrap_err()
+                    .code(),
+                StableCode::NotFound
+            );
+        }
+        for token in opaque_tokens.iter().map(String::as_str).chain(["*"]) {
+            for actor in [StorageActor::User(owner), StorageActor::Server] {
+                let expected = if actor == StorageActor::User(owner) {
+                    (
+                        StableCode::PermissionDenied,
+                        "storage_write_permission_denied",
+                    )
+                } else {
+                    (StableCode::FailedPrecondition, "storage_version_mismatch")
+                };
+                let mut rejected_operations = Vec::new();
+                if token != "*" {
+                    rejected_operations.push(write(
+                        &key,
+                        VersionCheck::Exact(token.into()),
+                        ReadPermission::Owner,
+                        WritePermission::Owner,
+                    ));
+                }
+                rejected_operations.push(StorageBatchOperation::Delete(StorageDeleteOperation {
+                    key: key.clone(),
+                    expected_version: Some(token.into()),
+                }));
+                for rejected_operation in rejected_operations {
+                    let error = repository
+                        .apply_storage_batch(
+                            actor,
+                            &[
+                                write(
+                                    &staged_key,
+                                    VersionCheck::MustNotExist,
+                                    ReadPermission::Owner,
+                                    WritePermission::Owner,
+                                ),
+                                rejected_operation,
+                            ],
+                            76,
+                        )
+                        .unwrap_err();
+                    assert_eq!((error.code(), error.reason()), expected);
+                    assert_eq!(snapshot(&mut control), before_rejection);
+                    assert_eq!(
+                        repository
+                            .read_storage_object(StorageActor::Server, &staged_key)
+                            .unwrap_err()
+                            .code(),
+                        StableCode::NotFound
+                    );
+                }
             }
         }
         for actor in [
@@ -494,7 +665,7 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 StorageActor::Server,
                 &[write(
                     &key,
-                    VersionCheck::Exact(version),
+                    VersionCheck::Exact(version.into()),
                     ReadPermission::Public,
                     WritePermission::None,
                 )],
@@ -521,7 +692,7 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     ),
                     write(
                         &missing,
-                        VersionCheck::Exact(version),
+                        VersionCheck::Exact(version.into()),
                         ReadPermission::Owner,
                         WritePermission::Owner,
                     ),

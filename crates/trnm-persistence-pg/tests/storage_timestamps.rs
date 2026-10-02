@@ -351,7 +351,7 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
                 StorageActor::User(OWNER),
                 &[write(
                     &public_key,
-                    VersionCheck::Exact(version),
+                    VersionCheck::Exact(version.into()),
                     ReadPermission::Public,
                     WritePermission::Owner,
                 )],
@@ -381,7 +381,7 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
             owner_write(&missing, VersionCheck::MustNotExist),
             StorageBatchOperation::Delete(StorageDeleteOperation {
                 key: public_key.clone(),
-                expected_version: Some(version),
+                expected_version: Some(version.into()),
             }),
         ] {
             assert_eq!(
@@ -399,7 +399,7 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
                 StorageActor::User(OWNER),
                 &[StorageBatchOperation::Delete(StorageDeleteOperation {
                     key: public_key.clone(),
-                    expected_version: Some(version),
+                    expected_version: Some(version.into()),
                 })],
                 34,
             )
@@ -547,7 +547,7 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
         let exact = repository
             .apply_storage_batch_with_metadata(
                 StorageActor::User(OWNER),
-                &[owner_write(&first, VersionCheck::Exact(version))],
+                &[owner_write(&first, VersionCheck::Exact(version.into()))],
                 9,
             )
             .unwrap();
@@ -635,7 +635,10 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
         let historical_updated = repository
             .apply_storage_batch_with_metadata(
                 StorageActor::User(OWNER),
-                &[owner_write(&historical, VersionCheck::Exact(version))],
+                &[owner_write(
+                    &historical,
+                    VersionCheck::Exact(version.into()),
+                )],
                 12,
             )
             .unwrap();
@@ -654,8 +657,8 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
             .apply_storage_batch_with_metadata(
                 StorageActor::User(OWNER),
                 &[
-                    owner_write(&first, VersionCheck::Exact(version)),
-                    owner_write(&missing, VersionCheck::Exact(version)),
+                    owner_write(&first, VersionCheck::Exact(version.into())),
+                    owner_write(&missing, VersionCheck::Exact(version.into())),
                 ],
                 13,
             )
@@ -687,7 +690,10 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
         let stale = repository
             .apply_storage_batch_with_metadata(
                 StorageActor::User(OWNER),
-                &[owner_write(&first, VersionCheck::Exact(wrong_version))],
+                &[owner_write(
+                    &first,
+                    VersionCheck::Exact(wrong_version.into()),
+                )],
                 15,
             )
             .unwrap_err();
@@ -731,7 +737,7 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
             .apply_storage_batch_with_metadata(
                 StorageActor::User(OWNER),
                 &[
-                    owner_write(&first, VersionCheck::Exact(version)),
+                    owner_write(&first, VersionCheck::Exact(version.into())),
                     owner_write(&guarded, VersionCheck::Any),
                 ],
                 22,
@@ -783,7 +789,7 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                 owner_write(&missing, VersionCheck::MustNotExist),
                 StorageBatchOperation::Delete(StorageDeleteOperation {
                     key: first.clone(),
-                    expected_version: Some(version),
+                    expected_version: Some(version.into()),
                 }),
             ] {
                 let error = if fault == 7 {
@@ -943,7 +949,7 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                 StorageActor::User(OWNER),
                 &[StorageBatchOperation::Delete(StorageDeleteOperation {
                     key: first.clone(),
-                    expected_version: Some(version),
+                    expected_version: Some(version.into()),
                 })],
                 17,
             )

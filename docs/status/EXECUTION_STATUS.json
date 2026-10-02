@@ -49,7 +49,7 @@
       },
       "evidence_ids": [],
       "limitations": [
-        "Bounded HTTP read/write/delete/list and unsigned gob-offset projection are source candidates; timestamps, exact gateway/gob/collation/concurrent-page differential, hooks and complete work-package acceptance remain open."
+        "Bounded HTTP read/write/delete/list, unsigned gob offsets and original-string exact condition tokens are source candidates. Generated ContentVersion and schema v2 remain unchanged; historical opaque stored versions, native SQL/NUL errors, JSONB, exact gateway/gob/collation differential, hooks and complete acceptance remain open."
       ]
     }
   ],

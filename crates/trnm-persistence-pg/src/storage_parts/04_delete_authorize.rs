@@ -12,7 +12,8 @@ fn apply_delete(
     authorize_write(actor, &operation.key, Some(&previous.object))?;
     if operation
         .expected_version
-        .is_some_and(|expected| expected != previous.object.version)
+        .as_ref()
+        .is_some_and(|expected| expected.as_str() != previous.object.version.as_str())
     {
         return Err(version_error());
     }
@@ -113,7 +114,7 @@ fn validate_batch(operations: &[BatchOperation]) -> Result<(), DomainError> {
 
 fn validate_version(
     existing: Option<&StorageObject>,
-    check: VersionCheck,
+    check: &VersionCheck,
 ) -> Result<(), DomainError> {
     match check {
         VersionCheck::Any => Ok(()),
@@ -124,7 +125,7 @@ fn validate_version(
             RetryClass::Never,
         )),
         VersionCheck::Exact(expected) => match existing {
-            Some(object) if object.version == expected => Ok(()),
+            Some(object) if object.version.as_str() == expected.as_str() => Ok(()),
             _ => Err(version_error()),
         },
     }

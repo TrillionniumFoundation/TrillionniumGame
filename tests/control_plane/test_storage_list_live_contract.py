@@ -46,6 +46,12 @@ CANONICAL = lane(
     "canonical-storage-app.log", "canonical_storage_test_count",
     "canonical_storage_api_live_executed", "canonical_storage_api_live_skipped",
 )
+OPAQUE_MARKER = '''grep -Fxq "storage_opaque_conditions_live_executed profile=${profile} write_cases=15 delete_cases=18 batch_cases=2" \\
+  "$evidence/canonical-storage-app.log"
+'''
+CANONICAL = CANONICAL.replace(
+    "if grep -Fq 'canonical_storage_api_live_skipped'", OPAQUE_MARKER + "if grep -Fq 'canonical_storage_api_live_skipped'"
+)
 PROJECTION = lane(
     "trnm-persistence-pg", "--test authority_storage",
     "nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
@@ -86,7 +92,7 @@ set -euo pipefail
 "$binary" migrate > "$evidence/migrate.log" 2>&1
 '''
 SUFFIX = '''cat > "$evidence/summary.json" <<EOF
-{"schema":"synthetic-only","nakama_client_list_projection":true,"storage_occ_precedence":true,"wire_compatible":false,"production_ready":false}
+{"schema":"synthetic-only","nakama_client_list_projection":true,"storage_occ_precedence":true,"raw_version_conditions":true,"wire_compatible":false,"production_ready":false}
 EOF
 find "$evidence" -type f ! -name SHA256SUMS -print0 \\
   | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
@@ -174,6 +180,21 @@ class StorageListLiveContractTests(unittest.TestCase):
             FIXTURE.replace("storage_blind_write_timestamps_skipped", "unchecked_skip"),
             FIXTURE.replace('"$evidence/storage-occ-precedence.log"', '"$evidence/unrelated.log"', 1),
             FIXTURE.replace('"storage_occ_precedence":true', '"storage_occ_precedence":false'),
+        ]:
+            with self.subTest(changed=changed):
+                self.reject(changed)
+
+    def test_original_condition_execution_marker_and_summary_are_required(self) -> None:
+        for changed in [
+            FIXTURE.replace(OPAQUE_MARKER, ""),
+            FIXTURE.replace(OPAQUE_MARKER, OPAQUE_MARKER + OPAQUE_MARKER),
+            FIXTURE.replace(OPAQUE_MARKER, "\n".join("# " + line for line in OPAQUE_MARKER.splitlines()) + "\n"),
+            FIXTURE.replace(OPAQUE_MARKER, OPAQUE_MARKER.replace("grep -Fxq", "grep -Fq")),
+            FIXTURE.replace(OPAQUE_MARKER, OPAQUE_MARKER.replace("profile=${profile}", "profile=postgresql")),
+            FIXTURE.replace(OPAQUE_MARKER, OPAQUE_MARKER.replace("write_cases=15", "write_cases=0")),
+            FIXTURE.replace(OPAQUE_MARKER, OPAQUE_MARKER.replace("canonical-storage-app.log", "unrelated.log")),
+            FIXTURE.replace('"raw_version_conditions":true', '"raw_version_conditions":false'),
+            FIXTURE.replace(OPAQUE_MARKER, "") + OPAQUE_MARKER,
         ]:
             with self.subTest(changed=changed):
                 self.reject(changed)

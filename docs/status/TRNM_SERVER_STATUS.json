@@ -109,7 +109,7 @@
     "Schema v2 records genuine database transaction timestamps separately from the core content model; write acknowledgements preserve microseconds and read/list project seconds. Unknown original v1 times remain absent, so original-time import/policy and immutable differential remain open.",
     "Client-list/query/gob/SQL projection are bounded source candidates; exact gateway, unsupported gob types, profile collation and concurrent-pagination behavior still require immutable differential. Search/index and Runtime before/after hooks remain unfinished.",
     "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. Client-list queries use 4096-byte offsets/collection budgets and decode authoritative Unicode-character-bounded rows. Bounds and exact malformed wire behavior remain unqualified.",
-    "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
+    "Opaque exact input conditions now retain their original strings through HTTP, core and repository evaluation without MD5 parsing or a 32-character cap. Historical opaque stored versions, native SQL/NUL behavior and exact gateway/error differential remain unqualified.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
     "Blind no-op selection is a source candidate; upstream database timestamp origin/precision, historical creation times and exact oracle acceptance remain open.",
@@ -203,7 +203,8 @@
       "TG-D1-46DC42DFD49DB606"
     ],
     "accepted": false,
-    "gap_closed": false
+    "gap_closed": false,
+    "condition_version": "Original-string ExpectedVersion: write empty is blind, write star is insert-only, other writes and all nonempty deletes are exact; schema v2 generated versions remain unchanged."
   },
   "storage_http_list": {
     "contract": "contracts/storage/nakama-http-storage-v1.json",

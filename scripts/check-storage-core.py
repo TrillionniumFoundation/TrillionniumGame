@@ -19,6 +19,11 @@ REQUIRED_TESTS = {
     "delete_requires_exact_version_when_supplied",
     "identical_version_cannot_name_different_value",
     "create_only_occ_precedence_preserves_owner_authority_and_batch_state",
+    "expected_version_preserves_strings_without_stored_version_constraints",
+    "opaque_write_tokens_are_exact_and_keep_permission_precedence",
+    "opaque_delete_tokens_are_literal_and_keep_permission_precedence",
+    "opaque_conditions_do_not_override_owner_binding",
+    "opaque_condition_rejections_roll_back_prior_writes_and_deletes",
 }
 FORBIDDEN = ("unsafe {", "std::net", "std::time", "tokio", "sqlx", "postgres", "rand::")
 FALSE_CLAIMS = ("storage_behavior_compatible", "database_durable", "production_ready")
@@ -40,6 +45,7 @@ def main() -> int:
             fail(f"forbidden pure storage capability {marker}")
     for marker in (
         "pub struct ContentVersion([u8; 32]);",
+        "pub struct ExpectedVersion(String);",
         "pub struct IntegrityDigest(Digest32);",
         "ContentVersion::from_value(&operation.value)",
         "lowercase hexadecimal MD5",

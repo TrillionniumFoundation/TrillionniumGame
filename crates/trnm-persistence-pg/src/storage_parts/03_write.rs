@@ -50,7 +50,7 @@ fn apply_write(
     authorize_write(actor, &operation.key, acl_object)?;
     validate_version(
         previous.as_ref().map(|stored| &stored.object),
-        operation.expected,
+        &operation.expected,
     )?;
 
     let version = ContentVersion::from_value(&operation.value);

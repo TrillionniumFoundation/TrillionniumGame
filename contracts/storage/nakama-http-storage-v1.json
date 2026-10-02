@@ -140,7 +140,8 @@
     ],
     "read_owner": "Omitted/empty/null owner selects server/global UUID zero; explicit zero UUID is invalid. Nonempty owner follows pinned gofrs UUID string formats.",
     "list_query": "Path binds collection and optional owner. Limit defaults to 1; supplied limit or limit.value is signed decimal int32 in 1..100. Cursor is an unsigned gob offset. Unknown query names are ignored; duplicate known scalars/aliases are rejected by this candidate. Gateway alias-map order, malformed wording and non-UTF8 behavior remain unqualified.",
-    "list_owner": "Omitted or empty owner selects publicly readable objects across all owners, including global UUID zero. Own owner selects read >= 1. Foreign and explicit zero UUID owners select read = 2. Nonempty owner uses pinned gofrs UUID string formats."
+    "list_owner": "Omitted or empty owner selects publicly readable objects across all owners, including global UUID zero. Own owner selects read >= 1. Foreign and explicit zero UUID owners select read = 2. Nonempty owner uses pinned gofrs UUID string formats.",
+    "version": "Write omitted/null/empty maps to any; star maps to must-not-exist; all other strings are original exact conditions. Delete omitted/null/empty has no condition; every nonempty string, including star, is an original exact condition. No MD5-format, case or 32-character input restriction; overall request budgets still apply."
   },
   "response_contract": {
     "write": "Nonempty acks preserve request order and include collection,key,version,user_id; genuine database create_time/update_time use RFC3339 UTC 0/3/6/9 fractional digits. Unknown historical fields remain absent.",
@@ -166,17 +167,18 @@
     "cursor_maximum_types": 64,
     "cursor_maximum_fields": 64,
     "cursor_maximum_depth": 16,
-    "cursor_maximum_items": 1024
+    "cursor_maximum_items": 1024,
+    "version_condition": "No separate format or length cap; bounded by the configured HTTP request budget."
   },
   "durability": "Construct mutation success only after atomic committed receipts; construct read/list success after the bounded readonly repository transaction completes. Do not retry storage mutations or this client-list projection through the generic command supervisor.",
-  "migration_impact": "Append-only 0002 adds nullable TIMESTAMPTZ without defaults or historical backfill to both authoritative profiles. Shared validated full-chain migration publishes schema/writer epoch2; existing v1 requires an independently drained and privilege-fenced legacy role. Legacy updated_at_ms remains caller time. Production rolling upgrade, original timestamp import and rollback acceptance remain open.",
-  "rollback": "Revert this route/codec/bridge tranche together; existing persisted storage remains readable by the prior repository. Removing routes is not an accepted production cutover/rollback.",
+  "migration_impact": "Append-only 0002 adds nullable TIMESTAMPTZ without defaults or historical backfill to both authoritative profiles. Shared validated full-chain migration publishes schema/writer epoch2; existing v1 requires an independently drained and privilege-fenced legacy role. Legacy updated_at_ms remains caller time. Production rolling upgrade, original timestamp import and rollback acceptance remain open. The ExpectedVersion input-type change requires no DDL, metadata rewrite or data backfill; schema v2 and its generated ContentVersion projection are unchanged.",
+  "rollback": "Revert this route/codec/bridge tranche together; existing persisted storage remains readable by the prior repository. Removing routes is not an accepted production cutover/rollback. Reverting ExpectedVersion input handling restores the earlier stricter candidate validation; persisted values and schema identity are unaffected.",
   "limitations": [
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
     "Historical v1 rows have unknown original timestamps. An original-time import manifest or independently accepted unknown-history policy is required before replacement; no epoch or migration time is fabricated.",
     "List route/query/gob cursor and SQL client projection are bounded source candidates; exact gateway, gob, collation, pagination under concurrent changes and oracle/SDK qualification remain open. Search/index and Runtime before/after hooks remain unfinished.",
     "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. The separate client-list request accepts empty/dot/control collection text up to 4096 bytes and decodes authoritative Unicode-character-bounded rows. Budgets and path/query restrictions still differ from upstream.",
-    "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
+    "Opaque exact input conditions now retain their original strings through HTTP, core and repository evaluation without MD5 parsing or a 32-character cap. Historical opaque stored versions, native SQL/NUL behavior and exact gateway/error differential remain unqualified.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
     "Strict trailing-JSON rejection and malformed protobuf-JSON decoder error wording differ from the single-Decode upstream gateway and need immutable-oracle qualification.",
@@ -205,7 +207,7 @@
     "client_list_repository_test": "crates/trnm-persistence-pg/tests/authority_storage_parts/03_storage_list.rs::nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
     "client_list_execution_required": "The same live harness requires TRNM_REQUIRE_LIVE_DATABASE=1, one exact authority_storage repository test with zero failed/ignored, matching nakama_client_list_projection_executed profile marker, explicit skip rejection and a sealed nakama-client-list-projection.log. Source checks and local results do not admit exact-object live or independent evidence."
   },
-  "mutation_repository": "Authorization, OCC and stored integrity checks precede no-op selection. Blind writes with unchanged value and ACLs preserve the persisted update time; exact-version writes and value/ACL changes update it. Atomic batch commit still precedes success. Insert-only first binds the actor to the owner and rejects a valid existing row as a version conflict regardless of its write ACL; blind/exact retain permission-first rejection. Opaque condition-token and JSONB/public-version separation remain open.",
+  "mutation_repository": "Authorization, OCC and stored integrity checks precede no-op selection. Blind writes with unchanged value and ACLs preserve the persisted update time; exact-version writes and value/ACL changes update it. Atomic batch commit still precedes success. Insert-only first binds the actor to the owner and rejects a valid existing row as a version conflict regardless of its write ACL; blind/exact retain permission-first rejection. Original-string input tokens are preserved without format validation. Native SQL/NUL condition behavior, historical opaque stored versions and JSONB/public-version separation remain open.",
   "list_repository": {
     "method": "PgRepository::list_storage_objects_nakama",
     "transaction": "One bounded readonly SERIALIZABLE query under the pooled deadline; no generic retry. Existing typed byte-order list remains a separate contract.",

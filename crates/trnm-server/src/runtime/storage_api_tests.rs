@@ -313,6 +313,19 @@ fn write_body() -> &'static str {
     r#"{"objects":[{"collection":"inventory","key":"sword","value":"{\"level\":1}","version":"*"}]}"#
 }
 
+fn opaque_condition_tokens(value: &[u8]) -> [String; 5] {
+    let stored = ContentVersion::from_value(value);
+    let upper = stored.as_str().to_ascii_uppercase();
+    assert_ne!(upper, stored.as_str());
+    [
+        upper,
+        "g".repeat(32),
+        "版本🔒".to_owned(),
+        format!("{}suffix", stored.as_str()),
+        "opaque-condition-".repeat(256),
+    ]
+}
+
 #[test]
 fn missing_tampered_and_operator_credentials_never_reach_storage_or_session_repository() {
     let signed = bearer(GENERATION);
@@ -477,6 +490,152 @@ fn later_occ_failure_rolls_back_every_storage_batch_effect() {
             .code(),
         StableCode::NotFound
     );
+}
+
+#[test]
+fn opaque_write_conditions_reach_storage_occ_and_acl_after_authentication() {
+    for token in opaque_condition_tokens(b"{}") {
+        for permission in [
+            None,
+            Some(WritePermission::Owner),
+            Some(WritePermission::None),
+        ] {
+            let (mut app, repository) = app();
+            if let Some(permission) = permission {
+                repository
+                    .state()
+                    .storage
+                    .apply_batch(
+                        StorageActor::Server,
+                        &[StorageBatchOperation::Write(StorageWriteOperation {
+                            key: key("opaque"),
+                            value: b"{}".to_vec(),
+                            expected: VersionCheck::MustNotExist,
+                            read_permission: ReadPermission::Public,
+                            write_permission: permission,
+                        })],
+                    )
+                    .unwrap();
+            }
+            let before = repository.state().storage.clone();
+            let input = serde_json::json!({"objects":[{
+                "collection":"inventory", "key":"opaque", "value":"{\"new\":true}",
+                "version":token
+            }]})
+            .to_string();
+            let response = app.handle(&request("/v2/storage", Some(&bearer(GENERATION)), &input));
+            assert_eq!(response.status, 400);
+            assert_eq!(json(&response)["code"], 3);
+            assert_eq!(
+                json(&response)["message"],
+                if permission == Some(WritePermission::None) {
+                    "Storage write rejected - permission denied."
+                } else {
+                    "Storage write rejected - version check failed."
+                }
+            );
+            assert!(json(&response).get("acks").is_none());
+            let state = repository.state();
+            assert_eq!(state.verified_sessions, 1);
+            assert_eq!(state.storage_batches, 1, "opaque tokens must reach storage");
+            assert_eq!(state.storage, before);
+        }
+    }
+}
+
+#[test]
+fn opaque_delete_conditions_including_star_are_literal_and_reach_storage() {
+    for token in opaque_condition_tokens(b"{}")
+        .into_iter()
+        .chain(std::iter::once("*".to_owned()))
+    {
+        for permission in [
+            None,
+            Some(WritePermission::Owner),
+            Some(WritePermission::None),
+        ] {
+            let (mut app, repository) = app();
+            if let Some(permission) = permission {
+                repository
+                    .state()
+                    .storage
+                    .apply_batch(
+                        StorageActor::Server,
+                        &[StorageBatchOperation::Write(StorageWriteOperation {
+                            key: key("opaque"),
+                            value: b"{}".to_vec(),
+                            expected: VersionCheck::MustNotExist,
+                            read_permission: ReadPermission::Public,
+                            write_permission: permission,
+                        })],
+                    )
+                    .unwrap();
+            }
+            let before = repository.state().storage.clone();
+            let input = serde_json::json!({"object_ids":[{
+                "collection":"inventory", "key":"opaque", "version":token
+            }]})
+            .to_string();
+            let response = app.handle(&request(
+                "/v2/storage/delete",
+                Some(&bearer(GENERATION)),
+                &input,
+            ));
+            assert_eq!(response.status, 400);
+            assert_eq!(
+                json(&response),
+                serde_json::json!({"code":3,"message":
+                    "Storage delete rejected - not found, version check failed, or permission denied."})
+            );
+            let state = repository.state();
+            assert_eq!(state.verified_sessions, 1);
+            assert_eq!(
+                state.storage_batches, 1,
+                "literal tokens must reach storage"
+            );
+            assert_eq!(state.storage, before);
+        }
+    }
+}
+
+#[test]
+fn absent_null_and_empty_conditions_keep_unconditional_write_and_delete_semantics() {
+    for version in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!("")),
+    ] {
+        let (mut app, repository) = app();
+        repository.seed("opaque", USER, ReadPermission::Public, "{}");
+        let mut write =
+            serde_json::json!({"collection":"inventory","key":"opaque","value":"{\"new\":true}"});
+        let mut delete = serde_json::json!({"collection":"inventory","key":"opaque"});
+        if let Some(version) = version {
+            write["version"] = version.clone();
+            delete["version"] = version;
+        }
+        let credential = bearer(GENERATION);
+        let response = app.handle(&request(
+            "/v2/storage",
+            Some(&credential),
+            &serde_json::json!({"objects":[write]}).to_string(),
+        ));
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            json(&response)["acks"][0]["version"],
+            ContentVersion::from_value(br#"{"new":true}"#).as_str()
+        );
+        let response = app.handle(&request(
+            "/v2/storage/delete",
+            Some(&credential),
+            &serde_json::json!({"object_ids":[delete]}).to_string(),
+        ));
+        assert_eq!(response.status, 200);
+        let state = repository.state();
+        assert_eq!(state.verified_sessions, 2);
+        assert_eq!(state.storage_batches, 2);
+        assert_eq!(state.storage.object_count(), 0);
+    }
 }
 
 #[test]
@@ -1131,6 +1290,46 @@ fn persisted_storage_value(
         })
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct LiveStorageSnapshot {
+    key: String,
+    owner: Vec<u8>,
+    value: Vec<u8>,
+    integrity: Vec<u8>,
+    read_permission: i16,
+    write_permission: i16,
+    updated_at_ms: i64,
+    create_micros: Option<i64>,
+    update_micros: Option<i64>,
+}
+
+fn storage_live_snapshot(control: &mut postgres::Client) -> Vec<LiveStorageSnapshot> {
+    control
+        .query(
+            "SELECT object_key, user_id, value_bytes, version_digest, read_permission, \
+             write_permission, updated_at_ms, \
+             (extract(epoch FROM create_time)*1000000)::BIGINT, \
+             (extract(epoch FROM update_time)*1000000)::BIGINT \
+             FROM public.trnm_storage_objects WHERE collection = $1 \
+             ORDER BY object_key, user_id",
+            &[&LIVE_COLLECTION],
+        )
+        .unwrap_or_else(|_| panic!("canonical storage fixture: complete snapshot failed"))
+        .into_iter()
+        .map(|row| LiveStorageSnapshot {
+            key: row.get(0),
+            owner: row.get(1),
+            value: row.get(2),
+            integrity: row.get(3),
+            read_permission: row.get(4),
+            write_permission: row.get(5),
+            updated_at_ms: row.get(6),
+            create_micros: row.get(7),
+            update_micros: row.get(8),
+        })
+        .collect()
+}
+
 fn storage_live_row_count(control: &mut postgres::Client) -> i64 {
     control
         .query_one(
@@ -1348,6 +1547,112 @@ fn canonical_storage_api_live_database() {
             .unwrap()
             .get(0);
         assert!(refreshed > unchanged);
+
+        // These are request conditions, not stored ContentVersion values.
+        // Existing locked rows expose ACL precedence; missing/writable rows
+        // expose literal OCC mismatch. No token is normalized or length-capped.
+        assert_eq!(
+            control
+                .execute(
+                    "UPDATE public.trnm_storage_objects SET write_permission = 0 \
+                     WHERE collection = $1 AND object_key = 'own-hidden' AND user_id = $2",
+                    &[&LIVE_COLLECTION, &LIVE_USER.as_bytes().as_slice()],
+                )
+                .unwrap(),
+            1
+        );
+        let before_opaque = storage_live_snapshot(&mut control);
+        let conditions = opaque_condition_tokens(original.as_bytes());
+        for condition in &conditions {
+            for (name, message) in [
+                (
+                    "opaque-missing",
+                    "Storage write rejected - version check failed.",
+                ),
+                ("sword", "Storage write rejected - version check failed."),
+                ("own-hidden", "Storage write rejected - permission denied."),
+            ] {
+                let input = serde_json::json!({"objects":[{
+                    "collection":LIVE_COLLECTION,"key":name,"value":"{\"opaque\":true}",
+                    "version":condition
+                }]})
+                .to_string();
+                let response = app.handle(&request("/v2/storage", Some(&credential), &input));
+                assert_eq!(response.status, 400);
+                assert_eq!(
+                    json(&response),
+                    serde_json::json!({"code":3,"message":message})
+                );
+                assert_eq!(storage_live_snapshot(&mut control), before_opaque);
+            }
+        }
+        for condition in conditions
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once("*"))
+        {
+            for name in ["opaque-missing", "sword", "own-hidden"] {
+                let input = serde_json::json!({"object_ids":[{
+                    "collection":LIVE_COLLECTION,"key":name,"version":condition
+                }]})
+                .to_string();
+                let response =
+                    app.handle(&request("/v2/storage/delete", Some(&credential), &input));
+                assert_eq!(response.status, 400);
+                assert_eq!(
+                    json(&response),
+                    serde_json::json!({"code":3,"message":
+                    "Storage delete rejected - not found, version check failed, or permission denied."})
+                );
+                assert_eq!(storage_live_snapshot(&mut control), before_opaque);
+            }
+        }
+        // A later opaque OCC mismatch rolls back a staged real update/delete,
+        // including both database timestamps and the extension clock field.
+        let opaque_write_batch = serde_json::json!({"objects":[
+            {"collection":LIVE_COLLECTION,"key":"sword","value":"{\"opaque\":true}"},
+            {"collection":LIVE_COLLECTION,"key":"opaque-missing","value":"{}","version":conditions[4]}
+        ]})
+        .to_string();
+        let opaque_delete_batch = serde_json::json!({"object_ids":[
+            {"collection":LIVE_COLLECTION,"key":"sword","version":version},
+            {"collection":LIVE_COLLECTION,"key":"opaque-missing","version":conditions[4]}
+        ]})
+        .to_string();
+        for (path, input, message) in [
+            (
+                "/v2/storage",
+                opaque_write_batch,
+                "Storage write rejected - version check failed.",
+            ),
+            (
+                "/v2/storage/delete",
+                opaque_delete_batch,
+                "Storage delete rejected - not found, version check failed, or permission denied.",
+            ),
+        ] {
+            let response = app.handle(&request(path, Some(&credential), &input));
+            assert_eq!(response.status, 400);
+            assert_eq!(
+                json(&response),
+                serde_json::json!({"code":3,"message":message})
+            );
+            assert_eq!(storage_live_snapshot(&mut control), before_opaque);
+        }
+        assert_eq!(
+            control
+                .execute(
+                    "UPDATE public.trnm_storage_objects SET write_permission = 1 \
+                     WHERE collection = $1 AND object_key = 'own-hidden' AND user_id = $2",
+                    &[&LIVE_COLLECTION, &LIVE_USER.as_bytes().as_slice()],
+                )
+                .unwrap(),
+            1
+        );
+        println!(
+            "storage_opaque_conditions_live_executed profile={} write_cases=15 delete_cases=18 batch_cases=2",
+            profile.metadata_value()
+        );
 
         let read_body = serde_json::json!({"object_ids":[
             {"collection":LIVE_COLLECTION,"key":"sword","user_id":LIVE_USER_UUID},

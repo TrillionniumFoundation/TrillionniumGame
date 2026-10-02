@@ -74,6 +74,9 @@ REQUIRED_FILES = {
 }
 REQUIRED_TESTS = {
     "canonical_storage_api_live_database",
+    "opaque_write_conditions_reach_storage_occ_and_acl_after_authentication",
+    "opaque_delete_conditions_including_star_are_literal_and_reach_storage",
+    "absent_null_and_empty_conditions_keep_unconditional_write_and_delete_semantics",
     "storage_timestamp_json_matches_protobuf_range_precision_and_pre_epoch",
     "new_storage_ack_requires_both_times_and_historical_unknown_is_not_fabricated",
     "storage_ack_rejects_missing_effective_update_time_and_unequal_insert_pair",
@@ -280,6 +283,14 @@ def validate_storage_live_harness(source: str) -> None:
             fail("storage live harness must reject an optional fixture skip")
         if not previous_end < start < assignment < count < numeric < exact < executed < reject_skip < end:
             fail("storage live harness fixture/guard order drifted")
+        if logfile == "canonical-storage-app.log":
+            opaque = once(
+                'grep -Fxq "storage_opaque_conditions_live_executed profile=${profile} '
+                'write_cases=15 delete_cases=18 batch_cases=2" '
+                '"$evidence/canonical-storage-app.log"'
+            )
+            if not executed < opaque < reject_skip:
+                fail("storage opaque condition marker must bind the checked canonical fixture")
         previous_end = end
     schema_start = once(
         'CARGO_TERM_COLOR=never TRNM_REQUIRE_LIVE_DATABASE=1 '
@@ -310,6 +321,8 @@ def validate_storage_live_harness(source: str) -> None:
         fail("storage live summary must follow the checked client-list execution")
     if '"storage_occ_precedence":true' not in commands[summary[0]]:
         fail("storage live summary must bind the checked ACL/OCC execution")
+    if '"raw_version_conditions":true' not in commands[summary[0]]:
+        fail("storage live summary must bind the checked original condition inputs")
     seal = once(
         'find "$evidence" -type f ! -name SHA256SUMS -print0 '
         '| sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"'
@@ -698,6 +711,16 @@ def main() -> int:
         fail("storage API contract routes differ from the pinned source subset")
     if not storage_contract.get("limitations") or any(storage_contract.get("claims", {}).values()):
         fail("storage API contract must retain limitations and no-credit claims")
+    if storage_contract.get("resource_limits", {}).get("version_condition") != (
+        "No separate format or length cap; bounded by the configured HTTP request budget."
+    ):
+        fail("storage exact input conditions must retain the complete request budget")
+    condition_state = status.get("storage_http_mutations", {}).get("condition_version")
+    if condition_state != (
+        "Original-string ExpectedVersion: write empty is blind, write star is insert-only, "
+        "other writes and all nonempty deletes are exact; schema v2 generated versions remain unchanged."
+    ):
+        fail("storage mutation state must distinguish raw conditions from generated versions")
     if status.get("claims", {}).get("storage_http_mutation_source_candidate") is not True:
         fail("storage mutation component state is missing")
     if status.get("claims", {}).get("storage_http_read_source_candidate") is not True:

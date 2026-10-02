@@ -84,6 +84,7 @@
     },
     {
       "id":"GATE-DATA",
+      "source_candidate_note": "Original-string ExpectedVersion is implemented without a schema change. Native SQL/NUL errors, historical opaque stored versions and JSONB value/version separation remain unqualified; no gate credit or acceptance.",
       "owner":"database-migration",
       "status":"blocked",
       "depends_on":["GATE-SCOPE","GATE-ORACLE"],

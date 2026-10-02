@@ -160,6 +160,39 @@ impl fmt::Display for ContentVersion {
     }
 }
 
+/// An exact input condition, preserving the supplied string without parsing,
+/// case folding, trimming or a stored-version length restriction. Adapters
+/// classify empty/write-star sentinels before constructing the operation and
+/// bound untrusted input with their complete request budget. This pure type
+/// does not qualify a database profile's native text-parameter error behavior.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ExpectedVersion(String);
+
+impl ExpectedVersion {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for ExpectedVersion {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ExpectedVersion {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<ContentVersion> for ExpectedVersion {
+    fn from(value: ContentVersion) -> Self {
+        Self(value.as_str().to_owned())
+    }
+}
+
 /// Internal SHA-256 content-integrity identity. It is intentionally a
 /// different type from the public Nakama-compatible MD5 version. Callers do
 /// not choose this value: the storage boundary derives it from the exact value
@@ -280,14 +313,15 @@ pub struct StorageObject {
     pub write_permission: WritePermission,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VersionCheck {
     /// Nakama `version == ""`: last-write-wins upsert, subject to permission.
     Any,
     /// Nakama `version == "*"`: insert only when the object does not exist.
     MustNotExist,
-    /// Nakama non-empty/non-star version: exact if-match update.
-    Exact(ContentVersion),
+    /// Exact literal if-match condition. Wire adapters select Any for empty
+    /// versions and MustNotExist for the write-only star sentinel.
+    Exact(ExpectedVersion),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -302,7 +336,8 @@ pub struct WriteOperation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeleteOperation {
     pub key: StorageObjectKey,
-    pub expected_version: Option<ContentVersion>,
+    /// None means unconditional; every Some token, including star, is literal.
+    pub expected_version: Option<ExpectedVersion>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -395,7 +430,7 @@ fn apply_write(
         previous.as_ref()
     };
     validate_write_actor(actor, &operation.key, acl_object)?;
-    validate_version_check(previous.as_ref(), operation.expected)?;
+    validate_version_check(previous.as_ref(), &operation.expected)?;
 
     if let Some(object) = previous.as_ref() {
         verify_object_integrity(object)?;
@@ -437,8 +472,8 @@ fn apply_delete(
         )
     })?;
     validate_write_actor(actor, &operation.key, Some(&previous))?;
-    if let Some(expected) = operation.expected_version {
-        if previous.version != expected {
+    if let Some(expected) = operation.expected_version.as_ref() {
+        if previous.version.as_str() != expected.as_str() {
             return Err(version_error());
         }
     }
@@ -522,7 +557,7 @@ fn validate_write_actor(
 
 fn validate_version_check(
     existing: Option<&StorageObject>,
-    check: VersionCheck,
+    check: &VersionCheck,
 ) -> Result<(), DomainError> {
     match check {
         VersionCheck::Any => Ok(()),
@@ -533,7 +568,7 @@ fn validate_version_check(
             RetryClass::Never,
         )),
         VersionCheck::Exact(expected) => match existing {
-            Some(object) if object.version == expected => Ok(()),
+            Some(object) if object.version.as_str() == expected.as_str() => Ok(()),
             _ => Err(version_error()),
         },
     }
@@ -729,6 +764,381 @@ mod tests {
         }
     }
 
+    fn opaque_tokens() -> Vec<String> {
+        let version = ContentVersion::from_value(b"v1");
+        vec![
+            version.as_str().to_ascii_uppercase(),
+            "arbitrary nonhex".to_owned(),
+            "版本🔑".to_owned(),
+            String::new(),
+            "*".to_owned(),
+            "f".repeat(33),
+            "f".repeat(64 * 1024),
+            format!("{}suffix", version.as_str()),
+            format!(" {}\t", version.as_str()),
+        ]
+    }
+
+    #[test]
+    fn expected_version_preserves_strings_without_stored_version_constraints() {
+        let mut tokens = opaque_tokens();
+        tokens.extend(["é".to_owned(), "e\u{301}".to_owned(), "line\r\n".to_owned()]);
+        // Pure input preservation does not qualify native SQL text errors.
+        tokens.push("nul\0token".to_owned());
+        for raw in tokens {
+            let owned = ExpectedVersion::from(raw.clone());
+            let borrowed = ExpectedVersion::from(raw.as_str());
+            assert_eq!(owned.as_str().as_bytes(), raw.as_bytes());
+            assert_eq!(owned, borrowed);
+            assert_eq!(owned.clone(), owned);
+        }
+        assert_ne!(
+            ExpectedVersion::from("é"),
+            ExpectedVersion::from("e\u{301}")
+        );
+        let generated = ContentVersion::from_value(b"v1");
+        assert_eq!(
+            ExpectedVersion::from(generated).as_str(),
+            generated.as_str()
+        );
+        // Retaining opaque input must not weaken the separate MD5 parser.
+        assert!(ContentVersion::parse(&generated.as_str().to_ascii_uppercase()).is_err());
+    }
+
+    #[test]
+    fn opaque_write_tokens_are_exact_and_keep_permission_precedence() {
+        for acl in [WritePermission::None, WritePermission::Owner] {
+            let mut seeded = StorageState::default();
+            seeded
+                .apply_batch(
+                    Actor::Server,
+                    &[write(
+                        1,
+                        "main",
+                        b"v1",
+                        VersionCheck::Any,
+                        ReadPermission::Owner,
+                        acl,
+                    )],
+                )
+                .unwrap();
+            for raw in opaque_tokens() {
+                for actor in [Actor::User(user(1)), Actor::Server] {
+                    let mut state = seeded.clone();
+                    let check = VersionCheck::Exact(raw.as_str().into());
+                    let operation = write(
+                        1,
+                        "main",
+                        b"v2",
+                        check.clone(),
+                        ReadPermission::Public,
+                        WritePermission::Owner,
+                    );
+                    let error = state
+                        .apply_batch(actor, std::slice::from_ref(&operation))
+                        .unwrap_err();
+                    let (code, reason) =
+                        if actor == Actor::User(user(1)) && acl == WritePermission::None {
+                            (
+                                StableCode::PermissionDenied,
+                                "storage_write_permission_denied",
+                            )
+                        } else {
+                            (StableCode::FailedPrecondition, "storage_version_mismatch")
+                        };
+                    assert_eq!(
+                        (error.code(), error.reason()),
+                        (code, reason),
+                        "token bytes={}",
+                        raw.len()
+                    );
+                    assert_eq!(state, seeded);
+                    let BatchOperation::Write(operation) = operation else {
+                        unreachable!()
+                    };
+                    assert_eq!(
+                        operation.expected, check,
+                        "checking must not consume or alter the condition"
+                    );
+                }
+                let mut state = seeded.clone();
+                let error = state
+                    .apply_batch(
+                        Actor::User(user(1)),
+                        &[write(
+                            1,
+                            "missing",
+                            b"v2",
+                            VersionCheck::Exact(raw.into()),
+                            ReadPermission::Owner,
+                            WritePermission::Owner,
+                        )],
+                    )
+                    .unwrap_err();
+                assert_eq!(error.reason(), "storage_version_mismatch");
+                assert_eq!(state, seeded);
+            }
+        }
+        let mut state = StorageState::default();
+        state
+            .apply_batch(
+                Actor::User(user(1)),
+                &[write(
+                    1,
+                    "main",
+                    b"v1",
+                    VersionCheck::MustNotExist,
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap();
+        let raw = state
+            .read(Actor::User(user(1)), &key(1, "main"))
+            .unwrap()
+            .version
+            .as_str()
+            .to_owned();
+        let receipt = state
+            .apply_batch(
+                Actor::User(user(1)),
+                &[write(
+                    1,
+                    "main",
+                    b"v2",
+                    VersionCheck::Exact(raw.into()),
+                    ReadPermission::Public,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            receipt.previous_version,
+            Some(ContentVersion::from_value(b"v1"))
+        );
+        assert_eq!(
+            receipt.current_version,
+            Some(ContentVersion::from_value(b"v2"))
+        );
+        let current = state.read(Actor::Server, &key(1, "main")).unwrap();
+        assert_eq!(current.value, b"v2");
+        assert!(current.integrity_digest.matches_value(b"v2"));
+    }
+
+    #[test]
+    fn opaque_delete_tokens_are_literal_and_keep_permission_precedence() {
+        for acl in [WritePermission::None, WritePermission::Owner] {
+            let mut seeded = StorageState::default();
+            seeded
+                .apply_batch(
+                    Actor::Server,
+                    &[write(
+                        1,
+                        "main",
+                        b"v1",
+                        VersionCheck::Any,
+                        ReadPermission::Owner,
+                        acl,
+                    )],
+                )
+                .unwrap();
+            for raw in opaque_tokens() {
+                for actor in [Actor::User(user(1)), Actor::Server] {
+                    let mut state = seeded.clone();
+                    let operation = BatchOperation::Delete(DeleteOperation {
+                        key: key(1, "main"),
+                        expected_version: Some(raw.as_str().into()),
+                    });
+                    let error = state
+                        .apply_batch(actor, std::slice::from_ref(&operation))
+                        .unwrap_err();
+                    let (code, reason) =
+                        if actor == Actor::User(user(1)) && acl == WritePermission::None {
+                            (
+                                StableCode::PermissionDenied,
+                                "storage_write_permission_denied",
+                            )
+                        } else {
+                            (StableCode::FailedPrecondition, "storage_version_mismatch")
+                        };
+                    assert_eq!(
+                        (error.code(), error.reason()),
+                        (code, reason),
+                        "token bytes={}",
+                        raw.len()
+                    );
+                    assert_eq!(state, seeded);
+                }
+            }
+        }
+        let mut state = StorageState::default();
+        state
+            .apply_batch(
+                Actor::Server,
+                &[write(
+                    1,
+                    "main",
+                    b"v1",
+                    VersionCheck::Any,
+                    ReadPermission::Owner,
+                    WritePermission::Owner,
+                )],
+            )
+            .unwrap();
+        // Delete's star remains a literal condition, unlike write MustNotExist.
+        let before = state.clone();
+        let star = BatchOperation::Delete(DeleteOperation {
+            key: key(1, "main"),
+            expected_version: Some("*".into()),
+        });
+        assert_eq!(
+            state
+                .apply_batch(Actor::User(user(1)), &[star])
+                .unwrap_err()
+                .reason(),
+            "storage_version_mismatch"
+        );
+        assert_eq!(state, before);
+        // An actual matching string condition still produces a committed delete.
+        let current = state.read(Actor::Server, &key(1, "main")).unwrap().version;
+        let delete = BatchOperation::Delete(DeleteOperation {
+            key: key(1, "main"),
+            expected_version: Some(current.as_str().into()),
+        });
+        let receipt = state
+            .apply_batch(Actor::User(user(1)), &[delete])
+            .unwrap()
+            .remove(0);
+        assert_eq!(receipt.previous_version, Some(current));
+        assert_eq!(receipt.current_version, None);
+        assert_eq!(state.object_count(), 0);
+    }
+
+    #[test]
+    fn opaque_conditions_do_not_override_owner_binding() {
+        let mut seeded = StorageState::default();
+        seeded
+            .apply_batch(
+                Actor::Server,
+                &[
+                    write(
+                        1,
+                        "foreign",
+                        b"v1",
+                        VersionCheck::Any,
+                        ReadPermission::Public,
+                        WritePermission::Owner,
+                    ),
+                    write(
+                        0,
+                        "global",
+                        b"v1",
+                        VersionCheck::Any,
+                        ReadPermission::Public,
+                        WritePermission::Owner,
+                    ),
+                ],
+            )
+            .unwrap();
+        for raw in opaque_tokens() {
+            for actor in [Actor::User(user(2)), Actor::User(user(0))] {
+                for (owner, name) in [(1, "foreign"), (0, "global")] {
+                    let operations = [
+                        write(
+                            owner,
+                            name,
+                            b"v2",
+                            VersionCheck::Exact(raw.as_str().into()),
+                            ReadPermission::Public,
+                            WritePermission::Owner,
+                        ),
+                        BatchOperation::Delete(DeleteOperation {
+                            key: key(owner, name),
+                            expected_version: Some(raw.as_str().into()),
+                        }),
+                    ];
+                    for operation in operations {
+                        let mut state = seeded.clone();
+                        let error = state.apply_batch(actor, &[operation]).unwrap_err();
+                        assert_eq!(error.code(), StableCode::PermissionDenied);
+                        assert_eq!(error.reason(), "storage_write_permission_denied");
+                        assert_eq!(state, seeded);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn opaque_condition_rejections_roll_back_prior_writes_and_deletes() {
+        let mut seeded = StorageState::default();
+        seeded
+            .apply_batch(
+                Actor::Server,
+                &[
+                    write(
+                        1,
+                        "main",
+                        b"v1",
+                        VersionCheck::Any,
+                        ReadPermission::Owner,
+                        WritePermission::Owner,
+                    ),
+                    write(
+                        1,
+                        "prior_delete",
+                        b"keep",
+                        VersionCheck::Any,
+                        ReadPermission::Public,
+                        WritePermission::Owner,
+                    ),
+                ],
+            )
+            .unwrap();
+        for raw in opaque_tokens() {
+            for failed in [
+                write(
+                    1,
+                    "main",
+                    b"v2",
+                    VersionCheck::Exact(raw.as_str().into()),
+                    ReadPermission::Public,
+                    WritePermission::None,
+                ),
+                BatchOperation::Delete(DeleteOperation {
+                    key: key(1, "main"),
+                    expected_version: Some(raw.as_str().into()),
+                }),
+            ] {
+                let mut state = seeded.clone();
+                let operations = [
+                    BatchOperation::Delete(DeleteOperation {
+                        key: key(1, "prior_delete"),
+                        expected_version: None,
+                    }),
+                    write(
+                        1,
+                        "staged",
+                        b"new",
+                        VersionCheck::MustNotExist,
+                        ReadPermission::Owner,
+                        WritePermission::Owner,
+                    ),
+                    failed,
+                ];
+                let error = state
+                    .apply_batch(Actor::User(user(1)), &operations)
+                    .unwrap_err();
+                assert_eq!(error.reason(), "storage_version_mismatch");
+                assert_eq!(
+                    state, seeded,
+                    "failure must restore a preceding deletion and insertion"
+                );
+            }
+        }
+    }
+
     #[test]
     fn owner_write_and_read_respects_occ() {
         let mut state = StorageState::default();
@@ -824,7 +1234,7 @@ mod tests {
                     1,
                     "main",
                     b"v2",
-                    VersionCheck::Exact(ContentVersion::from_value(b"stale")),
+                    VersionCheck::Exact(ContentVersion::from_value(b"stale").into()),
                     ReadPermission::Owner,
                     WritePermission::Owner,
                 )],
@@ -867,7 +1277,7 @@ mod tests {
                 1,
                 "existing",
                 b"bad",
-                VersionCheck::Exact(ContentVersion::from_value(b"stale")),
+                VersionCheck::Exact(ContentVersion::from_value(b"stale").into()),
                 ReadPermission::Owner,
                 WritePermission::Owner,
             ),
@@ -927,7 +1337,7 @@ mod tests {
         let attempted = BatchOperation::Write(WriteOperation {
             key: server_key,
             value: b"v2".to_vec(),
-            expected: VersionCheck::Exact(ContentVersion::from_value(b"v1")),
+            expected: VersionCheck::Exact(ContentVersion::from_value(b"v1").into()),
             read_permission: ReadPermission::Public,
             write_permission: WritePermission::None,
         });
@@ -959,7 +1369,7 @@ mod tests {
         let version = ContentVersion::from_value(b"v1");
         let delete = BatchOperation::Delete(DeleteOperation {
             key: key(1, "main"),
-            expected_version: Some(version),
+            expected_version: Some(version.into()),
         });
         let receipt = state
             .apply_batch(Actor::User(user(1)), &[delete])
@@ -1079,7 +1489,7 @@ mod tests {
                 ),
                 (
                     Actor::User(user(1)),
-                    VersionCheck::Exact(current),
+                    VersionCheck::Exact(current.into()),
                     if acl == WritePermission::None {
                         denied
                     } else {
@@ -1088,7 +1498,7 @@ mod tests {
                 ),
                 (
                     Actor::User(user(1)),
-                    VersionCheck::Exact(stale),
+                    VersionCheck::Exact(stale.into()),
                     if acl == WritePermission::None {
                         denied
                     } else {
@@ -1096,8 +1506,12 @@ mod tests {
                     },
                 ),
                 (Actor::Server, VersionCheck::Any, None),
-                (Actor::Server, VersionCheck::Exact(current), None),
-                (Actor::Server, VersionCheck::Exact(stale), stale_error),
+                (Actor::Server, VersionCheck::Exact(current.into()), None),
+                (
+                    Actor::Server,
+                    VersionCheck::Exact(stale.into()),
+                    stale_error,
+                ),
             ] {
                 let mut state = seeded.clone();
                 let attempted = write(
@@ -1149,8 +1563,8 @@ mod tests {
                 for expected in [
                     VersionCheck::Any,
                     VersionCheck::MustNotExist,
-                    VersionCheck::Exact(current),
-                    VersionCheck::Exact(stale),
+                    VersionCheck::Exact(current.into()),
+                    VersionCheck::Exact(stale.into()),
                 ] {
                     for name in ["main", "missing"] {
                         let mut state = seeded.clone();
@@ -1161,7 +1575,7 @@ mod tests {
                                     1,
                                     name,
                                     b"v2",
-                                    expected,
+                                    expected.clone(),
                                     ReadPermission::Public,
                                     WritePermission::Owner,
                                 )],

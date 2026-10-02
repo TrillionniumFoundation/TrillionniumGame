@@ -388,9 +388,7 @@ impl ParsedWrite {
         let expected = match self.version.as_str() {
             "" => VersionCheck::Any,
             "*" => VersionCheck::MustNotExist,
-            version => VersionCheck::Exact(
-                ContentVersion::parse(version).map_err(|_| ApiError(REJECTED_VERSION))?,
-            ),
+            version => VersionCheck::Exact(version.into()),
         };
         Ok(BatchOperation::Write(WriteOperation {
             key: self.key,
@@ -462,7 +460,7 @@ fn decode_delete(object: &JsonObject, user: UserId) -> Result<BatchOperation, Ap
     let expected_version = if version.is_empty() {
         None
     } else {
-        Some(ContentVersion::parse(&version).map_err(|_| ApiError(REJECTED_DELETE))?)
+        Some(version.into())
     };
     Ok(BatchOperation::Delete(DeleteOperation {
         key,
@@ -600,10 +598,13 @@ fn write_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) -
         let Some(version) = receipt.current_version else {
             return gateway_error(500, 13, "Error writing storage objects.");
         };
-        let expected_previous = match write.expected {
+        let expected_previous = match &write.expected {
             VersionCheck::Any => true,
             VersionCheck::MustNotExist => receipt.previous_version.is_none(),
-            VersionCheck::Exact(expected) => receipt.previous_version == Some(expected),
+            VersionCheck::Exact(expected) => receipt
+                .previous_version
+                .as_ref()
+                .is_some_and(|previous| previous.as_str() == expected.as_str()),
         };
         if receipt.key != write.key
             || version != ContentVersion::from_value(&write.value)
@@ -629,7 +630,7 @@ fn write_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) -
                     || stored.times.update.is_none()
                     || stored.times.create != stored.times.update))
             || (stored.times.update.is_none()
-                && (matches!(write.expected, VersionCheck::Exact(_))
+                && (matches!(&write.expected, VersionCheck::Exact(_))
                     || receipt.previous_version != Some(version)))
         {
             return gateway_error(500, 13, "Error writing storage objects.");
@@ -649,9 +650,13 @@ fn delete_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) 
             operation.key() != &receipt.key
                 || receipt.current_version.is_some()
                 || receipt.previous_version.is_none()
-                || delete
-                    .expected_version
-                    .is_some_and(|expected| receipt.previous_version != Some(expected))
+                || delete.expected_version.as_ref().is_some_and(|expected| {
+                    receipt
+                        .previous_version
+                        .as_ref()
+                        .map(ContentVersion::as_str)
+                        != Some(expected.as_str())
+                })
         })
     {
         return gateway_error(500, 13, "Error deleting storage objects.");
@@ -1427,7 +1432,25 @@ mod tests {
         let BatchOperation::Delete(delete) = &mut conditional else {
             panic!()
         };
-        delete.expected_version = Some(ContentVersion::from_value(b"stale"));
+        delete.expected_version = Some(
+            ContentVersion::from_value(b"{}")
+                .as_str()
+                .to_ascii_uppercase()
+                .into(),
+        );
+        assert_eq!(
+            delete_response(
+                std::slice::from_ref(&conditional),
+                std::slice::from_ref(&receipt)
+            )
+            .status,
+            500,
+            "an opaque uppercase condition cannot validate a lowercase stored receipt"
+        );
+        let BatchOperation::Delete(delete) = &mut conditional else {
+            panic!()
+        };
+        delete.expected_version = Some(ContentVersion::from_value(b"stale").into());
         assert_eq!(
             delete_response(&[conditional], std::slice::from_ref(&receipt)).status,
             500
@@ -1454,7 +1477,21 @@ mod tests {
         let BatchOperation::Write(write) = &mut operations[0] else {
             panic!()
         };
-        write.expected = VersionCheck::Exact(ContentVersion::from_value(b"stale"));
+        write.expected = VersionCheck::Exact(
+            ContentVersion::from_value(b"{}")
+                .as_str()
+                .to_ascii_uppercase()
+                .into(),
+        );
+        assert_eq!(
+            write_response(&operations, std::slice::from_ref(&receipt)).status,
+            500,
+            "an opaque uppercase condition cannot validate a lowercase stored receipt"
+        );
+        let BatchOperation::Write(write) = &mut operations[0] else {
+            panic!()
+        };
+        write.expected = VersionCheck::Exact(ContentVersion::from_value(b"stale").into());
         assert_eq!(
             write_response(&operations, std::slice::from_ref(&receipt)).status,
             500
