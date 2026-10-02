@@ -62,6 +62,24 @@ class CockroachDbSemanticRecoveryContractTests(unittest.TestCase):
                 with self.assertRaises(self.checker.ValidationError):
                     self.checker.validate_texts(self.data, harness)
 
+    def test_v3_native_snapshot_retains_independent_tokens_witness_and_prior_publisher(self):
+        for field in ("value_jsonb_text", "public_version", "value_projection_digest", "value_origin",
+                      "source_manifest_digest", "request_native_text", "v2_apply_source_commit"):
+            data = self.data.replace("'" + field + "'", "'removed'")
+            with self.subTest(field=field), self.assertRaises(self.checker.ValidationError):
+                self.checker.validate_texts(data, self.harness)
+
+    def test_v3_complete_chain_and_structural_probes_do_not_inherit_v2_proof(self):
+        for marker in ("report['schema_version']==3", "report['storage_writer_epoch']==3", "len(ordered)==3",
+                       "restored-schema-identity.json", "validate_storage_snapshot_bytes", "unknown-unicode",
+                       'storage_v3_constraint missing-native 23502', 'storage_v3_constraint projection-width 23514',
+                       'storage_v3_constraint unknown-zero-manifest 23514'):
+            harness = self.harness.replace(marker, "removed")
+            with self.subTest(marker=marker), self.assertRaises(self.checker.ValidationError):
+                self.checker.validate_texts(self.data, harness)
+        self.assertEqual(len(self.checker.V3.V3_PROBES), 9)
+        self.assertIn('"negative_constraint_probe_count": 10', self.harness)
+
     def test_full_chain_identity_noop_and_known_timestamp_restore_are_required(self):
         for marker in ("apply-authoritative-schema.sh", "schema-identity-check.json",
                        "migration-chain-validation.json", "1969-12-31 23:59:59.999999+00"):

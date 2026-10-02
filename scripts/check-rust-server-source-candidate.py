@@ -29,7 +29,9 @@ EXPECTED_RUNTIME_FILES = {
     "server.rs",
     "session_api.rs",
     "storage_api.rs",
+    "storage_api_projection_tests.rs",
     "storage_api_tests.rs",
+    "storage_api_v3_live.rs",
     "storage_list_api.rs",
     "storage_list_query.rs",
     "storage_list_api_tests.rs",
@@ -77,6 +79,10 @@ class ValidationError(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValidationError(message)
+
+
+def validate_runtime_file_inventory(runtime_files: set[str]) -> None:
+    require(runtime_files == EXPECTED_RUNTIME_FILES, "runtime module file set drift")
 
 
 def read(path: Path) -> str:
@@ -136,7 +142,7 @@ def main() -> int:
         require("git+" not in lock, "isolated lock introduced a Git dependency")
 
         runtime_files = {path.name for path in runtime_path.glob("*.rs") if path.is_file()}
-        require(runtime_files == EXPECTED_RUNTIME_FILES, "runtime module file set drift")
+        validate_runtime_file_inventory(runtime_files)
         source_paths = [lib_path, main_path, CRATE / "build.rs"] + sorted(runtime_path.glob("*.rs"))
         source = "\n".join(read(path) for path in source_paths)
         markers = {

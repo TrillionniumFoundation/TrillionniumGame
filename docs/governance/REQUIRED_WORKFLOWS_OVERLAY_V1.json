@@ -24,7 +24,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "1bb4ab531595263a624a4cb16ff2d7f6c345cf21",
+      "git_blob_sha1": "eec3860650f4aad4d8738da67996228170b20e4c",
       "minimum_successful_execution_jobs": 2,
       "name": "cockroach-serialization-retry",
       "path": ".github/workflows/cockroach-serialization-retry.yml",
@@ -35,6 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
+  "overlay_sha256": "7d5ce2b0093fe14cb6b0917a3d7aa02aec5c3bddd0e22c6a825848415cc82989",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -311,7 +312,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "ff89ca6375b54ae0952028a8582bafc597408132",
+      "git_blob_sha1": "1334f3bb09b0ab2c475c92696d39870e3f5760eb",
       "minimum_successful_execution_jobs": 1,
       "name": "database-backup-restore",
       "path": ".github/workflows/database-backup-restore.yml",
@@ -321,7 +322,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "96699faf5c1f0cc54d1f7b19b2b4af925798e333",
+      "git_blob_sha1": "f5c8674a5561cdfd6659db774ebc8d06c2fa2eca",
       "minimum_successful_execution_jobs": 1,
       "name": "trnm-server-live",
       "path": ".github/workflows/trnm-server-live.yml",
@@ -501,7 +502,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "36279bb121b3f13488c93f152208929b4c0c5f2f",
+      "git_blob_sha1": "6378d13fa212b97d3c37c81d47dbf8e3636572e7",
       "minimum_successful_execution_jobs": 1,
       "name": "prospective-merge-gate",
       "path": ".github/workflows/prospective-merge-gate.yml",
@@ -509,6 +510,5 @@
     }
   ],
   "repository": "TrillionniumFoundation/TrillionniumGame",
-  "schema": "trnm_required_workflow_overlay_v1",
-  "overlay_sha256": "5626b53592d6bf4f33bd6fb9a01dcf4d85d3779583d89e0ef6254c58a0710d1e"
+  "schema": "trnm_required_workflow_overlay_v1"
 }

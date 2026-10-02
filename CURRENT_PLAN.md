@@ -42,6 +42,8 @@
 
 仓库已有 authority、session、storage、canonical framing、transport error、query、presence、JWT/token、PostgreSQL/CockroachDB persistence、transactional outbox、HTTP/WebSocket、有限 gRPC Healthcheck、response-loss 和 backup/restore 的局部 source/CI candidates。
 
+当前存储源码候选把两库权威链推进至 schema 3：数据库原生 JSONB 是唯一值来源，持久 public version 独立保留，写 ACK 使用原始请求字节的 MD5，旧字节只作为可选完整性见证。类型化迁移保留历史 SQL、时间及 v2 发布来源；原生数据库、服务入口和恢复夹具分别验证这些边界。源绑定 Nakama 全量导入、空 key 和更宽 ACL 历史、重复 key 批次、数据库内部渲染资源约束及 immutable oracle 差分仍未完成，此候选不授予全量替换或生产声明。
+
 `crates/trnm-server` 现在是唯一默认 `trnm-server` composition authority 的源码候选；`crates/trnm-persistence-pg` 只保留 feature-gated 的 `trnm-pg-compat-server` 诊断兼容进程。Plan v3.1 的仓库源码基线已通过 PR #63 接入 `main`，但该接入只建立集成基线，不授予兼容性、持久性、生产、公开上线、切换或退役声明。最终仍需把 transport、application service、domain、persistence 和 process lifecycle 的边界完全落地，并以精确对象证据验证。
 
 以下声明当前全部为 false：

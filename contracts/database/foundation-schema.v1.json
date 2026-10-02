@@ -50,11 +50,34 @@
     "sg4_complete": false,
     "production_ready": false
   },
-  "schema_version": 2,
-  "storage_writer_epoch": 2,
+  "schema_version": 3,
+  "storage_writer_epoch": 3,
   "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
   "digest_algorithm": "ordered-path-git-blob-sha256.v1",
   "migration_runner": "crates/trnm-persistence-pg::PgRepository::migrate_authoritative_schema",
-  "serve_schema_verification": "read-only BASE TABLE inventory and column type/nullability/default/prefix verification plus ready metadata; constraint, index, collation and typmod semantic equivalence remains unverified",
-  "historical_timestamps": "unknown create_time/update_time remain SQL NULL; updated_at_ms is legacy provenance"
+  "serve_schema_verification": "Read-only current chain/epoch identity and closed reviewed BASE TABLE, column type/nullability/default/typmod, named CHECK and primary-key order for this ABI; general constraint, index, collation and schema equivalence remain unverified",
+  "historical_timestamps": "unknown create_time/update_time remain SQL NULL; updated_at_ms is legacy provenance",
+  "historical_timestamp_upgrade": {
+    "schema_version": 2,
+    "storage_writer_epoch": 2,
+    "migration": "0002_storage_timestamps_up.sql",
+    "action_count": 6,
+    "historical_timestamps_remain_unknown": true
+  },
+  "storage_native_jsonb": {
+    "payload_authority": "value_jsonb",
+    "read_projection": "native JSONB::TEXT",
+    "stored_public_version": "opaque native VARCHAR(32); no MD5 parsing or normalization",
+    "write_ack_version": "MD5 of exact incoming request bytes",
+    "projection_integrity": "SHA256 of native JSONB::TEXT UTF-8 bytes",
+    "known_request_origins": [
+      "legacy-rust-v2-bytes",
+      "write-request-bytes"
+    ],
+    "known_raw_witness": "value_bytes/version_digest retain exact known bytes and SHA256; raw MD5, public version and native projection remain bound",
+    "unknown_request_origin": "nakama-export-unknown-request",
+    "unknown_raw_witness": "SQL NULL value_bytes/version_digest pair with an independent nonzero 32-byte source_manifest_digest",
+    "catalog_semantic_scope": "Exact reviewed column typmod, named validated CHECK and primary-key order for this ABI; no general constraint or schema equivalence credit",
+    "runtime_execution_credit": false
+  }
 }

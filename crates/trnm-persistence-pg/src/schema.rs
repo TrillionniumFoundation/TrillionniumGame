@@ -10,8 +10,8 @@ use trnm_contracts::{Digest32, DomainError};
 use crate::{data_loss, failed_precondition, invalid, map_postgres_error, to_i64};
 use crate::{DatabaseProfile, IntegrityDigest, PgRepository};
 
-pub const AUTHORITATIVE_SCHEMA_VERSION: u64 = 2;
-pub const AUTHORITATIVE_STORAGE_WRITER_EPOCH: u64 = 2;
+pub const AUTHORITATIVE_SCHEMA_VERSION: u64 = 3;
+pub const AUTHORITATIVE_STORAGE_WRITER_EPOCH: u64 = 3;
 pub const AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM: &str = "ordered-path-git-blob-sha256.v1";
 const REQUIRED_TABLES: [&str; 10] = [
     "trnm_schema_metadata",
@@ -36,6 +36,8 @@ pub struct SchemaIdentity {
     /// Original foundation provenance, retained when schema v2 is published.
     pub source_commit: String,
     pub upgrade_source_commit: String,
+    /// Publisher of the historical v2 revision, preserved by the v3 cutover.
+    pub v2_apply_source_commit: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,11 +64,21 @@ struct ColumnDescriptor {
     kind: &'static str,
     nullable: bool,
     default_zero: bool,
+    character_maximum_length: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MigrationActionKind {
+    AddColumn,
+    SetNullability,
+    BackfillStorageJsonbV3,
+    AddCheck,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct MigrationAction {
     id: &'static str,
+    kind: MigrationActionKind,
     column: ColumnDescriptor,
     sql: &'static str,
 }
@@ -86,6 +98,7 @@ include!(concat!(env!("OUT_DIR"), "/authoritative_schema.rs"));
 include!("schema_parts/catalog.rs");
 include!("schema_parts/metadata.rs");
 include!("schema_parts/migrate.rs");
+include!("schema_parts/jsonb_backfill.rs");
 
 fn steps(profile: DatabaseProfile) -> &'static [MigrationStep] {
     match profile {
@@ -189,15 +202,16 @@ mod tests {
                 Digest32::new(expected)
             );
             let chain = steps(profile);
-            assert_eq!(chain.len(), 2);
+            assert_eq!(chain.len(), 3);
             assert_eq!(chain[0].version, 1);
-            assert_eq!(chain[1].version, AUTHORITATIVE_SCHEMA_VERSION);
+            assert_eq!(chain[1].version, 2);
+            assert_eq!(chain[2].version, AUTHORITATIVE_SCHEMA_VERSION);
             assert!(chain[0].sql.contains("BEGIN;"));
             assert!(chain[0].sql.contains("COMMIT;"));
             assert!(!chain
                 .iter()
                 .any(|step| step.path.contains("database/schema")));
-            assert_eq!(actions(profile).len(), 6);
+            assert_eq!(actions(profile).len(), 22);
             // Nullable bare type declarations still belong to the baseline;
             // dropping their comma-suffixed type token rejected real v1 DBs.
             assert_eq!(baseline(profile).len(), 71);
@@ -211,9 +225,11 @@ mod tests {
                 .any(|column| column.table == "trnm_refresh_tokens"
                     && column.name == "consumed_at_ms"
                     && column.nullable));
-            assert!(actions(profile).iter().all(|action| action.column.nullable
-                && !action.column.default_zero
-                && !action.sql.contains("DEFAULT")));
+            assert!(actions(profile)[..6]
+                .iter()
+                .all(|action| action.column.nullable
+                    && !action.column.default_zero
+                    && !action.sql.contains("DEFAULT")));
         }
     }
 
@@ -237,7 +253,7 @@ mod tests {
             assert_eq!(digest_hex(chain_digest_at(profile, 2).unwrap()), timestamps);
             assert_eq!(
                 chain_digest_at(profile, 2).unwrap(),
-                authoritative_chain_digest(profile)
+                digest_for_steps(&steps(profile)[..2])
             );
             let current = steps(profile);
             let extended = [
@@ -294,7 +310,7 @@ mod tests {
                 .map(|action| action.id)
                 .collect();
             assert_eq!(actual, expected_actions);
-            for unknown in [0, 3, u64::MAX] {
+            for unknown in [0, 4, u64::MAX] {
                 assert!(revision(profile, unknown).is_none());
                 assert!(chain_digest_at(profile, unknown).is_none());
             }

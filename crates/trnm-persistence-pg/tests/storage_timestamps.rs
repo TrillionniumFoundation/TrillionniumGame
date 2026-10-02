@@ -84,14 +84,28 @@ fn physical_row(control: &mut Client, key: &StorageObjectKey) -> (StorageTimes, 
     )
 }
 
+fn native_fixture_value(control: &mut Client, value: &[u8]) -> Vec<u8> {
+    control
+        .query_one(
+            "SELECT $1::TEXT::JSONB::TEXT",
+            &[&std::str::from_utf8(value).unwrap()],
+        )
+        .expect("timestamp fixture native projection failed")
+        .get::<_, String>(0)
+        .into_bytes()
+}
+
 fn seed_unknown(control: &mut Client, key: &StorageObjectKey, read: i16) {
     let integrity = IntegrityDigest::from_value(VALUE).get();
+    let native = native_fixture_value(control, VALUE);
+    let projected = IntegrityDigest::from_value(&native).get();
+    let version = ContentVersion::from_value(VALUE);
     control
         .execute(
             "INSERT INTO trnm_storage_objects \
-             (collection, object_key, user_id, value_bytes, version_digest, \
-              read_permission, write_permission, updated_at_ms) \
-             VALUES ($1, $2, $3, $4, $5, $6, 1, 7)",
+             (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, \
+              public_version, value_projection_digest, value_origin, read_permission, write_permission, updated_at_ms) \
+             VALUES ($1, $2, $3, $4, $5, $7::TEXT::JSONB, $8, $9, 'legacy-rust-v2-bytes', $6, 1, 7)",
             &[
                 &key.collection(),
                 &key.key(),
@@ -99,6 +113,9 @@ fn seed_unknown(control: &mut Client, key: &StorageObjectKey, read: i16) {
                 &VALUE,
                 &integrity.as_bytes().as_slice(),
                 &read,
+                &std::str::from_utf8(VALUE).unwrap(),
+                &version.as_str(),
+                &projected.as_bytes().as_slice(),
             ],
         )
         .expect("timestamp fixture historical seed failed");
@@ -286,7 +303,7 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
         let read = repository
             .read_storage_object_with_metadata(StorageActor::User(OWNER), &public_key)
             .unwrap();
-        assert_eq!(read.object.value, VALUE);
+        assert_eq!(read.object.value, native_fixture_value(control, VALUE));
         assert_eq!(read.times, initial[0].times);
         let batch_read = repository
             .read_storage_objects_with_metadata(StorageActor::User(OWNER), &[public_key.clone()])
@@ -308,7 +325,7 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
                 .find(|object| object.key == public_key)
                 .unwrap()
                 .value,
-            VALUE
+            native_fixture_value(control, VALUE)
         );
         for (actor, owner) in [
             (StorageActor::User(OTHER), None),
@@ -323,7 +340,7 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
                 .iter()
                 .find(|object| object.object.key == public_key)
                 .unwrap();
-            assert_eq!(object.object.value, VALUE);
+            assert_eq!(object.object.value, native_fixture_value(control, VALUE));
             assert_eq!(object.times, initial[0].times);
         }
         // Wrong shadow metadata must not deny a public v2 mutation.
@@ -364,7 +381,7 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
         // Ready shadow metadata must not conceal a faulted public epoch.
         control
             .batch_execute(&format!(
-                "UPDATE {name}.trnm_schema_metadata SET storage_writer_epoch = 2"
+                "UPDATE {name}.trnm_schema_metadata SET storage_writer_epoch = 3"
             ))
             .unwrap();
         let mut bad = metadata.clone();
@@ -454,8 +471,8 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
     let mut control = Client::connect(&database_url, NoTls)
         .unwrap_or_else(|_| panic!("timestamp fixture control connection failed"));
     let metadata = Metadata::read(&mut control);
-    assert_eq!(metadata.version, 2);
-    assert_eq!(metadata.epoch, Some(2));
+    assert_eq!(metadata.version, 3);
+    assert_eq!(metadata.epoch, Some(3));
     assert_eq!(metadata.profile, profile.metadata_value());
     cleanup(&mut control, &metadata);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -498,10 +515,11 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
             .unwrap();
         assert_eq!(read[0].times, pair);
         assert_eq!(read[1].times, pair);
-        assert_eq!(read[0].object.value, VALUE);
+        let native = native_fixture_value(&mut control, VALUE);
+        assert_eq!(read[0].object.value, native);
         assert_eq!(
             read[0].object.integrity_digest,
-            IntegrityDigest::from_value(VALUE)
+            IntegrityDigest::from_value(&native)
         );
         let page = repository
             .list_storage_objects_nakama_with_metadata(
@@ -609,10 +627,11 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
         let changed_object = repository
             .read_storage_object_with_metadata(StorageActor::User(OWNER), &second)
             .unwrap();
-        assert_eq!(changed_object.object.value, changed_value);
+        let changed_native = native_fixture_value(&mut control, changed_value);
+        assert_eq!(changed_object.object.value, changed_native);
         assert_eq!(
             changed_object.object.integrity_digest,
-            IntegrityDigest::from_value(changed_value)
+            IntegrityDigest::from_value(&changed_native)
         );
 
         seed_unknown(&mut control, &historical, 1);
@@ -768,10 +787,10 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
             let mut bad = metadata.clone();
             match fault {
                 0 => bad.epoch = Some(1),
-                1 => bad.epoch = Some(3),
+                1 => bad.epoch = Some(4),
                 2 => bad.epoch = None,
                 3 => bad.version = 1,
-                4 => bad.version = 3,
+                4 => bad.version = 4,
                 5 => bad.digest = Some("0".repeat(64)),
                 6 => bad.algorithm = Some("wrong-algorithm".to_owned()),
                 // Immutable per-profile DDL rejects a different metadata
@@ -811,14 +830,25 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                     physical_row(&mut control, &first),
                     (before_failure.times, 10)
                 );
+                let count: i64 = control.query_one(
+                    "SELECT count(*) FROM public.trnm_storage_objects WHERE collection = $1 AND object_key = $2 AND user_id = $3",
+                    &[&COLLECTION, &missing.key(), &OWNER.as_bytes().as_slice()],
+                ).unwrap().get(0);
+                assert_eq!(count, 0);
+                let read_repository = if fault == 7 {
+                    &mut wrong_profile_repository
+                } else {
+                    &mut repository
+                };
                 assert_eq!(
-                    repository
+                    read_repository
                         .read_storage_objects_with_metadata(
                             StorageActor::Server,
                             &[missing.clone()]
                         )
-                        .unwrap(),
-                    Vec::new()
+                        .unwrap_err()
+                        .code(),
+                    StableCode::DataLoss
                 );
             }
             metadata.replace(&mut control);

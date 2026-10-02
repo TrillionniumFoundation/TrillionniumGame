@@ -3,14 +3,17 @@
 
 use std::collections::BTreeSet;
 
-use trnm_contracts::UserId;
+use trnm_contracts::{StableCode, UserId};
 use trnm_persistence_pg::{
     ReadPermission, StorageActor, StorageListPosition, StoredStorageClientListPage,
 };
 
 use super::app::{Repository, STORAGE_LIST_ROUTES};
 use super::http::{Request, Response};
-use super::storage_api::{encode_storage_object, gateway_error};
+use super::storage_api::{
+    encode_storage_object, gateway_error, storage_resource_error, StorageEncodingError,
+    StorageJsonEncoder,
+};
 use super::storage_cursor::{decode_cursor, encode_cursor};
 use super::storage_list_query::{self, ListQuery};
 
@@ -57,6 +60,7 @@ pub(super) fn handle<R: Repository>(
         query.limit,
     ) {
         Ok(page) => encode_page(&query, user, page),
+        Err(error) if error.code() == StableCode::ResourceExhausted => resource_error(),
         Err(_) => internal_error(),
     }
 }
@@ -66,7 +70,14 @@ fn encode_page(query: &ListQuery, user: UserId, page: StoredStorageClientListPag
         return internal_error();
     }
     let mut keys = BTreeSet::new();
-    let mut objects = Vec::with_capacity(page.objects.len());
+    let mut output = StorageJsonEncoder::new();
+    if output.append("{").is_err() {
+        return resource_error();
+    }
+    if !page.objects.is_empty() && output.append("\"objects\":[").is_err() {
+        return resource_error();
+    }
+    let mut first = true;
     for stored in &page.objects {
         let object = &stored.object;
         let visible = match query.owner {
@@ -85,13 +96,18 @@ fn encode_page(query: &ListQuery, user: UserId, page: StoredStorageClientListPag
             return internal_error();
         }
         match encode_storage_object(object, &stored.times) {
-            Some(encoded) => objects.push(encoded),
-            None => return internal_error(),
+            Ok(encoded) => {
+                if (!first && output.append(",").is_err()) || output.append(&encoded).is_err() {
+                    return resource_error();
+                }
+                first = false;
+            }
+            Err(StorageEncodingError::ResourceExhausted) => return resource_error(),
+            Err(StorageEncodingError::DataLoss) => return internal_error(),
         }
     }
-    let mut fields = Vec::new();
-    if !objects.is_empty() {
-        fields.push(format!("\"objects\":[{}]", objects.join(",")));
+    if !page.objects.is_empty() && output.append("]").is_err() {
+        return resource_error();
     }
     if let Some(next) = page.next {
         if page.objects.len() != query.limit
@@ -112,13 +128,25 @@ fn encode_page(query: &ListQuery, user: UserId, page: StoredStorageClientListPag
         };
         // Preserve upstream's literal equal-cursor guard, including when an
         // external caller supplied an equivalent but differently encoded gob.
-        if cursor != query.cursor {
-            fields.push(format!("\"cursor\":{}", serde_json::Value::from(cursor)));
+        if cursor != query.cursor
+            && ((!page.objects.is_empty() && output.append(",").is_err())
+                || output
+                    .append(&format!("\"cursor\":{}", serde_json::Value::from(cursor)))
+                    .is_err())
+        {
+            return resource_error();
         }
     }
-    Response::json(200, format!("{{{}}}", fields.join(",")))
+    if output.append("}").is_err() {
+        return resource_error();
+    }
+    Response::json(200, output.finish())
 }
 
 fn internal_error() -> Response {
     gateway_error(500, 13, "Error listing storage objects.")
+}
+
+fn resource_error() -> Response {
+    storage_resource_error("Error listing storage objects.")
 }

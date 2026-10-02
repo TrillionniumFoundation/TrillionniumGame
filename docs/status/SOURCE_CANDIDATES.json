@@ -139,11 +139,37 @@
       "status": "source-candidate",
       "required_next": [
         "format/test/strict Clippy",
-        "storage-core integration",
+        "exact-head qualification of storage-core request-version generation and public-token separation",
         "both database profiles",
         "API and row differential",
         "independent storage/database review"
       ]
+    },
+    {
+      "id": "SRC-STORAGE-PROJECTION-CORE-V3",
+      "gap_ids": [
+        "GAP-P1-STORAGE-001",
+        "GAP-P0-DATA-001"
+      ],
+      "paths": [
+        "crates/trnm-storage-core/src/lib.rs",
+        "crates/trnm-storage-core/src/projection.rs",
+        "crates/trnm-storage-core/src/projection_tests.rs",
+        "contracts/storage/storage-vectors.json",
+        "scripts/check-storage-core.py",
+        "tests/control_plane/test_storage_integrity_contract.py"
+      ],
+      "status": "source-candidate",
+      "required_next": [
+        "exact-head format/test/strict Clippy and actual prospective merge",
+        "complete native schema and profile-adapter cutover qualification without request-byte reconstruction",
+        "separate PostgreSQL and CockroachDB live native projection, history, collision and rollback packets",
+        "immutable Nakama wire/database and official SDK differential",
+        "independent storage/database/security acceptance"
+      ],
+      "accepted": false,
+      "gap_closed": false,
+      "compatibility_credit": false
     },
     {
       "id": "SRC-CANDIDATE-IDENTITY-V1",
@@ -173,6 +199,8 @@
       "paths": [
         "crates/trnm-server/src/runtime/storage_api.rs",
         "crates/trnm-server/src/runtime/storage_api_tests.rs",
+        "crates/trnm-server/src/runtime/storage_api_projection_tests.rs",
+        "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
         "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs",
         "crates/trnm-persistence-pg/src/storage_parts/03_write.rs",
         "crates/trnm-persistence-pg/tests/authority_storage_parts/02_storage_batch.rs",

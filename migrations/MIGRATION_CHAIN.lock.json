@@ -1,7 +1,7 @@
 {
   "schema": "trillionnium.migration-chain-lock.v1",
   "project_id": "trillionnium-game",
-  "schema_version": 2,
+  "schema_version": 3,
   "generated_from_base": "326e670cb008a990247e31a63c0c4b0e338df62f",
   "profiles": {
     "postgresql": {
@@ -14,6 +14,10 @@
         {
           "path": "migrations/postgresql/0002_storage_timestamps_up.sql",
           "git_blob_sha1": "e36cc2d743eb863af93774a24615f3c5ec1c3443"
+        },
+        {
+          "path": "migrations/postgresql/0003_storage_jsonb_up.sql",
+          "git_blob_sha1": "4eb39d906f8ed3444cee7dd7a550ce21dad5e00c"
         }
       ]
     },
@@ -27,6 +31,10 @@
         {
           "path": "migrations/cockroachdb/0002_storage_timestamps_up.sql",
           "git_blob_sha1": "700cdb460b9211370777928b980b10e37ae21ae9"
+        },
+        {
+          "path": "migrations/cockroachdb/0003_storage_jsonb_up.sql",
+          "git_blob_sha1": "4eb39d906f8ed3444cee7dd7a550ce21dad5e00c"
         }
       ]
     }

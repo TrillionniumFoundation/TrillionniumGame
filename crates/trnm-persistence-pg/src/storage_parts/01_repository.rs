@@ -35,15 +35,20 @@ impl PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
+        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        let columns = storage_row_columns(self.profile, "TRUE");
+        let query = format!(
+            "SELECT {columns} FROM public.trnm_storage_objects \
+             WHERE collection = $1 AND object_key = $2 AND user_id = $3 \
+               AND ($4::bytea IS NULL OR read_permission = 2 \
+                    OR (user_id = $4 AND read_permission = 1))"
+        );
+        let mut result_bytes = 0;
         let mut objects = Vec::with_capacity(keys.len());
         for key in keys {
             let row = transaction
                 .query_opt(
-                    "SELECT value_bytes, version_digest, read_permission, write_permission, create_time, update_time \
-                     FROM public.trnm_storage_objects \
-                     WHERE collection = $1 AND object_key = $2 AND user_id = $3 \
-                       AND ($4::bytea IS NULL OR read_permission = 2 \
-                            OR (user_id = $4 AND read_permission = 1))",
+                    &query,
                     &[
                         &key.collection(),
                         &key.key(),
@@ -51,9 +56,11 @@ impl PgRepository {
                         &actor_bytes,
                     ],
                 )
-                .map_err(map_postgres_error)?;
+                .map_err(map_stored_storage_error)?;
             if let Some(row) = row {
-                objects.push(decode_stored_storage_object(key.clone(), &row)?);
+                let object = decode_stored_storage_object(key.clone(), &row)?;
+                consume_storage_result_budget(&mut result_bytes, object.object.value.len())?;
+                objects.push(object);
             }
         }
         transaction.commit().map_err(map_postgres_error)?;
@@ -73,22 +80,52 @@ impl PgRepository {
         actor: Actor,
         key: &StorageObjectKey,
     ) -> Result<StoredStorageObject, DomainError> {
-        let row = self
+        validate_actor_and_owner(actor, None)?;
+        let actor_bytes = match actor {
+            Actor::Server => None,
+            Actor::User(user) => Some(user.as_bytes().to_vec()),
+        };
+        let visible =
+            "$4::BYTEA IS NULL OR read_permission = 2 OR (user_id = $4 AND read_permission = 1)";
+        let columns = storage_row_columns(self.profile, visible);
+        let query = format!(
+            "SELECT {columns}, ({visible}) AS storage_visible \
+             FROM public.trnm_storage_objects \
+             WHERE collection = $1 AND object_key = $2 AND user_id = $3"
+        );
+        let mut transaction = self
             .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .read_only(true)
+            .start()
+            .map_err(map_postgres_error)?;
+        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        let row = transaction
             .query_opt(
-                "SELECT value_bytes, version_digest, read_permission, write_permission, create_time, update_time \
-                 FROM public.trnm_storage_objects \
-                 WHERE collection = $1 AND object_key = $2 AND user_id = $3",
+                &query,
                 &[
                     &key.collection(),
                     &key.key(),
                     &key.user_id().as_bytes().as_slice(),
+                    &actor_bytes,
                 ],
             )
-            .map_err(map_postgres_error)?
+            .map_err(map_stored_storage_error)?
             .ok_or_else(storage_not_found)?;
+        if !row
+            .try_get::<_, bool>(14)
+            .map_err(|_| data_loss("invalid_storage_read_visibility"))?
+        {
+            return Err(error(
+                StableCode::PermissionDenied,
+                "storage_read_permission_denied",
+                RetryClass::Never,
+            ));
+        }
         let object = decode_stored_storage_object(key.clone(), &row)?;
         authorize_read(actor, &object.object)?;
+        transaction.commit().map_err(map_postgres_error)?;
         Ok(object)
     }
 
@@ -130,26 +167,41 @@ impl PgRepository {
             },
         );
 
-        let rows = self
+        let mut transaction = self
             .client
-            .query(
-                storage_list_query(self.profile),
-                &[
-                    &collection,
-                    &owner_bytes,
-                    &after_key,
-                    &after_user,
-                    &actor_bytes,
-                    &fetch_limit,
-                ],
-            )
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .read_only(true)
+            .start()
             .map_err(map_postgres_error)?;
-
-        let objects = rows
-            .iter()
-            .map(|row| decode_listed_storage_object(collection, row))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(finish_storage_page(objects, actor, owner, limit))
+        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        let query = storage_list_query(self.profile);
+        let parameters: [&(dyn ToSql + Sync); 6] = [
+            &collection,
+            &owner_bytes,
+            &after_key,
+            &after_user,
+            &actor_bytes,
+            &fetch_limit,
+        ];
+        let mut rows = transaction
+            .query_raw(&query, parameters)
+            .map_err(map_stored_storage_error)?;
+        let mut result_bytes = 0;
+        let mut objects = Vec::with_capacity(limit);
+        let mut has_more = false;
+        while let Some(row) = rows.next().map_err(map_stored_storage_error)? {
+            if objects.len() == limit {
+                has_more = true;
+                continue;
+            }
+            let object = decode_listed_storage_object(collection, &row)?;
+            consume_storage_result_budget(&mut result_bytes, object.value.len())?;
+            objects.push(object);
+        }
+        drop(rows);
+        transaction.commit().map_err(map_postgres_error)?;
+        Ok(finish_visible_storage_page(objects, actor, owner, has_more))
     }
 
     /// List a bounded Nakama client page under one read-only serializable snapshot.
@@ -195,50 +247,50 @@ impl PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        let rows = match owner {
-            None => {
-                let after_user = after.map_or_else(
-                    || vec![0_u8; 16],
-                    |position| position.user_id.as_bytes().to_vec(),
-                );
-                transaction.query(
-                    storage_client_list_public_query(),
-                    &[&collection, &after_key, &after_user, &fetch_limit],
-                )
-            }
-            Some(owner) if owner == user => {
-                let after_read = after.map_or(0, |position| position.read);
-                transaction.query(
-                    storage_client_list_own_query(),
-                    &[
-                        &collection,
-                        &owner.as_bytes().as_slice(),
-                        &after_key,
-                        &after_read,
-                        &fetch_limit,
-                    ],
-                )
-            }
-            Some(owner) => transaction.query(
-                storage_client_list_foreign_query(),
-                &[
+        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        let after_user = after.map_or_else(
+            || vec![0_u8; 16],
+            |position| position.user_id.as_bytes().to_vec(),
+        );
+        let owner_bytes = owner.map(|owner| owner.as_bytes().to_vec());
+        let after_read = after.map_or(0, |position| position.read);
+        let (query, parameters): (String, Vec<&(dyn ToSql + Sync)>) = match owner {
+            None => (
+                storage_client_list_public_query(self.profile),
+                vec![&collection, &after_key, &after_user, &fetch_limit],
+            ),
+            Some(owner) if owner == user => (
+                storage_client_list_own_query(self.profile),
+                vec![
                     &collection,
-                    &owner.as_bytes().as_slice(),
+                    &owner_bytes,
                     &after_key,
+                    &after_read,
                     &fetch_limit,
                 ],
             ),
+            Some(_) => (
+                storage_client_list_foreign_query(self.profile),
+                vec![&collection, &owner_bytes, &after_key, &fetch_limit],
+            ),
+        };
+        let mut rows = transaction
+            .query_raw(&query, parameters)
+            .map_err(map_stored_storage_error)?;
+        let mut result_bytes = 0;
+        let mut objects = Vec::with_capacity(limit);
+        let mut has_more = false;
+        while let Some(row) = rows.next().map_err(map_stored_storage_error)? {
+            if objects.len() == limit {
+                has_more = true;
+                continue;
+            }
+            let object = decode_nakama_listed_storage_object_with_metadata(collection, &row)?;
+            consume_storage_result_budget(&mut result_bytes, object.object.value.len())?;
+            objects.push(object);
         }
-        .map_err(map_postgres_error)?;
-
-        // A sentinel proves another visible row exists. It is not part of the
-        // response, so its owner, value and integrity bytes must not be decoded.
-        let objects = rows
-            .iter()
-            .take(limit)
-            .map(|row| decode_nakama_listed_storage_object_with_metadata(collection, row))
-            .collect::<Result<Vec<_>, _>>()?;
-        let page = finish_stored_client_storage_page(objects, rows.len() > limit);
+        drop(rows);
+        let page = finish_stored_client_storage_page(objects, has_more);
         transaction.commit().map_err(map_postgres_error)?;
         Ok(page)
     }
@@ -263,6 +315,9 @@ impl PgRepository {
         updated_at_ms: u64,
     ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
         validate_batch(operations)?;
+        for operation in operations {
+            authorize_write_permission(actor, operation.key(), None)?;
+        }
         let updated_at_i64 = to_i64(updated_at_ms)?;
         let mut transaction = self
             .client
@@ -272,22 +327,36 @@ impl PgRepository {
             .map_err(map_postgres_error)?;
         verify_storage_writer_epoch(&mut transaction, self.profile)?;
 
-        let mut staged = BTreeMap::new();
+        let mut locked = BTreeMap::new();
         for key in sorted_keys(operations) {
-            let object = load_for_update(&mut transaction, &key)?;
-            staged.insert(key, object);
+            locked.insert(key.clone(), lock_storage_access(&mut transaction, &key)?);
         }
-
+        let mut staged = BTreeMap::new();
         let mut receipts = Vec::with_capacity(operations.len());
         for operation in operations {
+            let access = locked
+                .get(operation.key())
+                .ok_or_else(|| data_loss("storage_batch_lock_missing"))?;
+            validate_locked_operation(&mut transaction, actor, operation, access.as_ref())?;
+            staged.insert(
+                operation.key().clone(),
+                load_for_update(&mut transaction, operation.key(), self.profile)?,
+            );
+            verify_storage_staged_budget(&staged)?;
             let receipt = match operation {
-                BatchOperation::Write(write) => {
-                    apply_write(&mut transaction, &mut staged, actor, write, updated_at_i64)?
-                }
+                BatchOperation::Write(write) => apply_write(
+                    &mut transaction,
+                    &mut staged,
+                    actor,
+                    write,
+                    updated_at_i64,
+                    self.profile,
+                )?,
                 BatchOperation::Delete(delete) => {
                     apply_delete(&mut transaction, &mut staged, actor, delete)?
                 }
             };
+            verify_storage_staged_budget(&staged)?;
             receipts.push(receipt);
         }
         transaction.commit().map_err(map_postgres_error)?;

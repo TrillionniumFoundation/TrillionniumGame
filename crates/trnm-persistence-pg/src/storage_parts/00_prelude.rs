@@ -1,10 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use postgres::fallible_iterator::FallibleIterator;
+use postgres::types::ToSql;
 use postgres::{IsolationLevel, Row, Transaction};
 use trnm_contracts::{DomainError, RetryClass, StableCode, UserId};
 use trnm_storage_core::{
-    Actor, BatchOperation, ContentVersion, DeleteOperation, IntegrityDigest, MutationReceipt,
-    ReadPermission, StorageObject, StorageObjectKey, VersionCheck, WriteOperation, WritePermission,
+    Actor, BatchOperation, CollisionWitness, ContentVersion, DeleteOperation, IntegrityDigest,
+    MutationReceipt, PublicVersion, ReadPermission, StorageObject, StorageObjectKey, VersionCheck,
+    WriteOperation, WritePermission,
 };
 
 use super::{
@@ -16,6 +19,10 @@ use super::{
 const MAX_BATCH_OPERATIONS: usize = 100;
 const MAX_LIST_LIMIT: usize = 100;
 const MAX_VALUE_BYTES: usize = 1024 * 1024;
+const MAX_NATIVE_VALUE_BYTES: usize = 16 * 1024 * 1024;
+// This bounds accumulated native payloads. The HTTP adapter separately bounds
+// the actual encoded response, including JSON escaping and metadata.
+const MAX_RESULT_VALUE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_COLLECTION_BYTES: usize = 128;
 const MAX_CLIENT_LIST_COLLECTION_BYTES: usize = 4096;
 const MAX_LIST_POSITION_KEY_BYTES: usize = 4096;

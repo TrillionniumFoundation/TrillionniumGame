@@ -12,7 +12,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             StorageActor::User(user),
             &[StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
-                value: b"v1".to_vec(),
+                value: br#""v1""#.to_vec(),
                 expected: VersionCheck::MustNotExist,
                 read_permission: ReadPermission::Owner,
                 write_permission: WritePermission::Owner,
@@ -24,7 +24,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
     let stored_v1 = repository
         .read_storage_object(StorageActor::User(user), &key)
         .unwrap();
-    assert_eq!(stored_v1.value, b"v1");
+    assert_eq!(stored_v1.value, br#""v1""#);
     assert!(stored_v1.integrity_digest.matches_value(&stored_v1.value));
     assert_eq!(
         repository
@@ -39,7 +39,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             StorageActor::User(user),
             &[StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
-                value: b"v2".to_vec(),
+                value: br#""v2""#.to_vec(),
                 expected: VersionCheck::Exact(version.into()),
                 read_permission: ReadPermission::Public,
                 write_permission: WritePermission::Owner,
@@ -50,7 +50,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
     let stored_v2 = repository
         .read_storage_object(StorageActor::User(other), &key)
         .unwrap();
-    assert_eq!(stored_v2.value, b"v2");
+    assert_eq!(stored_v2.value, br#""v2""#);
     assert!(stored_v2.integrity_digest.matches_value(&stored_v2.value));
 
     let stale = repository
@@ -58,7 +58,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             StorageActor::User(user),
             &[StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
-                value: b"v3".to_vec(),
+                value: br#""v3""#.to_vec(),
                 expected: VersionCheck::Exact(version.into()),
                 read_permission: ReadPermission::Owner,
                 write_permission: WritePermission::Owner,
@@ -72,7 +72,7 @@ fn storage_occ_acl_and_batch_rollback_are_transactional() {
             .read_storage_object(StorageActor::Server, &key)
             .unwrap()
             .value,
-        b"v2"
+        br#""v2""#
     );
 
     let current = repository
@@ -162,7 +162,13 @@ fn storage_batch_reads_omit_missing_and_hidden_rows_and_fail_on_visible_corrupti
             .collect::<std::collections::BTreeSet<_>>()
     );
     for object in objects {
-        assert_eq!(object.value, br#"{"value":1}"#);
+        assert_eq!(
+            object.value,
+            native_fixture_value(
+                &mut postgres::Client::connect(&database_url, postgres::NoTls).unwrap(),
+                br#"{"value":1}"#
+            )
+        );
         assert!(object.integrity_digest.matches_value(&object.value));
     }
     let privileged_error = repository
@@ -171,7 +177,7 @@ fn storage_batch_reads_omit_missing_and_hidden_rows_and_fail_on_visible_corrupti
     assert_eq!(privileged_error.code(), StableCode::DataLoss);
     assert_eq!(
         privileged_error.reason(),
-        "storage_integrity_digest_mismatch"
+        "invalid_storage_persisted_native_witness"
     );
     repository
         .execute_migration_batch(
@@ -183,7 +189,10 @@ fn storage_batch_reads_omit_missing_and_hidden_rows_and_fail_on_visible_corrupti
         .read_storage_objects(StorageActor::User(owner), &[owned.clone(), public.clone()])
         .unwrap_err();
     assert_eq!(visible_error.code(), StableCode::DataLoss);
-    assert_eq!(visible_error.reason(), "storage_integrity_digest_mismatch");
+    assert_eq!(
+        visible_error.reason(),
+        "invalid_storage_persisted_native_witness"
+    );
     repository
         .execute_migration_batch(
             "DELETE FROM trnm_storage_objects WHERE collection = 'read-batch-contract'",
@@ -241,7 +250,8 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
             let row = control
                 .query_one(
                     "SELECT value_bytes, version_digest, read_permission, write_permission, \
-                     updated_at_ms, create_time::TEXT, update_time::TEXT \
+                     updated_at_ms, create_time::TEXT, update_time::TEXT, value_jsonb::TEXT, \
+                     public_version::TEXT, value_projection_digest, value_origin, source_manifest_digest \
                      FROM public.trnm_storage_objects \
                      WHERE collection = $1 AND object_key = $2 AND user_id = $3",
                     &[&collection, &key.key(), &owner.as_bytes().as_slice()],
@@ -255,6 +265,11 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                 row.get::<_, i64>(4),
                 row.get::<_, Option<String>>(5),
                 row.get::<_, Option<String>>(6),
+                row.get::<_, String>(7),
+                row.get::<_, String>(8),
+                row.get::<_, Vec<u8>>(9),
+                row.get::<_, String>(10),
+                row.get::<_, Option<Vec<u8>>>(11),
             )
         };
         let created = repository
@@ -285,7 +300,7 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
             .unwrap();
         assert_eq!(unchanged.len(), 1);
         assert_eq!(unchanged[0].key, key);
-        assert_eq!(unchanged[0].previous_version, Some(version));
+        assert_eq!(unchanged[0].previous_version, Some(version.into()));
         assert_eq!(unchanged[0].current_version, Some(version));
         assert_eq!(timestamp(&mut control), 10);
 
@@ -449,7 +464,7 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
             let object = repository
                 .read_storage_object(StorageActor::Server, &key)
                 .unwrap();
-            assert_eq!(object.value, value);
+            assert_eq!(object.value, native_fixture_value(&mut control, value));
             assert_eq!(object.read_permission, read_permission);
             assert_eq!(object.write_permission, write_permission);
         }
@@ -727,15 +742,20 @@ fn blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks() 
                     StorageActor::Server,
                     &[write(
                         &key,
-                        expected,
+                        expected.clone(),
                         ReadPermission::Public,
                         WritePermission::None,
                     )],
                     110,
                 )
                 .unwrap_err();
-            assert_eq!(corrupt.code(), StableCode::DataLoss);
-            assert_eq!(corrupt.reason(), "storage_integrity_digest_mismatch");
+            if expected == VersionCheck::MustNotExist {
+                assert_eq!(corrupt.code(), StableCode::AlreadyExists);
+                assert_eq!(corrupt.reason(), "storage_object_already_exists");
+            } else {
+                assert_eq!(corrupt.code(), StableCode::DataLoss);
+                assert_eq!(corrupt.reason(), "storage_request_witness_mismatch");
+            }
             assert_eq!(timestamp(&mut control), 90);
         }
     }));

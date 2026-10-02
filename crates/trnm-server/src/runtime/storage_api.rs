@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::{MapAccess, Visitor};
@@ -24,7 +25,8 @@ use super::codec::encode_hex;
 use super::http::{Request, Response};
 
 const MAX_BATCH: usize = 100;
-const MAX_VALUE_BYTES: usize = 1024 * 1024;
+const MAX_REQUEST_VALUE_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_ENCODED_STORAGE_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const INVALID_KEYS: &str = "Invalid collection or key value supplied. They must be set.";
 const INVALID_READ: &str = "Invalid Read permission supplied. It must be either 0, 1 or 2.";
 const INVALID_WRITE: &str = "Invalid Write permission supplied. It must be either 0 or 1.";
@@ -227,6 +229,9 @@ fn read_objects<R: Repository>(repository: &mut R, request: &Request, user: User
     }
     match repository.read_storage_objects(Actor::User(user), &keys) {
         Ok(objects) => read_response(&keys, &objects, user),
+        Err(error) if error.code() == StableCode::ResourceExhausted => {
+            storage_resource_error("Error reading storage objects.")
+        }
         Err(_) => gateway_error(500, 13, "Error reading storage objects."),
     }
 }
@@ -305,7 +310,11 @@ fn read_response(
     for key in keys {
         *remaining.entry(key).or_insert(0_usize) += 1;
     }
-    let mut encoded = Vec::with_capacity(objects.len().min(MAX_BATCH));
+    let mut encoded = StorageJsonEncoder::new();
+    if !objects.is_empty() && encoded.append("{\"objects\":[").is_err() {
+        return storage_resource_error("Error reading storage objects.");
+    }
+    let mut first = true;
     for stored in objects {
         let object = &stored.object;
         let Some(count) = remaining.get_mut(&object.key).filter(|count| **count > 0) else {
@@ -317,29 +326,124 @@ fn read_response(
         if !allowed {
             return gateway_error(500, 13, "Error reading storage objects.");
         }
-        let Some(object) = encode_storage_object(object, &stored.times) else {
-            return gateway_error(500, 13, "Error reading storage objects.");
+        let object = match encode_storage_object(object, &stored.times) {
+            Ok(object) => object,
+            Err(StorageEncodingError::ResourceExhausted) => {
+                return storage_resource_error("Error reading storage objects.")
+            }
+            Err(StorageEncodingError::DataLoss) => {
+                return gateway_error(500, 13, "Error reading storage objects.")
+            }
         };
-        encoded.push(object);
+        if (!first && encoded.append(",").is_err()) || encoded.append(&object).is_err() {
+            return storage_resource_error("Error reading storage objects.");
+        }
+        first = false;
     }
-    if encoded.is_empty() {
+    if objects.is_empty() {
         Response::json(200, b"{}".to_vec())
     } else {
-        Response::json(200, format!("{{\"objects\":[{}]}}", encoded.join(",")))
+        if encoded.append("]}").is_err() {
+            return storage_resource_error("Error reading storage objects.");
+        }
+        Response::json(200, encoded.finish())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StorageEncodingError {
+    DataLoss,
+    ResourceExhausted,
+}
+
+/// Bound the actual UTF-8 JSON response bytes while serde_json escapes strings.
+/// This is a response envelope encoder, never a native JSONB value renderer.
+#[derive(Debug)]
+pub(super) struct StorageJsonEncoder {
+    bytes: Vec<u8>,
+    exhausted: bool,
+}
+
+impl StorageJsonEncoder {
+    pub(super) fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            exhausted: false,
+        }
+    }
+
+    pub(super) fn append(&mut self, value: &str) -> Result<(), StorageEncodingError> {
+        io::Write::write_all(self, value.as_bytes())
+            .map_err(|_| StorageEncodingError::ResourceExhausted)
+    }
+
+    fn string(&mut self, value: &str) -> Result<(), StorageEncodingError> {
+        serde_json::to_writer(&mut *self, value).map_err(|_| {
+            if self.exhausted {
+                StorageEncodingError::ResourceExhausted
+            } else {
+                StorageEncodingError::DataLoss
+            }
+        })
+    }
+
+    pub(super) fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl io::Write for StorageJsonEncoder {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let size = self.bytes.len().checked_add(bytes.len());
+        if self.exhausted || size.is_none_or(|size| size > MAX_ENCODED_STORAGE_RESPONSE_BYTES) {
+            self.exhausted = true;
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "storage_encoded_response_budget_exceeded",
+            ));
+        }
+        let size = size.expect("validated response size");
+        if size > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(1024)
+                .max(size)
+                .min(MAX_ENCODED_STORAGE_RESPONSE_BYTES);
+            if self
+                .bytes
+                .try_reserve_exact(capacity - self.bytes.len())
+                .is_err()
+            {
+                self.exhausted = true;
+                return Err(io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "storage_encoded_response_allocation_failed",
+                ));
+            }
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
 pub(super) fn encode_storage_object(
     object: &StorageObject,
     times: &StorageTimes,
-) -> Option<String> {
-    if object.value.len() > MAX_VALUE_BYTES
-        || object.version != ContentVersion::from_value(&object.value)
-        || !object.integrity_digest.matches_value(&object.value)
-    {
-        return None;
-    }
-    let value = std::str::from_utf8(&object.value).ok()?;
+) -> Result<String, StorageEncodingError> {
+    object.verify_integrity().map_err(|error| {
+        if error.code() == StableCode::ResourceExhausted {
+            StorageEncodingError::ResourceExhausted
+        } else {
+            StorageEncodingError::DataLoss
+        }
+    })?;
+    let value = std::str::from_utf8(&object.value).map_err(|_| StorageEncodingError::DataLoss)?;
     let mut fields = vec![
         format!(
             "\"collection\":{}",
@@ -351,13 +455,20 @@ pub(super) fn encode_storage_object(
             serde_json::Value::from(uuid_string(object.key.user_id()))
         ),
     ];
+    let mut output = StorageJsonEncoder::new();
+    output.append("{")?;
+    output.append(&fields.join(","))?;
+    fields.clear();
     if !value.is_empty() {
-        fields.push(format!("\"value\":{}", serde_json::Value::from(value)));
+        output.append(",\"value\":")?;
+        output.string(value)?;
     }
-    fields.push(format!(
-        "\"version\":{}",
-        serde_json::Value::from(object.version.as_str())
-    ));
+    if !object.version.as_str().is_empty() {
+        fields.push(format!(
+            "\"version\":{}",
+            serde_json::Value::from(object.version.as_str())
+        ));
+    }
     if object.read_permission != ReadPermission::None {
         fields.push(format!(
             "\"permission_read\":{}",
@@ -371,8 +482,13 @@ pub(super) fn encode_storage_object(
         ));
     }
     // Pinned upstream read/list projection deliberately drops subsecond precision.
-    append_storage_times(&mut fields, times, false)?;
-    Some(format!("{{{}}}", fields.join(",")))
+    append_storage_times(&mut fields, times, false).ok_or(StorageEncodingError::DataLoss)?;
+    if !fields.is_empty() {
+        output.append(",")?;
+        output.append(&fields.join(","))?;
+    }
+    output.append("}")?;
+    String::from_utf8(output.finish()).map_err(|_| StorageEncodingError::DataLoss)
 }
 
 struct ParsedWrite {
@@ -427,7 +543,7 @@ fn decode_write(object: &JsonObject, user: UserId) -> Result<ParsedWrite, ApiErr
         1 => WritePermission::Owner,
         _ => return Err(ApiError(INVALID_WRITE)),
     };
-    if value.len() > MAX_VALUE_BYTES {
+    if value.len() > MAX_REQUEST_VALUE_BYTES {
         return Err(ApiError("Storage value exceeds the 1048576 byte limit."));
     }
     if value.bytes().find(|byte| !is_json_space(*byte)) != Some(b'{')
@@ -631,7 +747,10 @@ fn write_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) -
                     || stored.times.create != stored.times.update))
             || (stored.times.update.is_none()
                 && (matches!(&write.expected, VersionCheck::Exact(_))
-                    || receipt.previous_version != Some(version)))
+                    || receipt
+                        .previous_version
+                        .as_ref()
+                        .is_none_or(|previous| previous.as_str() != version.as_str())))
         {
             return gateway_error(500, 13, "Error writing storage objects.");
         }
@@ -654,7 +773,7 @@ fn delete_response(operations: &[BatchOperation], receipts: &[MutationReceipt]) 
                     receipt
                         .previous_version
                         .as_ref()
-                        .map(ContentVersion::as_str)
+                        .map(|previous| previous.as_str())
                         != Some(expected.as_str())
                 })
         })
@@ -722,6 +841,7 @@ fn storage_error(error: DomainError, kind: OperationKind) -> Response {
             | StableCode::PermissionDenied,
         ) => gateway_error(400, 3, REJECTED_DELETE),
         (_, StableCode::InvalidArgument) => gateway_error(400, 3, "Invalid storage request."),
+        (_, StableCode::ResourceExhausted) => storage_resource_error(kind.internal_message()),
         // Repository availability errors are redacted like all internal errors.
         // Retryable SQL/transport failures must not reveal schema or key data.
         _ => gateway_error(500, 13, kind.internal_message()),
@@ -759,10 +879,17 @@ pub(crate) fn gateway_error(status: u16, code: u8, message: &str) -> Response {
     )
 }
 
+pub(super) fn storage_resource_error(message: &str) -> Response {
+    gateway_error(429, 8, message)
+}
+
 #[cfg(test)]
 mod tests {
     use trnm_contracts::{Digest32, RetryClass};
-    use trnm_persistence_pg::{CommitOutcome, CommitRequest, EntityHead, EntityId, StorageState};
+    use trnm_persistence_pg::{
+        CollisionWitness, CommitOutcome, CommitRequest, EntityHead, EntityId, IntegrityDigest,
+        PublicVersion, StorageState,
+    };
 
     use super::*;
     use trnm_persistence_pg::StorageMutationReceipt as CoreReceipt;
@@ -874,7 +1001,7 @@ mod tests {
             write_response(&operations, std::slice::from_ref(&stored)).status,
             500
         );
-        stored.receipt.previous_version = Some(ContentVersion::from_value(b"{}"));
+        stored.receipt.previous_version = Some(ContentVersion::from_value(b"{}").into());
         let response = write_response(&operations, &[stored]);
         assert_eq!(response.status, 200);
         let ack = &body(&response)["acks"][0];
@@ -901,7 +1028,7 @@ mod tests {
             write_response(&operations, std::slice::from_ref(&stored)).status,
             500
         );
-        stored.receipt.previous_version = Some(version);
+        stored.receipt.previous_version = Some(version.into());
         stored.times = StorageTimes {
             create: None,
             update: None,
@@ -922,7 +1049,8 @@ mod tests {
             500,
             "an exact write always changes update time"
         );
-        stored.receipt.previous_version = Some(ContentVersion::from_value(b"{\"old\":true}"));
+        stored.receipt.previous_version =
+            Some(ContentVersion::from_value(b"{\"old\":true}").into());
         assert_eq!(
             write_response(&operations, &[stored]).status,
             500,
@@ -1214,7 +1342,7 @@ mod tests {
             handle(&mut repository, &request("/v2/storage", &input), user()).status,
             400
         );
-        let oversized = format!("{{\"x\":\"{}\"}}", "x".repeat(MAX_VALUE_BYTES));
+        let oversized = format!("{{\"x\":\"{}\"}}", "x".repeat(MAX_REQUEST_VALUE_BYTES));
         assert_eq!(
             handle(
                 &mut repository,
@@ -1236,8 +1364,8 @@ mod tests {
             200
         );
         assert_eq!(repository.operations.len(), MAX_BATCH);
-        let boundary = format!("{{\"x\":\"{}\"}}", "x".repeat(MAX_VALUE_BYTES - 8));
-        assert_eq!(boundary.len(), MAX_VALUE_BYTES);
+        let boundary = format!("{{\"x\":\"{}\"}}", "x".repeat(MAX_REQUEST_VALUE_BYTES - 8));
+        assert_eq!(boundary.len(), MAX_REQUEST_VALUE_BYTES);
         assert_eq!(
             handle(
                 &mut repository,
@@ -1403,7 +1531,7 @@ mod tests {
         });
         let receipt = stored_receipt(CoreReceipt {
             key,
-            previous_version: Some(ContentVersion::from_value(b"{}")),
+            previous_version: Some(ContentVersion::from_value(b"{}").into()),
             current_version: None,
         });
         assert_eq!(
@@ -1466,7 +1594,7 @@ mod tests {
         let operations = decode_operations(&request, user(), OperationKind::Write).unwrap();
         let receipt = stored_receipt(CoreReceipt {
             key: operations[0].key().clone(),
-            previous_version: Some(ContentVersion::from_value(b"{}")),
+            previous_version: Some(ContentVersion::from_value(b"{}").into()),
             current_version: Some(ContentVersion::from_value(b"{}")),
         });
         assert_eq!(
@@ -1497,7 +1625,7 @@ mod tests {
             500
         );
         let mut changed = receipt;
-        changed.receipt.previous_version = Some(ContentVersion::from_value(b"stale"));
+        changed.receipt.previous_version = Some(ContentVersion::from_value(b"stale").into());
         assert_eq!(write_response(&operations, &[changed]).status, 200);
     }
 
@@ -1529,6 +1657,8 @@ mod tests {
             .unwrap();
         repository.storage.read(Actor::Server, &key).unwrap()
     }
+
+    include!("storage_api_projection_tests.rs");
 
     #[test]
     fn read_preserves_value_bytes_uses_uuid_owner_and_calls_repository_once() {
@@ -1781,14 +1911,14 @@ mod tests {
         changed.value = b"changed".to_vec();
         corrupt.push(changed);
         let mut changed = object.clone();
-        changed.version = ContentVersion::from_value(b"other");
+        changed.version = ContentVersion::from_value(b"other").into();
         corrupt.push(changed);
         let mut changed = object.clone();
         changed.integrity_digest = trnm_persistence_pg::IntegrityDigest::from_value(b"other");
         corrupt.push(changed);
         let mut changed = object.clone();
         changed.value = vec![0xff];
-        changed.version = ContentVersion::from_value(&changed.value);
+        changed.version = ContentVersion::from_value(&changed.value).into();
         changed.integrity_digest = trnm_persistence_pg::IntegrityDigest::from_value(&changed.value);
         corrupt.push(changed);
         for changed in corrupt {

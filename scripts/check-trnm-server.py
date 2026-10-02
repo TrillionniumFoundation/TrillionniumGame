@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import argparse
+import hashlib
 import importlib.util
 import json
 from copy import deepcopy
@@ -30,6 +32,7 @@ STORAGE_PARTS = tuple(
     for name in (
         "00_prelude.rs", "01_repository.rs", "02_list_helpers.rs",
         "03_write.rs", "04_delete_authorize.rs", "05_decode_errors.rs",
+        "06_native_projection.rs",
     )
 )
 STORAGE_LIVE_HARNESS = ROOT / "scripts/ci-trnm-server-live.sh"
@@ -61,6 +64,8 @@ REQUIRED_FILES = {
     MODULE_ROOT / "websocket.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_api.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_api_tests.rs",
+    ROOT / "crates/trnm-server/src/runtime/storage_api_projection_tests.rs",
+    ROOT / "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_list_api.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_list_query.rs",
     ROOT / "crates/trnm-server/src/runtime/storage_list_api_tests.rs",
@@ -72,10 +77,17 @@ REQUIRED_FILES = {
     STORAGE_LIVE_HARNESS,
     LIVE_FAILURE_HELPER,
     PERSISTENCE_ROOT / "schema.rs",
+    PERSISTENCE_ROOT / "schema_parts/jsonb_backfill.rs",
     PERSISTENCE_ROOT / "storage_metadata.rs",
     SERVER_ROOT / "trnm-schema.rs",
     ROOT / "crates/trnm-persistence-pg/tests/storage_timestamps.rs",
+    ROOT / "crates/trnm-persistence-pg/tests/storage_jsonb.rs",
     ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade.rs",
+    ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade_parts/v3.rs",
+}
+SCHEMA_V3_CASE_FAMILIES = {
+    "shapes": 8, "illegal_legacy": 9, "catalog_drift": 6,
+    "partial_resume": 3, "metadata_validation": 9, "opaque_history": 6,
 }
 REQUIRED_TESTS = {
     "migration_diagnostic_unknown_reasons_and_other_variants_do_not_leak_secrets",
@@ -85,6 +97,15 @@ REQUIRED_TESTS = {
     "migration_diagnostic_success_preserves_value_without_output",
     "migration_diagnostic_sink_failure_preserves_original_error",
     "canonical_storage_api_live_database",
+    "storage_read_preserves_native_projection_and_independent_public_tokens",
+    "storage_native_projection_validates_known_witness_without_inventing_history",
+    "storage_ack_uses_request_digest_and_keeps_empty_previous_version_present",
+    "storage_native_projection_budget_is_separate_from_request_value_budget",
+    "storage_response_budget_counts_escaped_bytes_and_rejects_the_whole_batch",
+    "storage_repository_resource_errors_preserve_code_eight_and_redact_reasons",
+    "storage_list_preserves_native_history_shapes_and_opaque_public_versions",
+    "storage_list_encoded_response_budget_rejects_partial_objects_with_code_eight",
+    "storage_list_repository_resource_exhaustion_is_redacted_without_integrity_code",
     "opaque_write_conditions_reach_storage_occ_and_acl_after_authentication",
     "opaque_delete_conditions_including_star_are_literal_and_reach_storage",
     "absent_null_and_empty_conditions_keep_unconditional_write_and_delete_semantics",
@@ -94,6 +115,7 @@ REQUIRED_TESTS = {
     "read_projects_valid_fraction_to_seconds_omits_unknown_and_rejects_invalid_times",
     "storage_list_projects_fraction_to_seconds_omits_unknown_and_rejects_invalid_times",
     "storage_timestamps_database_clock_no_op_and_atomicity",
+    "storage_native_jsonb_versions_provenance_and_atomicity",
     "authoritative_fresh_repeat_and_readonly_verification",
     "authoritative_v1_preserves_history_and_observes_actual_legacy_writer_revocation",
     "authoritative_populated_unbound_and_catalog_drift_fail_closed",
@@ -356,6 +378,12 @@ def validate_storage_live_harness(source: str) -> None:
             "storage-timestamps.log", "storage_timestamps_test_count",
             "storage_timestamps_live_executed", "storage_timestamps_live_skipped",
         ),
+        (
+            'cargo test -p trnm-persistence-pg --locked --test storage_jsonb '
+            'storage_native_jsonb_versions_provenance_and_atomicity',
+            "storage-native-jsonb.log", "storage_native_jsonb_test_count",
+            "storage_native_jsonb_live_executed", "storage_native_jsonb_live_skipped",
+        ),
     )
     previous_end = migration
     for cargo, logfile, counter, marker, skip in lanes:
@@ -388,6 +416,25 @@ def validate_storage_live_harness(source: str) -> None:
             )
             if not executed < opaque < reject_skip:
                 fail("storage opaque condition marker must bind the checked canonical fixture")
+            jsonb = once(
+                'grep -Fxq "storage_jsonb_v3_live_executed profile=${profile} '
+                'history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3" '
+                '"$evidence/canonical-storage-app.log"'
+            )
+            native_inputs = once(
+                'test "$(grep -Ec "^storage_jsonb_v3_native_inputs profile=${profile} '
+                'condition_sql=(accepted|rejected) payload_sql=(accepted|rejected) compatibility_credit=false$" '
+                '"$evidence/canonical-storage-app.log")" -eq 1'
+            )
+            if not opaque < jsonb < native_inputs < reject_skip:
+                fail("storage JSONB v3 markers must bind actual cases and SQL profile results to the canonical fixture")
+        if logfile == "storage-native-jsonb.log":
+            unique_marker = once(
+                'test "$(grep -Fxc "storage_native_jsonb_live_executed profile=${profile}" '
+                '"$evidence/storage-native-jsonb.log")" -eq 1'
+            )
+            if not executed < unique_marker < reject_skip:
+                fail("native storage JSONB fixture marker must occur once in the executed fixture log")
         previous_end = end
     schema_start = once(
         'CARGO_TERM_COLOR=never TRNM_REQUIRE_LIVE_DATABASE=1 '
@@ -402,6 +449,26 @@ def validate_storage_live_harness(source: str) -> None:
     )
     schema_numeric = once('[[ "$schema_upgrade_test_count" =~ ^[0-9]+$ ]]')
     schema_exact = once('test "$schema_upgrade_test_count" -eq 6')
+    schema_previous = schema_exact
+    for family, count in SCHEMA_V3_CASE_FAMILIES.items():
+        marker = once(f'grep -Fxq "schema_v3_{family}_executed profile=${{profile}} extra_cases={count}" '
+                      '"$evidence/schema-upgrade.log"')
+        unique = once(f'test "$(grep -Ec \'^schema_v3_{family}_executed \' '
+                      '"$evidence/schema-upgrade.log")" -eq 1')
+        if not schema_previous < marker < unique:
+            fail("schema v3 scenario families must follow the original exact-six result and execute once")
+        schema_previous = unique
+    schema_family_skip = once("if grep -Eq 'schema_v3_[a-z_]+_skipped' \"$evidence/schema-upgrade.log\"; then")
+    try:
+        schema_family_end = commands.index("fi", schema_family_skip + 1)
+    except ValueError:
+        fail("schema v3 family skip guard has no terminal block")
+    if not schema_previous < schema_family_skip < schema_family_end or (
+        "exit 1" not in commands[schema_family_skip + 1:schema_family_end]
+        or "exit 0" in commands[schema_family_skip + 1:schema_family_end]
+    ):
+        fail("schema v3 family skips must terminate before any success summary")
+    schema_previous = schema_family_end
     schema_skip = once("if grep -Fq 'developer-only live test skip' \"$evidence/schema-upgrade.log\"; then")
     try:
         schema_end = commands.index("fi", schema_skip + 1)
@@ -409,9 +476,36 @@ def validate_storage_live_harness(source: str) -> None:
         fail("schema live harness skip guard has no terminal block")
     if "exit 1" not in commands[schema_skip + 1:schema_end] or "exit 0" in commands[schema_skip + 1:schema_end]:
         fail("schema live harness must reject a developer-only skip")
-    if not previous_end < schema_start < schema_assignment < schema_count < schema_numeric < schema_exact < schema_skip < schema_end:
+    if not previous_end < schema_start < schema_assignment < schema_count < schema_numeric < schema_exact < schema_previous < schema_skip < schema_end:
         fail("schema live harness required environment/count/skip order drifted")
     previous_end = schema_end
+    schema_guards = (
+        "schema_version=$(db_scalar 'SELECT schema_version FROM trnm_schema_metadata WHERE singleton = 1')",
+        'test "$schema_version" = 3',
+        "storage_writer_epoch=$(db_scalar 'SELECT storage_writer_epoch FROM trnm_schema_metadata WHERE singleton = 1')",
+        'test "$storage_writer_epoch" = 3',
+        "v2_apply_source_commit=$(db_scalar 'SELECT v2_apply_source_commit FROM trnm_schema_metadata WHERE singleton = 1')",
+        'test "$v2_apply_source_commit" = "$candidate_sha"',
+        "python3 - \"$evidence\" \"$profile\" \"$candidate_sha\" <<'PY_STORAGE_SCHEMA_V3'",
+        'authoritative_migrations_count=$(python3 -c \'import json,sys; print(len(json.load(open(sys.argv[1]))["ordered_files"]))\' "$evidence/authoritative-migrations.json")',
+        'test "$authoritative_migrations_count" -eq 3',
+    )
+    for guard in schema_guards:
+        position = once(guard)
+        if position <= previous_end:
+            fail("server schema v3 assertions must follow isolated lifecycle execution")
+        previous_end = position
+    require_markers("server schema v3 archived chain", source, (
+        "identity['schema_version']==3 and identity['storage_writer_epoch']==3",
+        "identity['source_commit']==identity['upgrade_source_commit']==identity['v2_apply_source_commit']==candidate",
+        "assert lock['schema_version']==3",
+        "names=('0001_foundation_up.sql','0002_storage_timestamps_up.sql','0003_storage_jsonb_up.sql')",
+        "assert [entry['path'] for entry in files]==[f'migrations/{profile}/{name}' for name in names]",
+        "zip(files,names,strict=True)", "data=Path(entry['path']).read_bytes()",
+        "entry['git_blob_sha1']", "target.write_bytes(data)", "assert target.read_bytes()==data",
+        "'sha256':hashlib.sha256(data).hexdigest()", "'size_bytes':len(data)",
+        "'compatibility_credit':False", "evidence/'authoritative-migrations.json'",
+    ))
     summary = [index for index, command in enumerate(commands)
                if '"nakama_client_list_projection":true' in command and command.startswith("{")]
     if len(summary) != 1 or summary[0] <= previous_end:
@@ -420,12 +514,259 @@ def validate_storage_live_harness(source: str) -> None:
         fail("storage live summary must bind the checked ACL/OCC execution")
     if '"raw_version_conditions":true' not in commands[summary[0]]:
         fail("storage live summary must bind the checked original condition inputs")
+    require_markers("storage v3 fixture summary", commands[summary[0]], (
+        '"storage_jsonb_v3_projection":true',
+        '"storage_native_jsonb":true', '"schema_v3_extra_cases":41',
+        '"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6}',
+        '"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3}',
+        '"schema_version":${schema_version}', '"storage_writer_epoch":${storage_writer_epoch}',
+        '"authoritative_migrations_count":${authoritative_migrations_count}',
+        '"compatibility_credit":false', '"accepted":false', '"wire_compatible":false',
+        '"production_ready":false',
+    ))
     seal = once(
         'find "$evidence" -type f ! -name SHA256SUMS -print0 '
         '| sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"'
     )
     if seal <= summary[0]:
         fail("storage live fixture logs must be included in the final checksum seal")
+
+
+def validate_storage_projection_source(source: str, fixture: str) -> None:
+    """Bind HTTP projection and fixture source, without execution credit."""
+    require_markers("storage HTTP projection source", source, (
+        'include!("storage_api_projection_tests.rs");',
+        "pub(super) enum StorageEncodingError", "ResourceExhausted",
+        "const MAX_ENCODED_STORAGE_RESPONSE_BYTES: usize = 32 * 1024 * 1024;",
+        "impl io::Write for StorageJsonEncoder", "serde_json::to_writer(&mut *self, value)",
+        "checked_add(bytes.len())", "try_reserve_exact", "storage_resource_error(",
+        "version != ContentVersion::from_value(&write.value)",
+        "receipt.previous_version.is_none()",
+    ))
+    try:
+        encoder = source.split("pub(super) fn encode_storage_object(", 1)[1].split("\nstruct ParsedWrite", 1)[0]
+    except IndexError:
+        fail("storage HTTP object encoder is absent")
+    require_markers("storage HTTP object projection", encoder, (
+        "Result<String, StorageEncodingError>", "object.verify_integrity()",
+        "StableCode::ResourceExhausted", "StorageEncodingError::DataLoss",
+        "std::str::from_utf8(&object.value)", "output.string(value)?",
+        "!object.version.as_str().is_empty()", "object.version.as_str()",
+    ))
+    if any(marker in encoder for marker in (
+        "ContentVersion::from_value", "MAX_REQUEST_VALUE_BYTES", "serde_json::from_",
+    )):
+        fail("storage HTTP read projection reinterprets native payload as a request or generated version")
+    require_markers("canonical storage v3 native fixture", fixture, (
+        'include!("storage_api_v3_live.rs");', "prove_storage_jsonb_v3_app(",
+        "SELECT (($1::TEXT)::JSONB)::TEXT", "SELECT $1::TEXT",
+        "value_jsonb::TEXT, value_projection_digest", "source_manifest_digest",
+        "storage_jsonb_v3_native_inputs profile={}", "compatibility_credit=false",
+        "storage_jsonb_v3_live_executed profile={} history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
+        "storage_opaque_conditions_live_executed profile={} write_cases=15 delete_cases=18 batch_cases=2",
+    ))
+
+
+def validate_storage_live_workflow(source: str, *, prospective: bool) -> None:
+    """Keep each retained packet bound to its independently executed Git object."""
+    live = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+    compact = re.sub(r"\\\s*\n\s*", " ", live)
+    compact = re.sub(r"[ \t]+", " ", compact)
+    root = "$server" if prospective else "$evidence"
+    commit = "$PROSPECTIVE_MERGE_SHA" if prospective else "$CANDIDATE_SHA"
+    command = (f'python3 scripts/check-trnm-server.py --live-packet "{root}" '
+               f'--profile "$PROFILE" --commit "{commit}" --tree "$(git rev-parse HEAD^{{tree}})"')
+    if compact.count(command) != 1:
+        fail("retained server packet must be validated once against its source or prospective object")
+    require_markers("retained server schema v3 proof", live, (
+        "'storage_native_jsonb'", "'schema_upgrade'", "'storage_jsonb_v3_projection'",
+        "assert type(summary['schema_v3_extra_cases']) is int and summary['schema_v3_extra_cases'] == 41",
+        "assert summary['schema_v3_case_families'] == {",
+        "'shapes': 8, 'illegal_legacy': 9, 'catalog_drift': 6,",
+        "'partial_resume': 3, 'metadata_validation': 9, 'opaque_history': 6,",
+        "assert all(type(value) is int for value in summary['schema_v3_case_families'].values())",
+        "for field in ('schema_version', 'storage_writer_epoch', 'authoritative_migrations_count'):",
+        "assert type(summary[field]) is int and summary[field] == 3",
+    ))
+
+
+def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree: str) -> dict[str, object]:
+    """Verify retained fixture bytes; this is not acceptance or Nakama parity."""
+    if profile not in {"postgresql", "cockroachdb"} or any(
+        re.fullmatch(r"[0-9a-f]{40}", value) is None for value in (commit, tree)
+    ):
+        fail("server packet target identity is invalid")
+
+    def document(name: str) -> dict[str, object]:
+        path = root / name
+        if not path.is_file() or path.stat().st_size > 1024 * 1024:
+            fail("server packet JSON document is missing or oversized")
+        def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    fail("server packet JSON document has duplicate keys")
+                value[key] = item
+            return value
+
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+        if not isinstance(value, dict):
+            fail("server packet JSON document must be an object")
+        return value
+
+    summary = document("summary.json")
+    if any(summary.get(field) != value for field, value in {
+        "schema": "trillionnium.server-live-evidence.v1",
+        "repository": "TrillionniumFoundation/TrillionniumGame",
+        "profile": profile, "commit": commit, "tree": tree,
+    }.items()):
+        fail("server packet summary target identity differs from the actual object")
+    for field in (
+        "check_config", "fresh_migration", "nakama_client_list_projection", "storage_occ_precedence",
+        "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
+        "storage_native_jsonb",
+        "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
+        "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
+        "process_restart_exact_receipt_replay",
+    ):
+        if summary.get(field) is not True:
+            fail("server packet required execution field is absent or false: " + field)
+    for field in ("schema_version", "storage_writer_epoch", "authoritative_migrations_count",
+                  "entity_revision", "event_sequence", "command_receipts", "events", "outbox_intents"):
+        if type(summary.get(field)) is not int or summary[field] != 3:
+            fail("server packet count or schema ABI differs: " + field)
+    cases = {"history": 6, "opaque_success": 4, "no_op": 2, "resource": 1, "native_input": 3}
+    observed = summary.get("storage_jsonb_v3_cases")
+    if not isinstance(observed, dict) or observed != cases or any(type(value) is not int for value in observed.values()):
+        fail("server packet JSONB fixture case inventory differs")
+    families = summary.get("schema_v3_case_families")
+    if type(summary.get("schema_v3_extra_cases")) is not int or summary["schema_v3_extra_cases"] != 41 or (
+        not isinstance(families, dict) or families != SCHEMA_V3_CASE_FAMILIES
+        or any(type(value) is not int for value in families.values())
+    ):
+        fail("server packet schema v3 native scenario inventory must be the complete forty-one cases")
+    for field in ("production_pitr", "multi_node", "wire_compatible", "compatibility_credit", "accepted", "production_ready"):
+        if summary.get(field) is not False:
+            fail("server packet must retain no-credit claim: " + field)
+    # Reuse the same closed validator as native migration/restore consumers.
+    # This packet retains a read-only verify report from the fresh main DB;
+    # applying all three revisions happened earlier in the actual harness.
+    script = Path(__file__).with_name("check-authoritative-schema-identity.py")
+    spec = importlib.util.spec_from_file_location("trnm_server_schema_identity", script)
+    if spec is None or spec.loader is None:
+        fail("shared authoritative schema identity validator is unavailable")
+    schema_validator = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(schema_validator)
+        identity_path = root / "schema-identity.json"
+        if identity_path.is_symlink() or not identity_path.is_file() or (
+            identity_path.stat().st_size > schema_validator.MAX_IDENTITY_BYTES
+        ):
+            fail("server schema identity is absent, indirect or oversized")
+        identity = schema_validator.decode_identity_document(identity_path.read_bytes())
+        chains, version, tables = schema_validator.validated_source()
+        schema_validator.validate_identity(
+            identity, profile=profile, chains=chains, schema_version=version,
+            table_count=tables, mode="verify",
+        )
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, SyntaxError, AttributeError) as error:
+        fail("server schema verify report failed shared authoritative validation: " + type(error).__name__)
+    # The shared verify policy permits historical apply provenance. The main
+    # database of this fresh packet has the stronger actual-candidate context.
+    if any(identity[field] != commit for field in (
+        "source_commit", "upgrade_source_commit", "v2_apply_source_commit"
+    )):
+        fail("fresh server packet schema apply provenance differs from the actual candidate")
+
+    lock = document("migration-lock.json")
+    if lock != json.loads((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_text(encoding="utf-8")):
+        fail("server packet migration lock differs from the actual source")
+    manifest = document("authoritative-migrations.json")
+    if manifest.get("schema") != "trillionnium.server-live-schema-source.v1" or manifest.get("profile") != profile or any(
+        type(manifest.get(field)) is not int or manifest[field] != 3
+        for field in ("schema_version", "storage_writer_epoch")
+    ) or manifest.get("compatibility_credit") is not False:
+        fail("server packet SQL manifest identity or no-credit scope differs")
+    names = ("0001_foundation_up.sql", "0002_storage_timestamps_up.sql", "0003_storage_jsonb_up.sql")
+    archive = root / "authoritative-migrations"
+    if not archive.is_dir() or {path.name for path in archive.iterdir()} != set(names):
+        fail("server packet SQL archive must contain exactly the three authoritative files")
+    locked = lock["profiles"][profile]["ordered_files"]
+    files = manifest.get("ordered_files")
+    if not isinstance(files, list) or len(files) != 3 or [entry["path"] for entry in locked] != [f"migrations/{profile}/{name}" for name in names]:
+        fail("server packet must retain the complete three-file profile chain")
+    for entry, authority, name in zip(files, locked, names, strict=True):
+        archive_path = f"authoritative-migrations/{name}"
+        if not isinstance(entry, dict) or entry.get("path") != authority["path"] or entry.get("archive_path") != archive_path:
+            fail("server packet SQL archive path or profile differs")
+        path = root / archive_path
+        if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 256 * 1024:
+            fail("server packet SQL file is absent, empty or oversized")
+        data = path.read_bytes()
+        if data != (ROOT / authority["path"]).read_bytes() or (
+            entry.get("git_blob_sha1") != authority["git_blob_sha1"]
+            or hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest() != authority["git_blob_sha1"]
+            or entry.get("sha256") != hashlib.sha256(data).hexdigest()
+            or type(entry.get("size_bytes")) is not int or entry["size_bytes"] != len(data)
+        ):
+            fail("server packet SQL bytes, digest or size differ from the actual source")
+    log = root / "canonical-storage-app.log"
+    if not log.is_file() or log.stat().st_size > 16 * 1024 * 1024:
+        fail("canonical storage fixture log is absent or oversized")
+    lines = log.read_text(encoding="utf-8").splitlines()
+    for marker in (
+        f"canonical_storage_api_live_executed profile={profile}",
+        f"storage_opaque_conditions_live_executed profile={profile} write_cases=15 delete_cases=18 batch_cases=2",
+        f"storage_jsonb_v3_live_executed profile={profile} history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
+    ):
+        if lines.count(marker) != 1:
+            fail("canonical storage fixture has a missing or duplicate execution marker")
+    branch = rf"storage_jsonb_v3_native_inputs profile={profile} condition_sql=(accepted|rejected) payload_sql=(accepted|rejected) compatibility_credit=false"
+    branches = [line for line in lines if line.startswith("storage_jsonb_v3_native_inputs ")]
+    if len(branches) != 1 or re.fullmatch(branch, branches[0]) is None or any(
+        "canonical_storage_api_live_skipped" in line for line in lines
+    ):
+        fail("canonical storage native SQL observations are absent or fixture skipped")
+    canonical_terminal = [line for line in lines if line.startswith("test result:")]
+    if len(canonical_terminal) != 1 or re.fullmatch(
+        r"test result: ok\. 1 passed; 0 failed; 0 ignored;.*", canonical_terminal[0]
+    ) is None:
+        fail("canonical storage fixture lacks one real terminal test result")
+
+    def execution_log(name: str, count: int, skipped: str) -> list[str]:
+        path = root / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+            fail("server native fixture log is absent, indirect or oversized: " + name)
+        recorded = path.read_text(encoding="utf-8").splitlines()
+        if any(skipped in line for line in recorded):
+            fail("server native fixture skipped instead of executing: " + name)
+        terminal = [line for line in recorded if line.startswith("test result:")]
+        if len(terminal) != 1 or re.fullmatch(
+            rf"test result: ok\. {count} passed; 0 failed; 0 ignored;.*", terminal[0]
+        ) is None:
+            fail("server native fixture lacks one exact successful terminal result: " + name)
+        return recorded
+
+    schema_lines = execution_log("schema-upgrade.log", 6, "developer-only live test skip")
+    if any(re.search(r"schema_v3_[a-z_]+_skipped", line) for line in schema_lines):
+        fail("server schema v3 family skipped instead of executing")
+    for family, count in SCHEMA_V3_CASE_FAMILIES.items():
+        prefix = f"schema_v3_{family}_executed "
+        recorded = [line for line in schema_lines if prefix in line]
+        if recorded != [f"{prefix}profile={profile} extra_cases={count}"] or any(
+            f"schema_v3_{family}_skipped" in line for line in schema_lines
+        ):
+            fail("server schema native scenario family has a missing, duplicate or incorrect marker: " + family)
+    native_lines = execution_log("storage-native-jsonb.log", 1, "storage_native_jsonb_live_skipped")
+    native_markers = [line for line in native_lines if "storage_native_jsonb_live_executed " in line]
+    if native_markers != [f"storage_native_jsonb_live_executed profile={profile}"]:
+        fail("native storage JSONB fixture did not execute once for the packet profile")
+    return {"status": "trnm-server-live-packet-validated", "profile": profile,
+            "schema_version": 3, "storage_writer_epoch": 3, "authoritative_migrations_count": 3,
+            "storage_jsonb_v3_cases": cases, "storage_native_jsonb": True,
+            "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_V3_CASE_FAMILIES.copy(),
+            "compatibility_credit": False, "accepted": False,
+            "production_ready": False}
 
 
 def expected_persistence_dependencies() -> dict[str, object]:
@@ -467,7 +808,20 @@ def validate_dependency_boundary(manifest: dict[str, object]) -> None:
         fail("server candidate changed the reviewed protobuf build dependency boundary")
 
 
-def main() -> int:
+def main(arguments: list[str] | None = None) -> int:
+    if arguments:
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument("--live-packet", type=Path, required=True)
+        parser.add_argument("--profile", choices=("postgresql", "cockroachdb"), required=True)
+        parser.add_argument("--commit", required=True)
+        parser.add_argument("--tree", required=True)
+        args = parser.parse_args(arguments)
+        try:
+            report = validate_storage_live_packet(args.live_packet, profile=args.profile, commit=args.commit, tree=args.tree)
+        except (OSError, ValueError, KeyError, TypeError):
+            fail("server live packet could not be decoded or validated")
+        print(json.dumps(report, sort_keys=True))
+        return 0
     missing = sorted(str(path.relative_to(ROOT)) for path in REQUIRED_FILES if not path.is_file())
     if missing:
         fail("missing files: " + ", ".join(missing))
@@ -482,6 +836,11 @@ def main() -> int:
         for path in sorted(REQUIRED_FILES)
     }
     validate_storage_live_harness(sources[STORAGE_LIVE_HARNESS.relative_to(ROOT)])
+    server_runtime = Path("crates/trnm-server/src/runtime")
+    validate_storage_projection_source(
+        sources[server_runtime / "storage_api.rs"],
+        sources[server_runtime / "storage_api_tests.rs"] + "\n" + sources[server_runtime / "storage_api_v3_live.rs"],
+    )
     validate_live_failure_diagnostics(
         sources[STORAGE_LIVE_HARNESS.relative_to(ROOT)],
         sources[LIVE_FAILURE_HELPER.relative_to(ROOT)],
@@ -548,11 +907,19 @@ def main() -> int:
     )
 
     marker_groups = {
+        "crates/trnm-persistence-pg/src/storage_parts/00_prelude.rs": (
+            "postgres::fallible_iterator::FallibleIterator",
+            "const MAX_VALUE_BYTES: usize = 1024 * 1024;",
+            "const MAX_NATIVE_VALUE_BYTES: usize = 16 * 1024 * 1024;",
+            "const MAX_RESULT_VALUE_BYTES: usize = 32 * 1024 * 1024;",
+        ),
         "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs": (
             "pub fn list_storage_objects_nakama(",
             "validate_client_list_request",
             ".read_only(true)",
-            ".take(limit)",
+            ".query_raw(&query, parameters)",
+            "if objects.len() == limit",
+            "consume_storage_result_budget(&mut result_bytes, object.object.value.len())?",
             "decode_nakama_listed_storage_object",
             "transaction.commit()",
         ),
@@ -560,14 +927,24 @@ def main() -> int:
             "storage_client_list_public_query",
             "storage_client_list_own_query",
             "storage_client_list_foreign_query",
-            "ORDER BY read_permission ASC, object_key ASC, user_id ASC",
-            "ORDER BY read_permission ASC, object_key ASC",
-            "ORDER BY object_key ASC",
+            '"read_permission ASC, object_key ASC, user_id ASC"',
+            '"read_permission ASC, object_key ASC"',
+            '"object_key ASC"',
         ),
         "crates/trnm-persistence-pg/src/storage_parts/05_decode_errors.rs": (
             "decode_nakama_listed_storage_object",
             "StorageObjectKey::new_nakama",
             "decode_storage_object_at(key, row, 2)",
+        ),
+        "crates/trnm-persistence-pg/src/storage_parts/06_native_projection.rs": (
+            "value_jsonb::TEXT", "value_projection_digest", "public_version",
+            "fn consume_storage_result_budget", "storage_resource_exhausted(",
+            "storage_ordinal < ${fetch_parameter}", "ROW_NUMBER() OVER",
+            "WHERE {predicate} ORDER BY {ordering} LIMIT ${fetch_parameter}",
+            "fn validate_native_condition", 'query_one("SELECT $1::TEXT"',
+            "FROM (SELECT $1::TEXT::JSONB::TEXT AS value) AS native_projection",
+            "if length > MAX_NATIVE_VALUE_BYTES", ".checked_add(value_bytes)",
+            ".filter(|value| *value <= MAX_RESULT_VALUE_BYTES)",
         ),
         "crates/trnm-server/src/runtime/storage_list_api.rs": (
             "STORAGE_LIST_ROUTES",
@@ -793,6 +1170,18 @@ def main() -> int:
         fail("aggregate gate does not strictly lint the binary target")
     if "python3 scripts/check-trnm-server.py" not in workflow:
         fail("aggregate gate does not execute the server source contract")
+    live_workflow = (ROOT / ".github/workflows/trnm-server-live.yml").read_text(encoding="utf-8")
+    prospective_workflow = (ROOT / ".github/workflows/prospective-merge-gate.yml").read_text(encoding="utf-8")
+    validate_storage_live_workflow(live_workflow, prospective=False)
+    validate_storage_live_workflow(prospective_workflow, prospective=True)
+    require_markers("source live packet retention", live_workflow, (
+        'python3 scripts/check-trnm-server.py --live-packet "$evidence"',
+        '--profile "$PROFILE" --commit "$CANDIDATE_SHA" --tree "$(git rev-parse HEAD^{tree})"',
+    ))
+    require_markers("prospective server packet retention", prospective_workflow, (
+        'python3 scripts/check-trnm-server.py --live-packet "$server"',
+        '--profile "$PROFILE" --commit "$PROSPECTIVE_MERGE_SHA" --tree "$(git rev-parse HEAD^{tree})"',
+    ))
 
     authority = json.loads(
         (ROOT / "docs/development/RUST_PACKAGE_AUTHORITY.json").read_text(encoding="utf-8")
@@ -844,10 +1233,21 @@ def main() -> int:
         "No separate format or length cap; bounded by the configured HTTP request budget."
     ):
         fail("storage exact input conditions must retain the complete request budget")
+    limits = storage_contract.get("resource_limits", {})
+    if any(type(limits.get(field)) is not int or limits[field] != maximum for field, maximum in {
+        "maximum_value_bytes": 1048576, "maximum_native_value_bytes": 16777216,
+        "maximum_encoded_response_bytes": 33554432,
+    }.items()):
+        fail("storage HTTP request/native/encoded response budgets differ")
+    projection = storage_contract.get("jsonb_v3_projection_source_candidate", {})
+    if projection.get("schema_version") != 3 or projection.get("storage_writer_epoch") != 3 or any(
+        projection.get(field) is not False for field in ("accepted", "compatibility_credit", "gap_closed", "production_ready")
+    ):
+        fail("storage HTTP JSONB projection must retain v3 ABI and no-credit claims")
     condition_state = status.get("storage_http_mutations", {}).get("condition_version")
     if condition_state != (
         "Original-string ExpectedVersion: write empty is blind, write star is insert-only, "
-        "other writes and all nonempty deletes are exact; schema v2 generated versions remain unchanged."
+        "other writes and all nonempty deletes are exact; schema v3 preserves independent PublicVersion tokens and ACKs use request MD5."
     ):
         fail("storage mutation state must distinguish raw conditions from generated versions")
     if status.get("claims", {}).get("storage_http_mutation_source_candidate") is not True:
@@ -927,4 +1327,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

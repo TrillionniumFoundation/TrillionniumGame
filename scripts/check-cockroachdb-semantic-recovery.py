@@ -34,6 +34,14 @@ if SCHEMA_SPEC is None or SCHEMA_SPEC.loader is None:
     raise RuntimeError("schema consumer checker unavailable")
 SCHEMA = importlib.util.module_from_spec(SCHEMA_SPEC)
 SCHEMA_SPEC.loader.exec_module(SCHEMA)
+V3_SPEC = importlib.util.spec_from_file_location(
+    "storage_v3_recovery_contract", Path(__file__).with_name("check-pgwire-backup-restore.py")
+)
+if V3_SPEC is None or V3_SPEC.loader is None:
+    raise RuntimeError("storage v3 recovery checker unavailable")
+V3 = importlib.util.module_from_spec(V3_SPEC)
+V3_SPEC.loader.exec_module(V3)
+
 
 def require(value: bool, message: str) -> None:
     if not value:
@@ -79,7 +87,9 @@ def validate_texts(data: str, harness: str) -> None:
         SCHEMA.validate_storage_snapshot(data)
         SCHEMA.validate_known_timestamp_fixtures(harness)
         SCHEMA.validate_semantic_negative_probes(harness, "cockroachdb")
-    except SCHEMA.ValidationError as error:
+        V3.validate_v3_snapshot_source(data)
+        V3.validate_v3_semantic_harness(harness)
+    except (SCHEMA.ValidationError, SystemExit) as error:
         raise ValidationError(str(error)) from error
 
 def main() -> int:

@@ -1183,15 +1183,12 @@ fn storage_live_list_page(response: &Response) -> (Vec<(String, String, i32)>, O
         .flatten()
         .map(|object| {
             assert_eq!(object["collection"], LIVE_COLLECTION);
-            let value = object["value"].as_str().unwrap();
-            assert_eq!(
-                object["version"],
-                ContentVersion::from_value(value.as_bytes()).as_str()
-            );
+            assert!(object["value"].as_str().is_some());
+            assert!(object["version"].as_str().is_some());
             for field in ["create_time", "update_time"] {
                 let timestamp = object[field]
                     .as_str()
-                    .expect("v2 writer supplies database time");
+                    .expect("v3 writer supplies database time");
                 let parsed: prost_types::Timestamp = timestamp.parse().unwrap();
                 assert_eq!(parsed.nanos, 0, "upstream read/list seconds projection");
             }
@@ -1271,22 +1268,22 @@ fn persisted_storage_value(
 ) -> Option<Vec<u8>> {
     control
         .query_opt(
-            "SELECT value_bytes, version_digest FROM trnm_storage_objects \
+            "SELECT value_jsonb::TEXT, value_projection_digest FROM public.trnm_storage_objects \
              WHERE collection = $1 AND object_key = $2 AND user_id = $3",
             &[&LIVE_COLLECTION, &name, &owner.as_bytes().as_slice()],
         )
         .unwrap_or_else(|_| panic!("canonical storage fixture: persisted object query failed"))
         .map(|row| {
-            let value: Vec<u8> = row.get(0);
+            let value: String = row.get(0);
             let digest: Vec<u8> = row.get(1);
             assert_eq!(
                 digest,
-                IntegrityDigest::from_value(&value)
+                IntegrityDigest::from_value(value.as_bytes())
                     .get()
                     .as_bytes()
                     .as_slice()
             );
-            value
+            value.into_bytes()
         })
 }
 
@@ -1294,8 +1291,13 @@ fn persisted_storage_value(
 struct LiveStorageSnapshot {
     key: String,
     owner: Vec<u8>,
-    value: Vec<u8>,
-    integrity: Vec<u8>,
+    value: String,
+    public_version: String,
+    projection_integrity: Vec<u8>,
+    value_origin: String,
+    source_manifest: Option<Vec<u8>>,
+    raw_value: Option<Vec<u8>>,
+    raw_integrity: Option<Vec<u8>>,
     read_permission: i16,
     write_permission: i16,
     updated_at_ms: i64,
@@ -1306,7 +1308,9 @@ struct LiveStorageSnapshot {
 fn storage_live_snapshot(control: &mut postgres::Client) -> Vec<LiveStorageSnapshot> {
     control
         .query(
-            "SELECT object_key, user_id, value_bytes, version_digest, read_permission, \
+            "SELECT object_key, user_id, value_jsonb::TEXT, public_version, \
+             value_projection_digest, value_origin, source_manifest_digest, value_bytes, \
+             version_digest, read_permission, \
              write_permission, updated_at_ms, \
              (extract(epoch FROM create_time)*1000000)::BIGINT, \
              (extract(epoch FROM update_time)*1000000)::BIGINT \
@@ -1320,12 +1324,17 @@ fn storage_live_snapshot(control: &mut postgres::Client) -> Vec<LiveStorageSnaps
             key: row.get(0),
             owner: row.get(1),
             value: row.get(2),
-            integrity: row.get(3),
-            read_permission: row.get(4),
-            write_permission: row.get(5),
-            updated_at_ms: row.get(6),
-            create_micros: row.get(7),
-            update_micros: row.get(8),
+            public_version: row.get(3),
+            projection_integrity: row.get(4),
+            value_origin: row.get(5),
+            source_manifest: row.get(6),
+            raw_value: row.get(7),
+            raw_integrity: row.get(8),
+            read_permission: row.get(9),
+            write_permission: row.get(10),
+            updated_at_ms: row.get(11),
+            create_micros: row.get(12),
+            update_micros: row.get(13),
         })
         .collect()
 }
@@ -1339,6 +1348,8 @@ fn storage_live_row_count(control: &mut postgres::Client) -> i64 {
         .unwrap_or_else(|_| panic!("canonical storage fixture: collection count failed"))
         .get(0)
 }
+
+include!("storage_api_v3_live.rs");
 
 #[test]
 fn canonical_storage_api_live_database() {
@@ -1423,27 +1434,7 @@ fn canonical_storage_api_live_database() {
                 "{}",
             ),
         ] {
-            let value = value.as_bytes();
-            let digest = IntegrityDigest::from_value(value).get();
-            assert_eq!(
-                control
-                    .execute(
-                        "INSERT INTO trnm_storage_objects \
-                         (collection, object_key, user_id, value_bytes, version_digest, \
-                          read_permission, write_permission, updated_at_ms, create_time, update_time) \
-                         VALUES ($1, $2, $3, $4, $5, $6, 1, 0, now(), now())",
-                        &[
-                            &LIVE_COLLECTION,
-                            &name,
-                            &owner.as_bytes().as_slice(),
-                            &value,
-                            &digest.as_bytes().as_slice(),
-                            &(permission as i16)
-                        ],
-                    )
-                    .unwrap_or_else(|_| panic!("canonical storage fixture: object seed failed")),
-                1
-            );
+            seed_storage_known_native(&mut control, name, owner, permission, value);
         }
         let verifier = AccessTokenVerifier::from_epoch_key(
             ISSUER.to_owned(),
@@ -1455,6 +1446,7 @@ fn canonical_storage_api_live_database() {
         let mut app = App::new(repository, ADMIN.to_owned()).with_access_token_verifier(verifier);
         let credential = bearer_for(LIVE_USER, LIVE_FAMILY, family.generation);
         let original = " { \"level\": 1 }\n";
+        let rendered_original = native_storage_render(&mut control, original);
         let write_body = serde_json::json!({"objects":[{
             "collection":LIVE_COLLECTION,"key":"sword","value":original,"version":"*",
             "user_id":LIVE_OTHER_UUID
@@ -1471,6 +1463,10 @@ fn canonical_storage_api_live_database() {
             .as_str()
             .to_owned();
         assert_eq!(json(&write)["acks"][0]["version"], version);
+        assert_ne!(
+            ContentVersion::from_value(original.as_bytes()),
+            ContentVersion::from_value(rendered_original.as_bytes())
+        );
         let persisted = control.query_one(
             "SELECT (extract(epoch FROM create_time)*1000000)::BIGINT, (extract(epoch FROM update_time)*1000000)::BIGINT FROM trnm_storage_objects WHERE collection=$1 AND object_key='sword' AND user_id=$2",
             &[&LIVE_COLLECTION, &LIVE_USER.as_bytes().as_slice()],
@@ -1490,7 +1486,7 @@ fn canonical_storage_api_live_database() {
 
         assert_eq!(
             persisted_storage_value(&mut control, "sword", LIVE_USER),
-            Some(original.as_bytes().to_vec())
+            Some(rendered_original.as_bytes().to_vec())
         );
         assert_eq!(
             persisted_storage_value(&mut control, "sword", LIVE_OTHER),
@@ -1678,10 +1674,6 @@ fn canonical_storage_api_live_database() {
             .iter()
             .map(|object| {
                 let value = object["value"].as_str().unwrap();
-                assert_eq!(
-                    object["version"],
-                    ContentVersion::from_value(value.as_bytes()).as_str()
-                );
                 assert_eq!(object["collection"], LIVE_COLLECTION);
                 let name = object["key"].as_str().unwrap();
                 let owner =
@@ -1689,14 +1681,16 @@ fn canonical_storage_api_live_database() {
                 let persisted = control
                     .query_one(
                         "SELECT floor(extract(epoch FROM create_time))::BIGINT, \
-                     floor(extract(epoch FROM update_time))::BIGINT \
-                     FROM trnm_storage_objects \
+                     floor(extract(epoch FROM update_time))::BIGINT, public_version, value_jsonb::TEXT \
+                     FROM public.trnm_storage_objects \
                      WHERE collection = $1 AND object_key = $2 AND user_id = $3",
                         &[&LIVE_COLLECTION, &name, &owner.as_bytes().as_slice()],
                     )
                     .unwrap_or_else(|_| {
                         panic!("canonical storage fixture: read timestamp SQL comparison failed")
                     });
+                assert_eq!(object["version"].as_str().unwrap(), persisted.get::<_, String>(2));
+                assert_eq!(value.as_bytes(), persisted.get::<_, String>(3).as_bytes());
                 for (index, field) in ["create_time", "update_time"].into_iter().enumerate() {
                     let projected: prost_types::Timestamp =
                         object[field].as_str().unwrap().parse().unwrap();
@@ -1723,20 +1717,20 @@ fn canonical_storage_api_live_database() {
             BTreeMap::from([
                 (
                     "sword".to_owned(),
-                    (LIVE_USER_UUID.to_owned(), original.to_owned())
+                    (LIVE_USER_UUID.to_owned(), rendered_original.clone())
                 ),
                 (
                     "other-public".to_owned(),
                     (
                         LIVE_OTHER_UUID.to_owned(),
-                        r#"{"owner":"other-public"}"#.to_owned()
+                        native_storage_render(&mut control, r#"{"owner":"other-public"}"#)
                     )
                 ),
                 (
                     "global-public".to_owned(),
                     (
                         "00000000-0000-0000-0000-000000000000".to_owned(),
-                        r#"{"owner":"global"}"#.to_owned()
+                        native_storage_render(&mut control, r#"{"owner":"global"}"#)
                     )
                 ),
             ])
@@ -1913,12 +1907,14 @@ fn canonical_storage_api_live_database() {
         assert!(json(&rejected).get("acks").is_none());
         assert_eq!(
             persisted_storage_value(&mut control, "sword", LIVE_USER),
-            Some(original.as_bytes().to_vec())
+            Some(rendered_original.as_bytes().to_vec())
         );
         assert_eq!(
             persisted_storage_value(&mut control, "shield", LIVE_USER),
             None
         );
+
+        prove_storage_jsonb_v3_app(&mut control, &mut app, &credential, profile);
 
         let delete_body = |expected: &str| {
             serde_json::json!({"object_ids":[{
@@ -1935,7 +1931,7 @@ fn canonical_storage_api_live_database() {
         assert_eq!(json(&stale)["code"], 3);
         assert_eq!(
             persisted_storage_value(&mut control, "sword", LIVE_USER),
-            Some(original.as_bytes().to_vec())
+            Some(rendered_original.as_bytes().to_vec())
         );
         let deleted = app.handle(&request(
             "/v2/storage/delete?trace=live",

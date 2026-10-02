@@ -103,7 +103,7 @@ def source_binding(profile: str) -> tuple[dict[str, Any], bytes, dict[str, Any],
     row = validation["profiles"][profile]
     binding = {"migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
                "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
-               "schema_version": str(lock["schema_version"]), "storage_writer_epoch": "2",
+               "schema_version": str(lock["schema_version"]), "storage_writer_epoch": "3",
                "chain_digest": row["chain_sha256"], "digest_algorithm": validation["digest_algorithm"],
                "ordered_files": ordered, "image": image}
     return validation, lock_bytes, lock, binding

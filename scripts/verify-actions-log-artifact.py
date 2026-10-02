@@ -72,6 +72,8 @@ def load_migration_checker() -> Any:
 
 
 MIGRATIONS = load_migration_checker()
+SCHEMA_VERSION = 3
+STORAGE_WRITER_EPOCH = 3
 
 
 def strict_object(data: bytes, label: str) -> dict[str, Any]:
@@ -297,7 +299,7 @@ def fetch_profile_bindings(
             "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
             "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
             "schema_version": str(validation["schema_version"]),
-            "storage_writer_epoch": "2",
+            "storage_writer_epoch": str(STORAGE_WRITER_EPOCH),
             "chain_digest": validation["profiles"][profile]["chain_sha256"],
             "digest_algorithm": validation["digest_algorithm"],
             "ordered_files": row["ordered_files"],
@@ -476,6 +478,11 @@ def validate_archive(
 ) -> dict[str, object]:
     if profile not in PROFILES:
         raise VerificationError(f"unsupported profile: {profile}")
+    if (binding.get("schema_version") != str(SCHEMA_VERSION)
+            or binding.get("storage_writer_epoch") != str(STORAGE_WRITER_EPOCH)
+            or not isinstance(binding.get("ordered_files"), list)
+            or len(binding["ordered_files"]) != SCHEMA_VERSION):
+        raise VerificationError("source binding is not the complete current schema/epoch chain")
     files = archive_files(data)
     verify_file_manifest(files)
     verify_migration_files(files, binding["ordered_files"])
@@ -502,14 +509,14 @@ def validate_archive(
     if hashlib.sha256(retained_lock).hexdigest() != binding["migration_lock_sha256"]:
         raise VerificationError("retained migration lock differs from exact-head source")
     lock = strict_object(retained_lock, "retained migration lock")
-    if lock.get("schema_version") != 2 or profile_object(lock, profile, "retained migration lock").get("ordered_files") != binding["ordered_files"]:
+    if type(lock.get("schema_version")) is not int or lock["schema_version"] != SCHEMA_VERSION or profile_object(lock, profile, "retained migration lock").get("ordered_files") != binding["ordered_files"]:
         raise VerificationError("retained migration chain is incomplete or mismatched")
     schema = strict_object(files.get("schema-identity.json", b""), "schema identity")
     expected_schema = {
         "schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
-        "schema_version": 2, "storage_writer_epoch": 2,
+        "schema_version": SCHEMA_VERSION, "storage_writer_epoch": STORAGE_WRITER_EPOCH,
         "chain_digest": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
-        "source_commit": head_sha, "upgrade_source_commit": head_sha,
+        "source_commit": head_sha, "upgrade_source_commit": head_sha, "v2_apply_source_commit": head_sha,
         "table_count": 10, "applied_steps": len(binding["ordered_files"]),
         "migration_applied": True, "compatibility_credit": False,
     }
@@ -522,8 +529,9 @@ def validate_archive(
         "file_count": len(binding["ordered_files"]),
         "ordered_paths": [entry["path"] for entry in binding["ordered_files"]],
         "chain_sha256": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
+        "declared_action_count": 22, "revision_action_counts": {"2": 6, "3": 16},
     }
-    if (type(validation.get("schema_version")) is not int or validation.get("schema_version") != 2
+    if (type(validation.get("schema_version")) is not int or validation.get("schema_version") != SCHEMA_VERSION
             or validation.get("digest_algorithm") != binding["digest_algorithm"]
             or validation.get("source_identity_verified") is not True
             or validation.get("runtime_execution_verified") is not False
@@ -608,8 +616,9 @@ def validate_archive(
         "archive_size": len(data),
         "migration_lock": binding["migration_lock"],
         "migration_lock_sha256": binding["migration_lock_sha256"],
-        "schema_version": 2,
-        "storage_writer_epoch": 2,
+        "schema_version": SCHEMA_VERSION,
+        "storage_writer_epoch": STORAGE_WRITER_EPOCH,
+        "v2_apply_source_commit": schema["v2_apply_source_commit"],
         "chain_digest": binding["chain_digest"],
         "digest_algorithm": binding["digest_algorithm"],
         "ordered_files": binding["ordered_files"],

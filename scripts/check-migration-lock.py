@@ -11,8 +11,75 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "migrations/MIGRATION_CHAIN.lock.json"
 EXPECTED_PROFILES = {"postgresql", "cockroachdb"}
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DIGEST_ALGORITHM = "ordered-path-git-blob-sha256.v1"
+FROZEN_BASE = "326e670cb008a990247e31a63c0c4b0e338df62f"
+# Adding a revision must never rewrite either reviewed historical revision,
+# even if an edited lock also advertises the new blob.
+FROZEN_HISTORICAL_BLOBS = {
+    "migrations/postgresql/0001_foundation_up.sql": "07f5f4923d884cc63bf53074096b8d1e04215096",
+    "migrations/postgresql/0002_storage_timestamps_up.sql": "e36cc2d743eb863af93774a24615f3c5ec1c3443",
+    "migrations/cockroachdb/0001_foundation_up.sql": "b836b8a2f025ef22525e9e5f089db01ab5f06fe6",
+    "migrations/cockroachdb/0002_storage_timestamps_up.sql": "700cdb460b9211370777928b980b10e37ae21ae9",
+}
+
+
+def reviewed_actions(profile: str, revision: int) -> tuple[tuple[str, str], ...]:
+    """Closed runner declarations, not a general SQL parser or SQL executor."""
+    if revision == 2:
+        text = "TEXT" if profile == "postgresql" else "STRING"
+        integer = "BIGINT" if profile == "postgresql" else "INT8"
+        return (
+            ("metadata_chain_digest", f"ALTER TABLE trnm_schema_metadata ADD COLUMN chain_digest {text};"),
+            ("metadata_digest_algorithm", f"ALTER TABLE trnm_schema_metadata ADD COLUMN digest_algorithm {text};"),
+            ("metadata_storage_writer_epoch", f"ALTER TABLE trnm_schema_metadata ADD COLUMN storage_writer_epoch {integer};"),
+            ("metadata_upgrade_source_commit", f"ALTER TABLE trnm_schema_metadata ADD COLUMN upgrade_source_commit {text};"),
+            ("storage_create_time", "ALTER TABLE trnm_storage_objects ADD COLUMN create_time TIMESTAMPTZ;"),
+            ("storage_update_time", "ALTER TABLE trnm_storage_objects ADD COLUMN update_time TIMESTAMPTZ;"),
+        )
+    require(revision == 3, "unknown action revision")
+    return (
+        ("metadata_v2_apply_source_commit", "ALTER TABLE trnm_schema_metadata ADD COLUMN v2_apply_source_commit TEXT;"),
+        ("storage_value_jsonb", "ALTER TABLE trnm_storage_objects ADD COLUMN value_jsonb JSONB;"),
+        ("storage_public_version", "ALTER TABLE trnm_storage_objects ADD COLUMN public_version VARCHAR(32);"),
+        ("storage_value_projection_digest", "ALTER TABLE trnm_storage_objects ADD COLUMN value_projection_digest BYTEA;"),
+        ("storage_value_origin", "ALTER TABLE trnm_storage_objects ADD COLUMN value_origin TEXT;"),
+        ("storage_source_manifest_digest", "ALTER TABLE trnm_storage_objects ADD COLUMN source_manifest_digest BYTEA;"),
+        ("storage_native_backfill", "-- trnm:backfill storage_jsonb_v3"),
+        ("storage_value_bytes_optional", "ALTER TABLE trnm_storage_objects ALTER COLUMN value_bytes DROP NOT NULL;"),
+        ("storage_version_digest_optional", "ALTER TABLE trnm_storage_objects ALTER COLUMN version_digest DROP NOT NULL;"),
+        ("storage_value_jsonb_required", "ALTER TABLE trnm_storage_objects ALTER COLUMN value_jsonb SET NOT NULL;"),
+        ("storage_public_version_required", "ALTER TABLE trnm_storage_objects ALTER COLUMN public_version SET NOT NULL;"),
+        ("storage_value_projection_digest_required", "ALTER TABLE trnm_storage_objects ALTER COLUMN value_projection_digest SET NOT NULL;"),
+        ("storage_value_origin_required", "ALTER TABLE trnm_storage_objects ALTER COLUMN value_origin SET NOT NULL;"),
+        ("storage_projection_digest", "ALTER TABLE trnm_storage_objects ADD CONSTRAINT storage_projection_digest CHECK (octet_length(value_projection_digest) = 32);"),
+        ("storage_origin_witness", "ALTER TABLE trnm_storage_objects ADD CONSTRAINT storage_origin_witness CHECK (((value_origin = 'legacy-rust-v2-bytes' OR value_origin = 'write-request-bytes') AND value_bytes IS NOT NULL AND version_digest IS NOT NULL AND octet_length(version_digest) = 32 AND source_manifest_digest IS NULL) OR (value_origin = 'nakama-export-unknown-request' AND value_bytes IS NULL AND version_digest IS NULL AND source_manifest_digest IS NOT NULL AND octet_length(source_manifest_digest) = 32 AND source_manifest_digest <> decode(repeat('0',64),'hex')));"),
+        ("metadata_v2_history", "ALTER TABLE trnm_schema_metadata ADD CONSTRAINT metadata_v2_history CHECK (schema_version < 3 OR (v2_apply_source_commit IS NOT NULL AND length(v2_apply_source_commit) = 40));"),
+    )
+
+
+def validate_action_source(data: bytes, profile: str, revision: int) -> list[str]:
+    """Require the exact reviewed sequence and one statement per declaration."""
+    declarations = reviewed_actions(profile, revision)
+    # BEGIN/COMMIT are historical PostgreSQL v2 wrappers, not v3 actions.
+    expected = []
+    if profile == "postgresql" and revision == 2:
+        expected.append("BEGIN;")
+    for action, statement in declarations:
+        expected.extend((f"-- trnm:action {action}", statement))
+    if profile == "postgresql" and revision == 2:
+        expected.append("COMMIT;")
+    actual = []
+    for line in data.decode("utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("--") and not line.startswith("-- trnm:"):
+            # Comments have no executable or authority-bearing content.
+            continue
+        actual.append(line)
+    require(actual == expected, f"{profile}: revision {revision} action grammar drift")
+    return [action for action, _ in declarations]
 
 
 class ValidationError(RuntimeError):
@@ -54,6 +121,7 @@ def validate_source_document(
     """Validate local or exact-head remote sources using one lock authority."""
     require(lock.get("schema") == "trillionnium.migration-chain-lock.v1", "wrong lock schema")
     require(lock.get("project_id") == "trillionnium-game", "wrong project_id")
+    require(lock.get("generated_from_base") == FROZEN_BASE, "frozen migration base drifted")
     require(type(lock.get("schema_version")) is int and lock["schema_version"] == SCHEMA_VERSION,
             "unexpected schema version")
     profiles = lock.get("profiles")
@@ -75,6 +143,8 @@ def validate_source_document(
         require(len(ordered) == SCHEMA_VERSION, f"{profile}: incomplete schema-version chain")
         listed_paths: list[str] = []
         chain_entries: list[tuple[str, str]] = []
+        action_ids: list[str] = []
+        revision_actions: dict[str, int] = {}
         for position, item in enumerate(ordered):
             require(isinstance(item, dict), f"{profile}: lock item must be an object")
             path_value = item.get("path")
@@ -91,6 +161,15 @@ def validate_source_document(
             data = read_source(path_value)
             actual_blob = git_blob_sha1(data)
             require(actual_blob == expected_blob, f"{path_value}: blob identity drift")
+            if position < 2:
+                require(FROZEN_HISTORICAL_BLOBS.get(path_value) == actual_blob,
+                        f"{path_value}: frozen historical identity drift")
+            if position > 0:
+                revision = position + 1
+                ids = validate_action_source(data, profile, revision)
+                require(not set(ids).intersection(action_ids), f"{profile}: duplicate action identity")
+                action_ids.extend(ids)
+                revision_actions[str(revision)] = len(ids)
             chain_entries.append((path_value, actual_blob))
         require(listed_paths == actual_sql, f"{profile}: unlisted, missing or unordered SQL migration")
         report[profile] = {
@@ -98,6 +177,8 @@ def validate_source_document(
             "ordered_paths": listed_paths,
             "chain_sha256": ordered_chain_digest(chain_entries),
             "digest_algorithm": DIGEST_ALGORITHM,
+            "declared_action_count": len(action_ids),
+            "revision_action_counts": revision_actions,
         }
 
     rules = lock.get("rules")

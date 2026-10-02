@@ -9,14 +9,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, Config, NoTls};
-use trnm_contracts::StableCode;
+use trnm_contracts::{StableCode, UserId};
 use trnm_persistence_pg::{
-    authoritative_chain_digest, DatabaseProfile, IntegrityDigest, PgRepository, SchemaIdentity,
+    authoritative_chain_digest, ContentVersion, DatabaseProfile, IntegrityDigest, PgRepository,
+    SchemaIdentity, StorageActor, StorageObjectKey,
 };
 
 const ORIGINAL_SOURCE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const UPGRADE_SOURCE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const LATER_BINARY_SOURCE: &str = "cccccccccccccccccccccccccccccccccccccccc";
+const V2_PUBLISHER_SOURCE: &str = "dddddddddddddddddddddddddddddddddddddddd";
 const ROLE_PASSWORD: &str = "isolated_schema_upgrade_fixture_only";
 const LEGACY_VALUE: &[u8] = b"{\"legacy\":true}";
 const TABLES: &[&str] = &[
@@ -362,21 +364,32 @@ fn assert_identity(
     upgrade: &str,
 ) {
     assert_eq!(identity.profile, profile);
-    assert_eq!(identity.schema_version, 2);
-    assert_eq!(identity.storage_writer_epoch, 2);
+    assert_eq!(identity.schema_version, 3);
+    assert_eq!(identity.storage_writer_epoch, 3);
     assert_eq!(identity.source_commit, source);
     assert_eq!(identity.upgrade_source_commit, upgrade);
+    assert_eq!(identity.v2_apply_source_commit, UPGRADE_SOURCE);
     assert_eq!(identity.digest_algorithm, "ordered-path-git-blob-sha256.v1");
     assert_eq!(identity.chain_digest, authoritative_chain_digest(profile));
 }
 
 fn metadata_snapshot(
     client: &mut Client,
-) -> (i64, String, String, i64, String, String, i64, String) {
+) -> (
+    i64,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    i64,
+    String,
+    String,
+) {
     let row = client
         .query_one(
             "SELECT schema_version, profile, source_commit, applied_at_ms, \
-             chain_digest, digest_algorithm, storage_writer_epoch, upgrade_source_commit \
+             chain_digest, digest_algorithm, storage_writer_epoch, upgrade_source_commit, v2_apply_source_commit \
              FROM trnm_schema_metadata WHERE singleton = 1",
             &[],
         )
@@ -390,6 +403,7 @@ fn metadata_snapshot(
         row.get(5),
         row.get(6),
         row.get(7),
+        row.get(8),
     )
 }
 
@@ -524,7 +538,7 @@ fn authoritative_fresh_repeat_and_readonly_verification() {
             .migrate_authoritative_schema(UPGRADE_SOURCE, 23, None)
             .unwrap();
         assert!(report.migration_applied);
-        assert_eq!(report.applied_steps, 2);
+        assert_eq!(report.applied_steps, 3);
         assert_eq!(report.table_count, TABLES.len());
         assert_identity(
             &report.identity,
@@ -599,7 +613,7 @@ fn authoritative_v1_preserves_history_and_observes_actual_legacy_writer_revocati
             .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
             .unwrap();
         assert!(report.migration_applied);
-        assert_eq!(report.applied_steps, 1);
+        assert_eq!(report.applied_steps, 2);
         assert_identity(
             &report.identity,
             fixture.profile,
@@ -657,6 +671,8 @@ fn authoritative_v1_preserves_history_and_observes_actual_legacy_writer_revocati
         assert_eq!(current.chain_digest, report.identity.chain_digest);
         assert_eq!(metadata_snapshot(&mut inspector), metadata);
     });
+    v3_preserves_native_legacy_shapes_and_v2_history(&environment);
+    v3_unknown_opaque_native_history(&environment);
 }
 
 #[test]
@@ -775,6 +791,8 @@ fn authoritative_populated_unbound_and_catalog_drift_fail_closed() {
             "a matching view name must not publish schema identity"
         );
     });
+    v3_illegal_legacy_preflight_cases(&environment);
+    v3_ready_catalog_drift_cases(&environment);
 }
 
 #[test]
@@ -837,7 +855,7 @@ fn authoritative_declared_partial_prefix_resumes_and_malformed_prefixes_reject()
             .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
             .unwrap();
         assert!(report.migration_applied);
-        assert_eq!(report.applied_steps, 1);
+        assert_eq!(report.applied_steps, 2);
         assert_identity(
             &report.identity,
             fixture.profile,
@@ -902,6 +920,8 @@ fn authoritative_declared_partial_prefix_resumes_and_malformed_prefixes_reject()
             assert_eq!(value, LEGACY_VALUE, "{malformed} must preserve legacy data");
         });
     }
+    v3_partial_prefix_and_real_backfill_resume(&environment);
+    v3_recorded_metadata_negative_cases(&environment);
 }
 
 #[test]
@@ -960,7 +980,7 @@ fn authoritative_existing_empty_v1_requires_a_real_unprivileged_writer_barrier()
         let report = repository
             .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
             .unwrap();
-        assert_eq!(report.applied_steps, 1);
+        assert_eq!(report.applied_steps, 2);
         assert_identity(
             &report.identity,
             fixture.profile,
@@ -1073,7 +1093,7 @@ fn authoritative_inherited_storage_privileges_are_not_a_writer_barrier() {
             let report = repository
                 .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
                 .unwrap();
-            assert_eq!(report.applied_steps, 1);
+            assert_eq!(report.applied_steps, 2);
             assert_identity(
                 &report.identity,
                 fixture.profile,
@@ -1161,7 +1181,7 @@ fn authoritative_inherited_storage_privileges_are_not_a_writer_barrier() {
                 let report = repository
                     .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
                     .unwrap();
-                assert_eq!(report.applied_steps, 1);
+                assert_eq!(report.applied_steps, 2);
                 assert_identity(
                     &report.identity,
                     fixture.profile,
@@ -1319,7 +1339,7 @@ fn authoritative_inherited_storage_privileges_are_not_a_writer_barrier() {
                 let report = repository
                     .migrate_authoritative_schema(UPGRADE_SOURCE, 23, Some(&legacy))
                     .unwrap();
-                assert_eq!(report.applied_steps, 1);
+                assert_eq!(report.applied_steps, 2);
                 assert_identity(
                     &report.identity,
                     fixture.profile,
@@ -1345,3 +1365,6 @@ fn authoritative_inherited_storage_privileges_are_not_a_writer_barrier() {
         }
     }
 }
+
+// Scenario helpers keep the six required native lifecycle tests intact.
+include!("schema_upgrade_parts/v3.rs");

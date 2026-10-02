@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -42,8 +43,8 @@ class ActionsLogVerifierTests(unittest.TestCase):
         return {
             "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
             "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
-            "schema_version": "2",
-            "storage_writer_epoch": "2",
+            "schema_version": "3",
+            "storage_writer_epoch": "3",
             "chain_digest": validation["profiles"][profile]["chain_sha256"],
             "digest_algorithm": validation["digest_algorithm"],
             "ordered_files": lock["profiles"][profile]["ordered_files"],
@@ -95,10 +96,10 @@ class ActionsLogVerifierTests(unittest.TestCase):
         result.update(result_overrides or {})
         schema = {
             "schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
-            "schema_version": 2, "storage_writer_epoch": 2,
+            "schema_version": 3, "storage_writer_epoch": 3,
             "chain_digest": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
-            "source_commit": HEAD, "upgrade_source_commit": HEAD,
-            "migration_applied": True, "table_count": 10, "applied_steps": 2,
+            "source_commit": HEAD, "upgrade_source_commit": HEAD, "v2_apply_source_commit": HEAD,
+            "migration_applied": True, "table_count": 10, "applied_steps": 3,
             "compatibility_credit": False,
         }
         schema.update(schema_overrides or {})
@@ -253,18 +254,41 @@ class ActionsLogVerifierTests(unittest.TestCase):
             )
             self.assertEqual(record["profile"], profile)
             self.assertEqual(record["head_tree"], TREE)
+            self.assertEqual(record["schema_version"], 3)
+            self.assertEqual(record["storage_writer_epoch"], 3)
+            self.assertEqual(record["v2_apply_source_commit"], HEAD)
+            self.assertEqual(len(record["ordered_files"]), 3)
             self.assertFalse(record["production_ready"])
             self.assertFalse(record["compatibility_credit"])
 
     def seal_fixture(self, profile: str) -> tuple[Path, dict[str, str]]:
         temporary = tempfile.TemporaryDirectory(prefix="outbox-seal-", dir=ROOT.parent)
         self.addCleanup(temporary.cleanup)
+        # Commit only this test's copied source in an isolated repository. The
+        # real sealer still checks Git HEAD/tree/lock/SQL blobs, even while the
+        # working repository contains an uncommitted complete schema cutover.
+        source_root = Path(temporary.name) / "source"
+        source_root.mkdir()
+        shutil.copytree(ROOT / "migrations", source_root / "migrations")
+        (source_root / "config").mkdir()
+        shutil.copyfile(ROOT / "config/database-test-images.json", source_root / "config/database-test-images.json")
+        for arguments in (
+            ["init", "--quiet"],
+            ["add", "--", "migrations", "config/database-test-images.json"],
+            ["-c", "user.name=Storage Control Fixture", "-c", "user.email=storage-fixture@example.invalid",
+             "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null",
+             "commit", "--quiet", "-m", "Isolated source binding fixture"],
+        ):
+            subprocess.run(["git", *arguments], cwd=source_root, check=True, capture_output=True)
+        source_patch = mock.patch.object(self.sealer, "SOURCE_ROOT", source_root)
+        source_patch.start()
+        self.addCleanup(source_patch.stop)
         root = Path(temporary.name) / profile
         root.mkdir()
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True).strip()
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source_root, text=True).strip()
+        tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=source_root, text=True).strip()
         files = self.module.archive_files(self.archive(
-            profile, schema_overrides={"source_commit": commit, "upgrade_source_commit": commit},
+            profile, schema_overrides={"source_commit": commit, "upgrade_source_commit": commit, "v2_apply_source_commit": commit},
             result_overrides={"commit": commit, "tree": tree},
         ))
         files["result.env"] = self.env_bytes({"status": "passed", "profile": profile, "commit": commit})
@@ -296,7 +320,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
                 output.addfile(member, io.BytesIO(payload))
         return archive
 
-    def test_actual_sealer_copies_both_locked_migrations_and_verifies_each_profile_archive(self) -> None:
+    def test_actual_sealer_copies_all_three_locked_migrations_and_verifies_each_profile_archive(self) -> None:
         for profile in self.module.PROFILES:
             with self.subTest(profile=profile):
                 root, identity = self.seal_fixture(profile)
@@ -304,7 +328,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
                 self.assertFalse(result["compatibility_credit"])
                 self.assertFalse(result["production_ready"])
                 binding = self.binding(profile)
-                self.assertEqual(len(binding["ordered_files"]), 2)
+                self.assertEqual(len(binding["ordered_files"]), 3)
                 for entry in binding["ordered_files"]:
                     self.assertEqual(self.module.git_blob_sha1((root / entry["path"]).read_bytes()), entry["git_blob_sha1"])
                 sealed = self.module.parse_env((root / "identity.env").read_bytes(), "sealed identity")
@@ -316,7 +340,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
 
     def test_actual_sealer_rejects_stale_incomplete_ambiguous_and_failed_evidence(self) -> None:
         for mutation in ("old_lock", "short_validation", "short_schema", "wrong_schema_profile",
-                         "wrong_apply_commit", "duplicate_schema", "duplicate_result", "failed_result",
+                         "wrong_apply_commit", "wrong_v2_apply_commit", "missing_v2_apply_commit", "duplicate_schema", "duplicate_result", "failed_result",
                          "extra_migration", "symlink", "oversized_file"):
             with self.subTest(mutation=mutation):
                 root, identity = self.seal_fixture("postgresql")
@@ -329,10 +353,14 @@ class ActionsLogVerifierTests(unittest.TestCase):
                     value = json.loads(path.read_bytes())
                     value["profiles"]["postgresql"]["file_count"] = 1
                     path.write_text(json.dumps(value))
-                elif mutation in {"short_schema", "wrong_schema_profile", "wrong_apply_commit"}:
+                elif mutation in {"short_schema", "wrong_schema_profile", "wrong_apply_commit", "wrong_v2_apply_commit", "missing_v2_apply_commit"}:
                     schema.update({"short_schema": {"applied_steps": 1},
                                    "wrong_schema_profile": {"profile": "cockroachdb"},
-                                   "wrong_apply_commit": {"source_commit": "f" * 40}}[mutation])
+                                   "wrong_apply_commit": {"source_commit": "f" * 40},
+                                   "wrong_v2_apply_commit": {"v2_apply_source_commit": "f" * 40},
+                                   "missing_v2_apply_commit": {}}[mutation])
+                    if mutation == "missing_v2_apply_commit":
+                        del schema["v2_apply_source_commit"]
                     schema_path.write_text(json.dumps(schema))
                 elif mutation == "duplicate_schema":
                     schema_path.write_text('{"schema_version":1,' + json.dumps(schema)[1:])
@@ -561,10 +589,12 @@ class ActionsLogVerifierTests(unittest.TestCase):
     def test_archive_rejects_v1_identity_incomplete_schema_and_forged_execution(self) -> None:
         self.assert_schema_archive_rejected(self.archive("postgresql", legacy_identity=True))
         for key, value in (
-            ("schema_version", 1), ("storage_writer_epoch", 1), ("applied_steps", 1),
+            ("schema_version", 1), ("schema_version", 2), ("storage_writer_epoch", 1), ("storage_writer_epoch", 2),
+            ("applied_steps", 1), ("applied_steps", 2),
             ("table_count", 9), ("chain_digest", "e" * 64),
             ("digest_algorithm", "raw-content-historical.v1"),
             ("source_commit", "f" * 40), ("upgrade_source_commit", "f" * 40),
+            ("v2_apply_source_commit", "f" * 40), ("v2_apply_source_commit", None),
             ("migration_applied", False), ("migration_applied", 1),
             ("compatibility_credit", True),
         ):
@@ -584,8 +614,78 @@ class ActionsLogVerifierTests(unittest.TestCase):
             "migration-chain-validation.json": json.dumps(validation).encode(),
         }))
         self.assert_schema_archive_rejected(self.archive("postgresql", file_overrides={
-            "schema-identity.json": b'{"schema_version":1,"schema_version":2}',
+            "schema-identity.json": b'{"schema_version":1,"schema_version":3}',
         }))
+
+    def test_v3_archive_prior_publisher_cannot_be_missing_stale_or_forged_even_when_rehashed(self) -> None:
+        for profile in self.module.PROFILES:
+            original = self.module.strict_object(self.module.archive_files(self.archive(profile))["schema-identity.json"], "fixture schema")
+            for value in (None, "f" * 40, "not-a-commit", 7):
+                schema = original | {"v2_apply_source_commit": value}
+                if value is None:
+                    del schema["v2_apply_source_commit"]
+                archive = self.archive(profile, file_overrides={"schema-identity.json": json.dumps(schema).encode()})
+                self.module.verify_file_manifest(self.module.archive_files(archive))
+                with self.subTest(profile=profile, prior=value), self.assertRaisesRegex(self.module.VerificationError, "v2_apply_source_commit"):
+                    self.module.validate_archive(
+                        archive, repository=REPOSITORY, head_sha=HEAD, head_tree=TREE,
+                        run_id=RUN_ID, run_attempt=RUN_ATTEMPT, profile=profile, binding=self.binding(profile),
+                    )
+            duplicate = b'{"v2_apply_source_commit":"' + b"f" * 40 + b'",' + json.dumps(original).encode()[1:]
+            with self.subTest(profile=profile, prior="duplicate"), self.assertRaisesRegex(self.module.VerificationError, "duplicate JSON key"):
+                self.module.validate_archive(
+                    self.archive(profile, file_overrides={"schema-identity.json": duplicate}),
+                    repository=REPOSITORY, head_sha=HEAD, head_tree=TREE,
+                    run_id=RUN_ID, run_attempt=RUN_ATTEMPT, profile=profile, binding=self.binding(profile),
+                )
+
+    def test_current_chain_binding_cannot_revert_to_v2_or_an_incomplete_suffix(self) -> None:
+        for profile in self.module.PROFILES:
+            for field in ("schema_version", "storage_writer_epoch", "ordered_files"):
+                binding = self.binding(profile)
+                binding[field] = binding[field][:2] if field == "ordered_files" else "2"
+                with self.subTest(profile=profile, field=field), self.assertRaisesRegex(self.module.VerificationError, "complete current schema"):
+                    self.module.validate_archive(
+                        self.archive(profile), repository=REPOSITORY, head_sha=HEAD, head_tree=TREE,
+                        run_id=RUN_ID, run_attempt=RUN_ATTEMPT, profile=profile, binding=binding,
+                    )
+
+    def test_retained_whole_chain_action_counts_and_claims_remain_exact(self) -> None:
+        for profile in self.module.PROFILES:
+            for scope, field, value in (
+                ("global", "schema_version", 2), ("global", "source_identity_verified", False),
+                ("global", "runtime_execution_verified", True), ("global", "compatibility_credit", True),
+                ("profile", "declared_action_count", 21), ("profile", "revision_action_counts", {"2": 6, "3": 15}),
+                ("profile", "file_count", 2),
+            ):
+                validation = self.module.MIGRATIONS.validate(ROOT)
+                target = validation if scope == "global" else validation["profiles"][profile]
+                target[field] = value
+                archive = self.archive(profile, file_overrides={"migration-chain-validation.json": json.dumps(validation).encode()})
+                self.module.verify_file_manifest(self.module.archive_files(archive))
+                with self.subTest(profile=profile, field=field), self.assertRaisesRegex(self.module.VerificationError, "whole-chain validation"):
+                    self.module.validate_archive(
+                        archive, repository=REPOSITORY, head_sha=HEAD, head_tree=TREE,
+                        run_id=RUN_ID, run_attempt=RUN_ATTEMPT, profile=profile, binding=self.binding(profile),
+                    )
+
+    def test_actual_sealer_keeps_committed_source_binding_after_isolated_fixture_setup(self) -> None:
+        root, identity = self.seal_fixture("postgresql")
+        self.sealer.seal_profile(root, **identity)
+        source_root = self.sealer.SOURCE_ROOT
+        lock_path = source_root / "migrations/MIGRATION_CHAIN.lock.json"
+        lock = json.loads(lock_path.read_text())
+        entry = lock["profiles"]["postgresql"]["ordered_files"][2]
+        source = source_root / entry["path"]
+        changed = source.read_bytes() + b"-- uncommitted candidate drift\n"
+        source.write_bytes(changed)
+        entry["git_blob_sha1"] = self.module.git_blob_sha1(changed)
+        lock_path.write_text(json.dumps(lock))
+        # Re-locking an otherwise allowed comment must not bypass the actual
+        # committed candidate's lock identity.
+        self.module.MIGRATIONS.validate(source_root)
+        with self.assertRaisesRegex(self.sealer.SealingError, "committed source"):
+            self.sealer.seal_profile(root, **identity)
 
     def test_remote_binding_uses_complete_exact_head_tree_and_shared_lock_validator(self) -> None:
         lock_path = "migrations/MIGRATION_CHAIN.lock.json"
@@ -610,7 +710,9 @@ class ActionsLogVerifierTests(unittest.TestCase):
             bindings = self.module.fetch_profile_bindings("fixture-token", REPOSITORY, HEAD, head_tree=TREE)
             for profile, binding in bindings.items():
                 self.assertEqual(binding["chain_digest"], self.binding(profile)["chain_digest"])
-                self.assertEqual(len(binding["ordered_files"]), 2)
+                self.assertEqual(len(binding["ordered_files"]), 3)
+                self.assertEqual(binding["schema_version"], "3")
+                self.assertEqual(binding["storage_writer_epoch"], "3")
                 self.assertEqual(binding["digest_algorithm"], "ordered-path-git-blob-sha256.v1")
             for mutation in ("truncated", "unlisted", "symlink", "short_lock"):
                 candidate_tree = copy.deepcopy(tree)

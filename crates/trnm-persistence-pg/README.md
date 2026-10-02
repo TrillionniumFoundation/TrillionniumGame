@@ -28,7 +28,7 @@ Dependency direction is reviewed as part of package authority. This module must 
 
 The only production DDL authority is migrations/. PostgreSQL and CockroachDB are separate profiles with separate evidence and retry behavior.
 
-The shared `trnm-schema` runner consumes the locked, ordered 0001/0002 chain.
+The shared `trnm-schema` runner consumes the locked, ordered 0001/0002/0003 chain.
 Schema version 2 appends nullable storage `create_time`/`update_time` columns
 without defaults or historical backfill, plus chain identity and storage writer
 epoch metadata. Serve verification reads existing identity and catalog; it does
@@ -229,3 +229,7 @@ and damages hidden, sentinel and returned digests. Its dedicated namespace is
 cleaned after success or panic; a profile-specific execution marker follows the
 assertions and cleanup. This source regression does not supply accepted live or
 independent review evidence.
+
+Native storage ABI3 separates `value_jsonb`, opaque `public_version`, projection SHA256 and checked known/unknown request provenance. Raw witnesses never supply read/list payloads. SQL returns native text and complete RETURNING rows; even an unknown-history blind no-op validates incoming native JSONB without replacing stored value/times/witness. Actor/ACL/OCC and exact native input/error priority remain profile candidates pending immutable differential. The typed migration preflights all legacy data and checked finite timestamps before revision DDL, preserves foundation/time/prior-v2 publisher, then publishes epoch3 after complete conversion. PostgreSQL owns one atomic transaction; CockroachDB resumes exact DDL and one-row serializable backfill checkpoints.
+
+The 16 MiB projection bound and 32 MiB result/staging bounds constrain returned bytes and Rust allocations. Native database JSONB casts and text materialization happen before their length is observed; these checks do not impose a hard bound on database backend memory. PostgreSQL numeric expansion has separate valid-above-1MiB and gentle-over-16MiB fixtures, with ResourceExhausted and whole-batch rollback assertions. Database-side memory containment, maximum-capacity qualification, actual Nakama import and independent migration acceptance remain open.

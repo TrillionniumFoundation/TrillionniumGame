@@ -15,6 +15,7 @@ pub struct MigrationReport {
     pub table_count: usize,
     pub schema_version: u64,
     pub chain_digest: IntegrityDigest,
+    pub v2_apply_source_commit: String,
     pub schema: SchemaIdentity,
 }
 
@@ -52,6 +53,7 @@ pub fn migrate(config: &ServerConfig) -> Result<MigrationReport, ServerError> {
         table_count: report.table_count,
         schema_version: report.identity.schema_version,
         chain_digest: report.identity.chain_digest,
+        v2_apply_source_commit: report.identity.v2_apply_source_commit.clone(),
         schema: report.identity,
     })
 }
@@ -106,7 +108,7 @@ mod tests {
 
     #[test]
     fn both_authoritative_profiles_embed_the_ten_table_chain() {
-        assert_eq!(AUTHORITATIVE_SCHEMA_VERSION, 2);
+        assert_eq!(AUTHORITATIVE_SCHEMA_VERSION, 3);
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
             assert!(!authoritative_chain_digest(profile).get().is_zero());
         }

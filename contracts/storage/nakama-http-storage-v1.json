@@ -131,7 +131,7 @@
       "permission_read": 1,
       "permission_write": 1
     },
-    "value": "JSON-encoded object string; retain its exact bytes for public MD5 version",
+    "value": "New HTTP writes require a JSON-encoded object string. ACK version is MD5 of its exact UTF-8 request bytes; database-native JSONB rendering is separate.",
     "aliases": "proto snake_case and lowerCamelCase; duplicate known fields/aliases fail closed; unknown fields ignored",
     "read_fields": [
       "collection",
@@ -144,12 +144,13 @@
     "version": "Write omitted/null/empty maps to any; star maps to must-not-exist; all other strings are original exact conditions. Delete omitted/null/empty has no condition; every nonempty string, including star, is an original exact condition. No MD5-format, case or 32-character input restriction; overall request budgets still apply."
   },
   "response_contract": {
-    "write": "Nonempty acks preserve request order and include collection,key,version,user_id; genuine database create_time/update_time use RFC3339 UTC 0/3/6/9 fractional digits. Unknown historical fields remain absent.",
+    "write": "Nonempty acks preserve request order and include collection,key,version,user_id. Version is generated from exact request bytes, never JSONB rendering; previous Some(empty) remains an existing object. Genuine database create_time/update_time use RFC3339 UTC 0/3/6/9 fractional digits. Unknown historical fields remain absent.",
     "delete": "{}",
     "empty": "{}",
     "rejection": "storage-specific code 3 / HTTP 400 for OCC, write permission or delete notfound/version/permission rejection; internal repository details redacted",
-    "read": "Requested visible objects preserve original bytes, public MD5 and ACL fields; genuine create_time/update_time are projected to seconds by the pinned upstream behavior. Unknown original times remain absent. Ordering and duplicate multiplicity require immutable differential.",
-    "list": "Return one bounded visible page with original value bytes, public MD5 version, dashed owner UUID and nonzero permission scalars. A next cursor identifies the last returned object only when a visible limit+1 sentinel exists. Empty objects and terminal cursor are omitted. No create_time/update_time is fabricated."
+    "read": "Requested visible objects return native value_jsonb::TEXT UTF-8 bytes as an API string with the independently stored public_version token and ACL fields. Empty public version is omitted by protojson. Historical scalar, array and JSON null values are valid. Genuine create_time/update_time are projected to seconds; unknown original times remain absent. Ordering and duplicate multiplicity require immutable differential.",
+    "list": "Return one bounded visible page with native value_jsonb::TEXT UTF-8 bytes, independently stored public_version, dashed owner UUID and nonzero permission scalars. Empty public version is omitted. Historical scalar, array and JSON null values are valid. A next cursor identifies the last returned object only when a visible limit+1 sentinel exists. Empty objects and terminal cursor are omitted. No create_time/update_time is fabricated.",
+    "resource_exhaustion": "Native rendered values above 16 MiB, allocation exhaustion or whole actually escaped JSON responses above 32 MiB produce HTTP 429/code 8 with the route-specific redacted message. Integrity/witness or UTF-8 failures produce HTTP 500/code 13; no partial object list is returned."
   },
   "resource_limits": {
     "maximum_operations": 100,
@@ -168,17 +169,19 @@
     "cursor_maximum_fields": 64,
     "cursor_maximum_depth": 16,
     "cursor_maximum_items": 1024,
-    "version_condition": "No separate format or length cap; bounded by the configured HTTP request budget."
+    "version_condition": "No separate format or length cap; bounded by the configured HTTP request budget.",
+    "maximum_native_value_bytes": 16777216,
+    "maximum_encoded_response_bytes": 33554432
   },
   "durability": "Construct mutation success only after atomic committed receipts; construct read/list success after the bounded readonly repository transaction completes. Do not retry storage mutations or this client-list projection through the generic command supervisor.",
-  "migration_impact": "Append-only 0002 adds nullable TIMESTAMPTZ without defaults or historical backfill to both authoritative profiles. Shared validated full-chain migration publishes schema/writer epoch2; existing v1 requires an independently drained and privilege-fenced legacy role. Legacy updated_at_ms remains caller time. Production rolling upgrade, original timestamp import and rollback acceptance remain open. The ExpectedVersion input-type change requires no DDL, metadata rewrite or data backfill; schema v2 and its generated ContentVersion projection are unchanged.",
-  "rollback": "Revert this route/codec/bridge tranche together; existing persisted storage remains readable by the prior repository. Removing routes is not an accepted production cutover/rollback. Reverting ExpectedVersion input handling restores the earlier stricter candidate validation; persisted values and schema identity are unaffected.",
+  "migration_impact": "Append-only 0002 retains nullable TIMESTAMPTZ without defaults or historical backfill. Append-only 0003 publishes schema/writer epoch3 and separates sole native JSONB payload, independent public_version, projection SHA-256 and known/unknown request provenance. Existing v1/v2 upgrade barriers, creator source_commit and genuine prior v2_apply_source_commit remain separately verified; fresh database v2 publication uses its actual candidate SHA. HTTP never substitutes raw witness bytes for native payload. Original timestamp import, rolling production upgrade and independent rollback acceptance remain open.",
+  "rollback": "Schema v3 is a forward-fix boundary: prior byte-only writers are fenced and cannot interpret the new independent public tokens and unknown-request provenance. Reverting route/codec/bridge source alone is not an accepted rollback. Preserve native payload, public token, witness/manifest and times while applying an independently reviewed forward fix; no drop-based production rollback is authorized.",
   "limitations": [
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
     "Historical v1 rows have unknown original timestamps. An original-time import manifest or independently accepted unknown-history policy is required before replacement; no epoch or migration time is fabricated.",
     "List route/query/gob cursor and SQL client projection are bounded source candidates; exact gateway, gob, collation, pagination under concurrent changes and oracle/SDK qualification remain open. Search/index and Runtime before/after hooks remain unfinished.",
     "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. The separate client-list request accepts empty/dot/control collection text up to 4096 bytes and decodes authoritative Unicode-character-bounded rows. Budgets and path/query restrictions still differ from upstream.",
-    "Opaque exact input conditions now retain their original strings through HTTP, core and repository evaluation without MD5 parsing or a 32-character cap. Historical opaque stored versions, native SQL/NUL behavior and exact gateway/error differential remain unqualified.",
+    "Opaque exact input strings and independently stored historical public tokens are represented at source. Native TEXT/JSONB NUL behavior is observed separately on each actual profile fixture; it is not immutable Nakama/gateway differential or acceptance. A synthetic unknown-request fixture manifest is not an implemented original Nakama export importer.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
     "Strict trailing-JSON rejection and malformed protobuf-JSON decoder error wording differ from the single-Decode upstream gateway and need immutable-oracle qualification.",
@@ -205,14 +208,16 @@
     "scope": "Canonical Rust HTTP application + actual repository SQL, with a separate exact client-list projection fixture on each profile. TCP, pool/deadline, SDK and immutable oracle are separate obligations.",
     "accepted_evidence": false,
     "client_list_repository_test": "crates/trnm-persistence-pg/tests/authority_storage_parts/03_storage_list.rs::nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
-    "client_list_execution_required": "The same live harness requires TRNM_REQUIRE_LIVE_DATABASE=1, one exact authority_storage repository test with zero failed/ignored, matching nakama_client_list_projection_executed profile marker, explicit skip rejection and a sealed nakama-client-list-projection.log. Source checks and local results do not admit exact-object live or independent evidence."
+    "client_list_execution_required": "The same live harness requires TRNM_REQUIRE_LIVE_DATABASE=1, one exact authority_storage repository test with zero failed/ignored, matching nakama_client_list_projection_executed profile marker, explicit skip rejection and a sealed nakama-client-list-projection.log. Source checks and local results do not admit exact-object live or independent evidence.",
+    "jsonb_v3_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs::prove_storage_jsonb_v3_app",
+    "jsonb_v3_execution_required": "The same single canonical App test must emit an exact profile marker with history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3, plus exactly one actual native-input accepted/rejected observation with compatibility_credit=false. Preserve the previous write_cases=15/delete_cases=18/batch_cases=2 marker. Retained packet validation checks the actual three profile SQL bytes, sizes and hashes, schema3/epoch3 and fresh prior-v2 publisher; source and local tests grant no acceptance."
   },
-  "mutation_repository": "Authorization, OCC and stored integrity checks precede no-op selection. Blind writes with unchanged value and ACLs preserve the persisted update time; exact-version writes and value/ACL changes update it. Atomic batch commit still precedes success. Insert-only first binds the actor to the owner and rejects a valid existing row as a version conflict regardless of its write ACL; blind/exact retain permission-first rejection. Original-string input tokens are preserved without format validation. Native SQL/NUL condition behavior, historical opaque stored versions and JSONB/public-version separation remain open.",
+  "mutation_repository": "Authorization, native TEXT input binding, OCC and stored projection/witness integrity checks precede no-op selection. Native incoming JSONB admission also precedes a blind no-op; an unknown matching token cannot bypass a native JSONB rejection. A blind write with stored public token equal to generated request MD5 and equal ACLs preserves native payload, provenance and times; known request fingerprints must match, while unknown original requests are not fabricated. Exact writes always project request bytes through the actual database JSONB cast, update known request witness and transaction update_time, preserving nullable original creation. Atomic batch commit still precedes ACK. Insert-only binds actor to owner and rejects an existing valid row as a version conflict regardless of its write ACL; blind/exact retain permission-first rejection. Profile SQL/NUL behavior remains distinct from immutable Nakama compatibility.",
   "list_repository": {
     "method": "PgRepository::list_storage_objects_nakama",
     "transaction": "One bounded readonly SERIALIZABLE query under the pooled deadline; no generic retry. Existing typed byte-order list remains a separate contract.",
     "ordering": "Use SQL text collation: public-all ORDER BY read,key,user_id; own-owner ORDER BY read,key; foreign/global-owner ORDER BY key. ACL is applied before limit+1. Actual profile text ordering still requires immutable-oracle qualification.",
-    "decoding": "Decode returned rows only, verifying owner/key, original value bytes, SHA-256 and ACL while recomputing public MD5. Do not decode a sentinel or hidden row. The Nakama row factory follows authoritative 1..128 Unicode-character collection/key constraints and allows dot/control text; old typed factory restrictions remain unchanged."
+    "decoding": "Decode returned native JSONB text, independent public token, projection SHA-256 and ACL only after SQL visibility/limit selection. Validate known request-version/projection witness binding; unknown original-request provenance remains legal and never fabricates a witness. Do not compute MD5(native render), reject legal scalar/array/null history, or decode a hidden/sentinel row. The Nakama row factory follows authoritative 1..128 Unicode-character collection/key constraints and allows dot/control text; typed key restrictions remain unchanged."
   },
   "list_cursor": {
     "format": "Unpadded URL-base64 of ordinary Go gob storageCursor {Key string, UserID UUID binary bytes, Read int32}. Decode compatible field descriptors rather than a fixed type ID or prefix.",
@@ -226,9 +231,28 @@
     "database_clock": "explicit transaction now() for insert and effective/exact/ACL-changing update; no default or fake history",
     "acknowledgement": "RETURNING normalized protobuf seconds/nanos, microsecond database precision; publish after commit only",
     "read_and_list": "upstream seconds-only timestamp projection",
-    "no_op": "blind identical bytes/MD5 plus ACL preserves stored timestamps and does not UPDATE",
+    "no_op": "Blind stored public token matching request MD5 plus equal ACL preserves native payload, known/unknown request provenance and stored timestamps without UPDATE; known request fingerprint mismatch fails closed.",
     "historical": "NULL stays unknown, effective update may supply update_time while original creation stays NULL",
     "writer_barrier": "mutation transaction checks full chain, schema/profile and writer epoch; old role upgrade barrier is separate from startup version checks",
     "accepted": false
-  }
+  },
+  "jsonb_v3_projection_source_candidate": {
+    "schema_version": 3,
+    "storage_writer_epoch": 3,
+    "source": "crates/trnm-server/src/runtime/storage_api.rs",
+    "tests": "crates/trnm-server/src/runtime/storage_api_projection_tests.rs",
+    "live_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
+    "native_payload": "Database value_jsonb::TEXT is the sole operational payload. HTTP only applies bounded outer JSON string escaping and preserves decoded UTF-8 bytes; it does not canonicalize native JSONB or recompute the public token.",
+    "history": "Native JSONB object/scalar/array/null and opaque, empty, uppercase, star and Unicode public tokens are legal; empty version and unknown times are omitted. Known collision witnesses bind raw-request fingerprint/generated version to native projection SHA; unknown history stays witnessless.",
+    "limits": {
+      "request_value_bytes": 1048576,
+      "native_projection_bytes": 16777216,
+      "encoded_response_bytes": 33554432
+    },
+    "accepted": false,
+    "compatibility_credit": false,
+    "gap_closed": false,
+    "production_ready": false
+  },
+  "native_resource_boundary": "Projection16MiB/aggregate32MiB/encodedHTTP32MiB guards constrain returned/application bytes. They observe lengths after native SQL materialization and do not prove a database backend memory ceiling; actual database-side memory containment remains unqualified."
 }

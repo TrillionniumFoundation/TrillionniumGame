@@ -17,11 +17,19 @@ fn storage_listing_acl_owner_scope_and_cursor_are_stable() {
     let mut repository = PgRepository::connect(&database_url, profile).unwrap();
 
     let writes = [
-        (&key_a, ReadPermission::Owner, b"a-private".as_slice()),
-        (&key_b_a, ReadPermission::Public, b"b-a-public".as_slice()),
-        (&key_b_b, ReadPermission::Public, b"b-b-public".as_slice()),
-        (&key_c, ReadPermission::Owner, b"c-private".as_slice()),
-        (&key_d, ReadPermission::Public, b"d-public".as_slice()),
+        (&key_a, ReadPermission::Owner, br#""a-private""#.as_slice()),
+        (
+            &key_b_a,
+            ReadPermission::Public,
+            br#""b-a-public""#.as_slice(),
+        ),
+        (
+            &key_b_b,
+            ReadPermission::Public,
+            br#""b-b-public""#.as_slice(),
+        ),
+        (&key_c, ReadPermission::Owner, br#""c-private""#.as_slice()),
+        (&key_d, ReadPermission::Public, br#""d-public""#.as_slice()),
     ]
     .into_iter()
     .map(|(key, read_permission, value)| {
@@ -234,7 +242,7 @@ fn storage_listing_unicode_order_matches_canonical_utf8_bytes() {
         .map(|(index, key)| {
             StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
-                value: format!("canonical-byte-order-{index}").into_bytes(),
+                value: format!(r#""canonical-byte-order-{index}""#).into_bytes(),
                 expected: VersionCheck::MustNotExist,
                 read_permission: ReadPermission::Public,
                 write_permission: WritePermission::Owner,
@@ -595,7 +603,7 @@ fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
             )
             .unwrap_err();
         assert_eq!(visible_error.code(), StableCode::DataLoss);
-        assert_eq!(visible_error.reason(), "storage_integrity_digest_mismatch");
+        assert_eq!(visible_error.reason(), "storage_request_witness_mismatch");
         let beyond_sentinel = repository
             .list_storage_objects_nakama(StorageActor::User(owner), collection, None, None, 1)
             .unwrap();
@@ -695,10 +703,12 @@ fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
             expected_text,
         );
         assert_eq!(text_page.next, None);
+        let native_value = native_fixture_value(&mut control, value);
         assert!(text_page.objects.iter().all(|object| {
-            object.version == trnm_persistence_pg::ContentVersion::from_value(value)
-                && object.integrity_digest.matches_value(value)
-                && object.value.as_slice() == value.as_slice()
+            object.version.as_str()
+                == trnm_persistence_pg::ContentVersion::from_value(value).as_str()
+                && object.integrity_digest.matches_value(&native_value)
+                && object.value == native_value
                 && object.key.user_id() == other
         }));
 
@@ -710,6 +720,8 @@ fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
         assert!(StorageObjectKey::new(&wide_collection, &wide_key, other).is_err());
         assert!(StorageObjectKey::new(control_collection, ".control-\n", other).is_err());
         let integrity = trnm_persistence_pg::IntegrityDigest::from_value(value);
+        let projected_integrity = trnm_persistence_pg::IntegrityDigest::from_value(&native_value);
+        let public_version = trnm_persistence_pg::ContentVersion::from_value(value);
         for (seed_collection, seed_key) in [
             (wide_collection.as_str(), wide_key.as_str()),
             (control_collection, ".control-\n"),
@@ -719,14 +731,18 @@ fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
                     .execute(
                         "INSERT INTO trnm_storage_objects \
                  (collection, object_key, user_id, value_bytes, version_digest, \
+                  value_jsonb, public_version, value_projection_digest, value_origin, \
                   read_permission, write_permission, updated_at_ms) \
-                 VALUES ($1, $2, $3, $4, $5, 2, 1, 140)",
+                 VALUES ($1, $2, $3, $4, $5, $6::TEXT::JSONB, $7, $8, 'legacy-rust-v2-bytes', 2, 1, 140)",
                         &[
                             &seed_collection,
                             &seed_key,
                             &other.as_bytes().as_slice(),
                             &value.as_slice(),
                             &integrity.get().as_bytes().as_slice(),
+                            &std::str::from_utf8(value).unwrap(),
+                            &public_version.as_str(),
+                            &projected_integrity.get().as_bytes().as_slice(),
                         ],
                     )
                     .unwrap(),
@@ -745,8 +761,8 @@ fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
             assert_eq!(seeded_page.objects[0].key.collection(), seed_collection);
             assert_eq!(seeded_page.objects[0].key.key(), seed_key);
             assert_eq!(seeded_page.objects[0].key.user_id(), other);
-            assert_eq!(seeded_page.objects[0].value.as_slice(), value.as_slice());
-            assert_eq!(seeded_page.objects[0].integrity_digest, integrity);
+            assert_eq!(seeded_page.objects[0].value, native_value);
+            assert_eq!(seeded_page.objects[0].integrity_digest, projected_integrity);
             assert_eq!(seeded_page.next, None);
         }
 

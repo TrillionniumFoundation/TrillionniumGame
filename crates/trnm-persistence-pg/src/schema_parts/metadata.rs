@@ -8,6 +8,7 @@ struct RecordedMetadata {
     digest_algorithm: Option<String>,
     storage_writer_epoch: Option<i64>,
     upgrade_source_commit: Option<String>,
+    v2_apply_source_commit: Option<String>,
 }
 
 fn validate_source_commit(value: &str) -> Result<(), DomainError> {
@@ -40,12 +41,13 @@ fn read_metadata(
     let rows = client
         .query(
             &format!(
-                "SELECT singleton, schema_version, profile, source_commit, applied_at_ms, {}, {}, {}, {} \
+                "SELECT singleton, schema_version, profile, source_commit, applied_at_ms, {}, {}, {}, {}, {} \
                  FROM public.trnm_schema_metadata",
                 optional("chain_digest", "text"),
                 optional("digest_algorithm", "text"),
                 optional("storage_writer_epoch", "bigint"),
-                optional("upgrade_source_commit", "text")
+                optional("upgrade_source_commit", "text"),
+                optional("v2_apply_source_commit", "text")
             ),
             &[],
         )
@@ -68,6 +70,7 @@ fn read_metadata(
         digest_algorithm: row.try_get(6).map_err(map_postgres_error)?,
         storage_writer_epoch: row.try_get(7).map_err(map_postgres_error)?,
         upgrade_source_commit: row.try_get(8).map_err(map_postgres_error)?,
+        v2_apply_source_commit: row.try_get(9).map_err(map_postgres_error)?,
     }))
 }
 
@@ -89,6 +92,17 @@ fn validate_recorded_revision(
         .filter(|version| *version <= AUTHORITATIVE_SCHEMA_VERSION)
         .and_then(|version| revision(profile, version))
         .ok_or_else(|| failed_precondition("schema_version_unsupported"))?;
+    if descriptor.version < 3 && recorded.v2_apply_source_commit.is_some() {
+        return Err(failed_precondition("schema_unpublished_metadata_drift"));
+    }
+    if descriptor.version == 3
+        && recorded
+            .v2_apply_source_commit
+            .as_deref()
+            .is_none_or(|value| validate_source_commit(value).is_err())
+    {
+        return Err(failed_precondition("schema_v2_apply_provenance_invalid"));
+    }
     let foundation = revisions(profile)
         .first()
         .expect("the locked foundation revision is embedded");
@@ -149,6 +163,10 @@ fn verify_ready_metadata(
         storage_writer_epoch: AUTHORITATIVE_STORAGE_WRITER_EPOCH,
         source_commit: recorded.source_commit.clone(),
         upgrade_source_commit: upgrade_source_commit.clone(),
+        v2_apply_source_commit: recorded
+            .v2_apply_source_commit
+            .clone()
+            .ok_or_else(|| failed_precondition("schema_v2_apply_provenance_invalid"))?,
     })
 }
 
@@ -221,6 +239,11 @@ fn metadata_for_transition(
         // The caller's apply SHA is provenance, never a requirement that each
         // later read-only service binary have that same Git commit.
         upgrade_source_commit: Some(source_commit.to_owned()),
+        v2_apply_source_commit: if target.version == 3 {
+            original.upgrade_source_commit.clone()
+        } else {
+            None
+        },
     };
     validate_recorded_revision(&next, profile)?;
     Ok(next)
@@ -236,8 +259,13 @@ fn publish_metadata(
     let next = metadata_for_transition(profile, original, target, source_commit)?;
     // Compare every persisted field of the old singleton, including NULLs.
     // Keep the foundation source/time; only the adjacent revision is published.
-    let count = client
-        .execute(
+    let (sql, params): (&str, Vec<&(dyn postgres::types::ToSql + Sync)>) = if target.version == 3 {
+        ("UPDATE public.trnm_schema_metadata SET schema_version=$1, chain_digest=$2, digest_algorithm=$3, storage_writer_epoch=$4, upgrade_source_commit=$5, v2_apply_source_commit=$14 \
+         WHERE singleton=1 AND schema_version=$6 AND profile=$7 AND source_commit=$8 AND applied_at_ms=$9 AND chain_digest IS NOT DISTINCT FROM $10 \
+         AND digest_algorithm IS NOT DISTINCT FROM $11 AND storage_writer_epoch IS NOT DISTINCT FROM $12 AND upgrade_source_commit IS NOT DISTINCT FROM $13 AND v2_apply_source_commit IS NOT DISTINCT FROM $15",
+         vec![&next.version,&next.chain_digest,&next.digest_algorithm,&next.storage_writer_epoch,&next.upgrade_source_commit,&original.version,&original.profile,&original.source_commit,&original.applied_at_ms,&original.chain_digest,&original.digest_algorithm,&original.storage_writer_epoch,&original.upgrade_source_commit,&next.v2_apply_source_commit,&original.v2_apply_source_commit])
+    } else {
+        (
             "UPDATE public.trnm_schema_metadata SET schema_version = $1, chain_digest = $2, \
               digest_algorithm = $3, storage_writer_epoch = $4, upgrade_source_commit = $5 \
              WHERE singleton = 1 AND schema_version = $6 AND profile = $7 AND source_commit = $8 \
@@ -245,7 +273,7 @@ fn publish_metadata(
                AND digest_algorithm IS NOT DISTINCT FROM $11 \
                AND storage_writer_epoch IS NOT DISTINCT FROM $12 \
                AND upgrade_source_commit IS NOT DISTINCT FROM $13",
-            &[
+            vec![
                 &next.version,
                 &next.chain_digest,
                 &next.digest_algorithm,
@@ -261,7 +289,8 @@ fn publish_metadata(
                 &original.upgrade_source_commit,
             ],
         )
-        .map_err(map_postgres_error)?;
+    };
+    let count = client.execute(sql, &params).map_err(map_postgres_error)?;
     if count != 1 {
         return Err(failed_precondition("schema_metadata_publish_conflict"));
     }
@@ -305,6 +334,7 @@ mod metadata_tests {
             digest_algorithm: None,
             storage_writer_epoch: None,
             upgrade_source_commit: None,
+            v2_apply_source_commit: None,
         }
     }
 
@@ -334,11 +364,19 @@ mod metadata_tests {
                     .version,
                 2
             );
+            assert!(verify_ready_metadata(&current, profile).is_err());
+            let native = metadata_for_transition(
+                profile,
+                &current,
+                revision(profile, 3).unwrap(),
+                &"c".repeat(40),
+            )
+            .unwrap();
+            let ready = verify_ready_metadata(&native, profile).unwrap();
+            assert_eq!(ready.source_commit, old.source_commit);
             assert_eq!(
-                verify_ready_metadata(&current, profile)
-                    .unwrap()
-                    .source_commit,
-                old.source_commit
+                ready.v2_apply_source_commit,
+                current.upgrade_source_commit.clone().unwrap()
             );
             let mut wrong_digest = current.clone();
             wrong_digest.chain_digest = Some(digest_hex(chain_digest_at(profile, 1).unwrap()));
@@ -362,7 +400,7 @@ mod metadata_tests {
     fn recorded_metadata_rejects_unknown_revisions_and_invented_provenance() {
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
             let current = timestamps(profile);
-            for version in [-1, 0, 3, i64::MAX] {
+            for version in [-1, 0, 4, i64::MAX] {
                 let mut invalid = current.clone();
                 invalid.version = version;
                 assert!(validate_recorded_revision(&invalid, profile).is_err());
@@ -424,15 +462,25 @@ mod metadata_tests {
             }
             assert!(next_revision_for_prefix(&old, profile, target.action_range.end + 1).is_err());
             let current = timestamps(profile);
-            assert!(
+            let native = revision(profile, 3).unwrap();
+            assert_eq!(
                 next_revision_for_prefix(&current, profile, target.action_range.end)
+                    .unwrap()
+                    .unwrap()
+                    .version,
+                3
+            );
+            let published =
+                metadata_for_transition(profile, &current, native, &"c".repeat(40)).unwrap();
+            assert!(
+                next_revision_for_prefix(&published, profile, native.action_range.end)
                     .unwrap()
                     .is_none()
             );
             for prefix in [
                 0,
                 target.action_range.end - 1,
-                target.action_range.end + 1,
+                native.action_range.end + 1,
                 usize::MAX,
             ] {
                 assert!(next_revision_for_prefix(&current, profile, prefix).is_err());
@@ -469,6 +517,9 @@ mod metadata_tests {
             changes.push(changed);
             let mut changed = original.clone();
             changed.upgrade_source_commit = None;
+            changes.push(changed);
+            let mut changed = original.clone();
+            changed.v2_apply_source_commit = Some("d".repeat(40));
             changes.push(changed);
             for changed in changes {
                 assert_eq!(
@@ -511,6 +562,31 @@ mod metadata_tests {
                 "not-a-commit"
             )
             .is_err());
+        }
+    }
+    #[test]
+    fn v3_retains_actual_v2_apply_provenance_and_never_publishes_partial_history() {
+        for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
+            let old = timestamps(profile);
+            let new = metadata_for_transition(
+                profile,
+                &old,
+                revision(profile, 3).unwrap(),
+                &"c".repeat(40),
+            )
+            .unwrap();
+            assert_eq!(new.source_commit, old.source_commit);
+            assert_eq!(new.applied_at_ms, old.applied_at_ms);
+            assert_eq!(new.v2_apply_source_commit, old.upgrade_source_commit);
+            assert_eq!(new.upgrade_source_commit, Some("c".repeat(40)));
+            for bad in [None, Some("z".repeat(40)), Some("a".repeat(39))] {
+                let mut corrupted = new.clone();
+                corrupted.v2_apply_source_commit = bad;
+                assert!(verify_ready_metadata(&corrupted, profile).is_err());
+            }
+            let mut early = old;
+            early.v2_apply_source_commit = Some("c".repeat(40));
+            assert!(validate_recorded_revision(&early, profile).is_err());
         }
     }
 }

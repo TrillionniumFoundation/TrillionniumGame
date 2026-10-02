@@ -17,7 +17,7 @@ pub fn generate() {
             .expect("migration lock JSON");
     assert_eq!(lock["schema"], "trillionnium.migration-chain-lock.v1");
     assert_eq!(lock["project_id"], "trillionnium-game");
-    assert_eq!(lock["schema_version"], 2);
+    assert_eq!(lock["schema_version"], 3);
     let profiles = lock["profiles"].as_object().expect("profile object");
     assert_eq!(profiles.len(), 2);
     let mut generated = String::new();
@@ -32,8 +32,8 @@ pub fn generate() {
         // A new schema version must deliberately extend the engine's state machine.
         assert_eq!(
             ordered.len(),
-            2,
-            "engine supports the locked v1 -> v2 chain"
+            3,
+            "engine supports the locked v1 -> v2 -> v3 chain"
         );
         let mut inventory = Vec::new();
         collect_sql(&root, &root.join(&directory), &mut inventory);
@@ -58,10 +58,11 @@ pub fn generate() {
                 path,
                 format!(
                     "{directory}/{}",
-                    if index == 0 {
-                        "0001_foundation_up.sql"
-                    } else {
-                        "0002_storage_timestamps_up.sql"
+                    match index {
+                        0 => "0001_foundation_up.sql",
+                        1 => "0002_storage_timestamps_up.sql",
+                        2 => "0003_storage_jsonb_up.sql",
+                        _ => unreachable!(),
                     }
                 )
             );
@@ -88,8 +89,12 @@ pub fn generate() {
             if index == 0 {
                 baseline = baseline_columns(sql);
             } else {
-                let (declared, count) = declared_actions(sql, &mut action_ids);
-                assert_eq!(count, 6, "v2 has six declared nullable-column actions");
+                let (declared, count) = declared_actions(sql, &mut action_ids, profile, index);
+                assert_eq!(
+                    count,
+                    if index == 1 { 6 } else { 16 },
+                    "locked typed action inventory"
+                );
                 actions.push_str(&declared);
                 action_count += count;
             }
@@ -103,6 +108,7 @@ pub fn generate() {
             let storage_writer_epoch = match index {
                 0 => None,
                 1 => Some(2_u64),
+                2 => Some(3_u64),
                 _ => panic!("unreviewed authoritative writer epoch"),
             };
             writeln!(revisions, "RevisionDescriptor {{ version: {}, chain_digest: {prefix:?}, storage_writer_epoch: {storage_writer_epoch:?}, action_range: {action_start}..{action_count} }},", index + 1).unwrap();
@@ -213,7 +219,7 @@ fn baseline_columns(sql: &str) -> String {
             ) {
                 let nullable = !line.contains("NOT NULL") && !line.contains("PRIMARY KEY");
                 let default_zero = line.contains("DEFAULT 0");
-                writeln!(output, "ColumnDescriptor {{ table: {table:?}, name: {name:?}, kind: {:?}, nullable: {nullable}, default_zero: {default_zero} }},", normalized_kind(kind)).unwrap();
+                writeln!(output, "ColumnDescriptor {{ table: {table:?}, name: {name:?}, kind: {:?}, nullable: {nullable}, default_zero: {default_zero}, character_maximum_length: None }},", normalized_kind(kind)).unwrap();
             }
         }
     }
@@ -223,7 +229,12 @@ fn baseline_columns(sql: &str) -> String {
 
 // This is a bounded parser for the reviewed marker grammar, not a SQL splitter.
 // A marker owns exactly one complete ALTER statement for one declared column.
-fn declared_actions(sql: &str, names: &mut BTreeSet<String>) -> (String, usize) {
+fn declared_actions(
+    sql: &str,
+    names: &mut BTreeSet<String>,
+    profile: &str,
+    revision: usize,
+) -> (String, usize) {
     let mut pending = None;
     let mut output = String::new();
     let previous_count = names.len();
@@ -232,28 +243,107 @@ fn declared_actions(sql: &str, names: &mut BTreeSet<String>) -> (String, usize) 
             assert!(pending.is_none(), "action without SQL");
             assert!(names.insert(name.to_owned()), "duplicate action");
             pending = Some(name.to_owned());
+        } else if line == "-- trnm:backfill storage_jsonb_v3" {
+            assert_eq!(revision, 2);
+            let id = pending.take().expect("marked typed backfill");
+            assert_eq!(id, "storage_native_backfill");
+            writeln!(output, "MigrationAction {{ id: {id:?}, kind: MigrationActionKind::BackfillStorageJsonbV3, column: ColumnDescriptor {{ table: \"trnm_storage_objects\", name: \"@backfill\", kind: \"backfilled\", nullable: false, default_zero: false, character_maximum_length: None }}, sql: \"\" }},").unwrap();
         } else if line.starts_with("--") || line.is_empty() || matches!(line, "BEGIN;" | "COMMIT;")
         {
+            assert!(!line.starts_with("-- trnm:"), "unknown runner directive");
             continue;
         } else {
             let id = pending.take().expect("unmarked migration statement");
             let tokens: Vec<_> = line.split_whitespace().collect();
-            assert_eq!(tokens.len(), 7);
             assert_eq!(&tokens[..2], ["ALTER", "TABLE"]);
-            assert_eq!(&tokens[3..5], ["ADD", "COLUMN"]);
-            // Keep the action grammar deliberately small and reject accidental defaults.
-            let kind = tokens[6].strip_suffix(';').expect("terminated action");
             let table = tokens[2];
-            let name = tokens[5];
             assert!(matches!(
                 table,
                 "trnm_schema_metadata" | "trnm_storage_objects"
             ));
-            writeln!(output, "MigrationAction {{ id: {id:?}, column: ColumnDescriptor {{ table: {table:?}, name: {name:?}, kind: {:?}, nullable: true, default_zero: false }}, sql: {line:?} }},", normalized_kind(kind)).unwrap();
+            let (action_kind, name, kind, nullable, max_len) = if tokens[3..5] == ["ADD", "COLUMN"]
+            {
+                assert_eq!(tokens.len(), 7);
+                let declared = tokens[6].strip_suffix(';').expect("terminated action");
+                (
+                    "AddColumn",
+                    tokens[5].to_owned(),
+                    normalized_kind(declared),
+                    true,
+                    if declared == "VARCHAR(32)" {
+                        Some(32_i64)
+                    } else {
+                        None
+                    },
+                )
+            } else if tokens[3..5] == ["ALTER", "COLUMN"] {
+                assert_eq!(revision, 2);
+                assert_eq!(tokens.len(), 9);
+                assert_eq!(&tokens[7..], ["NOT", "NULL;"]);
+                let nullable = match tokens[6] {
+                    "DROP" => true,
+                    "SET" => false,
+                    _ => panic!("unknown nullability transition"),
+                };
+                let kind = match tokens[5] {
+                    "value_bytes" | "version_digest" | "value_projection_digest" => "bytea",
+                    "value_jsonb" => "jsonb",
+                    "public_version" => "varchar",
+                    "value_origin" => "text",
+                    _ => panic!("unknown native ABI column"),
+                };
+                (
+                    "SetNullability",
+                    tokens[5].to_owned(),
+                    kind,
+                    nullable,
+                    if kind == "varchar" {
+                        Some(32_i64)
+                    } else {
+                        None
+                    },
+                )
+            } else {
+                assert_eq!(revision, 2);
+                assert_eq!(&tokens[3..5], ["ADD", "CONSTRAINT"]);
+                let definition = reviewed_check_definition(profile, tokens[5], line);
+                (
+                    "AddCheck",
+                    format!("@check:{}", tokens[5]),
+                    definition,
+                    false,
+                    None,
+                )
+            };
+            writeln!(output, "MigrationAction {{ id: {id:?}, kind: MigrationActionKind::{action_kind}, column: ColumnDescriptor {{ table: {table:?}, name: {name:?}, kind: {kind:?}, nullable: {nullable}, default_zero: false, character_maximum_length: {max_len:?} }}, sql: {line:?} }},").unwrap();
         }
     }
     assert!(pending.is_none());
     (output, names.len() - previous_count)
+}
+
+fn reviewed_check_definition(profile: &str, name: &str, sql: &str) -> &'static str {
+    // Exact native deparsers on the pinned PostgreSQL 17 / CockroachDB 26.2.
+    // Parentheses and literal contents remain significant: no semantic eraser.
+    match name {
+        "storage_projection_digest" => {
+            assert_eq!(sql, "ALTER TABLE trnm_storage_objects ADD CONSTRAINT storage_projection_digest CHECK (octet_length(value_projection_digest) = 32);");
+            "CHECK ((octet_length(value_projection_digest) = 32))"
+        }
+        "metadata_v2_history" => {
+            assert_eq!(sql, "ALTER TABLE trnm_schema_metadata ADD CONSTRAINT metadata_v2_history CHECK (schema_version < 3 OR (v2_apply_source_commit IS NOT NULL AND length(v2_apply_source_commit) = 40));");
+            "CHECK (((schema_version < 3) OR ((v2_apply_source_commit IS NOT NULL) AND (length(v2_apply_source_commit) = 40))))"
+        }
+        "storage_origin_witness" => {
+            assert_eq!(sql, "ALTER TABLE trnm_storage_objects ADD CONSTRAINT storage_origin_witness CHECK (((value_origin = 'legacy-rust-v2-bytes' OR value_origin = 'write-request-bytes') AND value_bytes IS NOT NULL AND version_digest IS NOT NULL AND octet_length(version_digest) = 32 AND source_manifest_digest IS NULL) OR (value_origin = 'nakama-export-unknown-request' AND value_bytes IS NULL AND version_digest IS NULL AND source_manifest_digest IS NOT NULL AND octet_length(source_manifest_digest) = 32 AND source_manifest_digest <> decode(repeat('0',64),'hex')));");
+            if profile == "postgresql" {
+                "CHECK (((((value_origin = 'legacy-rust-v2-bytes'::text) OR (value_origin = 'write-request-bytes'::text)) AND (value_bytes IS NOT NULL) AND (version_digest IS NOT NULL) AND (octet_length(version_digest) = 32) AND (source_manifest_digest IS NULL)) OR ((value_origin = 'nakama-export-unknown-request'::text) AND (value_bytes IS NULL) AND (version_digest IS NULL) AND (source_manifest_digest IS NOT NULL) AND (octet_length(source_manifest_digest) = 32) AND (source_manifest_digest <> decode(repeat('0'::text, 64), 'hex'::text)))))"
+            } else {
+                "CHECK ((((((((value_origin = 'legacy-rust-v2-bytes'::STRING) OR (value_origin = 'write-request-bytes'::STRING)) AND (value_bytes IS NOT NULL)) AND (version_digest IS NOT NULL)) AND (octet_length(version_digest) = 32)) AND (source_manifest_digest IS NULL)) OR ((((((value_origin = 'nakama-export-unknown-request'::STRING) AND (value_bytes IS NULL)) AND (version_digest IS NULL)) AND (source_manifest_digest IS NOT NULL)) AND (octet_length(source_manifest_digest) = 32)) AND (source_manifest_digest != decode(repeat('0'::STRING, 64), 'hex'::STRING)))))"
+            }
+        }
+        _ => panic!("unreviewed authoritative check"),
+    }
 }
 
 fn normalized_kind(kind: &str) -> &'static str {
@@ -264,6 +354,8 @@ fn normalized_kind(kind: &str) -> &'static str {
         "INTEGER" | "INT4" => "int4",
         "BIGINT" | "INT8" => "int8",
         "TIMESTAMPTZ" => "timestamptz",
+        "JSONB" => "jsonb",
+        "VARCHAR(32)" => "varchar",
         _ => panic!("unreviewed authoritative column type"),
     }
 }

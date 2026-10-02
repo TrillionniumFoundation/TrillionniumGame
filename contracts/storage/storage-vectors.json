@@ -4,7 +4,7 @@
     "repository": "heroiclabs/nakama",
     "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
     "source_path": "server/core_storage.go",
-    "public_version_rule": "lowercase hexadecimal MD5 of the exact value bytes",
+    "public_version_rule": "lowercase hexadecimal MD5 of the exact write-request value bytes",
     "occ_mapping": {"empty":"any-last-write-wins","star":"must-not-exist","other":"exact-if-match"},
     "condition_version_rule": "Original string equality for exact conditions; input tokens are not parsed as generated MD5."
   },
@@ -114,6 +114,40 @@
       "expect": {"objects":{"profile/main/01":{"value":"v1","version":"6654c734ccab8f440ff0825eb443dc7f","read":1,"write":0}}}
     }
   ],
+  "case_model": "Pure identity projection; these existing vectors do not validate JSON or reproduce a native JSONB renderer.",
+  "projection_source_candidate": {
+    "source_files": [
+      "crates/trnm-storage-core/src/lib.rs",
+      "crates/trnm-storage-core/src/projection.rs",
+      "crates/trnm-storage-core/src/projection_tests.rs"
+    ],
+    "test_functions": [
+      "public_version_preserves_opaque_history_and_unicode_character_bounds",
+      "known_collision_witness_binds_request_version_and_projection_without_reconstruction",
+      "request_and_projection_budgets_are_independent_and_legal_overflow_is_resource_exhausted",
+      "supplied_projection_seam_is_executed_and_raw_model_stays_explicit_identity",
+      "blind_known_no_op_preserves_projection_and_witness_but_exact_and_acl_changes_project",
+      "unknown_matching_token_no_op_preserves_native_value_and_never_fabricates_witness",
+      "opaque_and_empty_previous_tokens_remain_present_in_write_and_delete_receipts",
+      "known_md5_collision_uses_request_fingerprint_and_unknown_history_keeps_upstream_no_op",
+      "projected_batch_failures_roll_back_and_full_validation_precedes_projection",
+      "projection_integrity_and_witness_corruption_fail_before_no_op_or_delete",
+      "projection_seam_keeps_permission_and_create_only_occ_precedence"
+    ],
+    "generated_version": "ContentVersion is lowercase MD5 of the exact write-request bytes, never reconstructed from the rendered value.",
+    "persisted_version": "PublicVersion preserves up to 32 Unicode characters, including empty, star, nonhex, uppercase and control strings at the pure type boundary; native SQL representation remains profile-specific.",
+    "condition_version": "ExpectedVersion preserves the complete raw condition string independently of the persisted public-token bound.",
+    "integrity": "The SHA-256 digest binds the supplied projection; a checked private CollisionWitness additionally binds known request SHA, length, generated version and projection SHA.",
+    "unknown_history": "A missing CollisionWitness remains unknown. Matching generated token and unchanged ACL on a blind write preserve the existing native projection without inventing request bytes.",
+    "model": "StorageState.apply_batch uses identity projection. apply_batch_projected invokes an adapter-supplied bounded projection; the pure core does not normalize JSON or implement a native JSONB renderer.",
+    "request_byte_limit": 1048576,
+    "projection_byte_limit": 16777216,
+    "projection_overflow": "ResourceExhausted, distinct from digest or witness corruption DataLoss",
+    "native_renderer_implemented": false,
+    "accepted": false,
+    "compatibility_credit": false,
+    "database_durable": false
+  },
   "claims": {
     "public_version_source_candidate": true,
     "storage_behavior_compatible": false,

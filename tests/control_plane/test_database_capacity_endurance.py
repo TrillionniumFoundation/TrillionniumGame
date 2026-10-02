@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -52,6 +53,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
         image: str = "postgres:18@sha256:" + "d" * 64,
         clients: int = 4,
         threads: int = 2,
+        v2_apply_source_commit: str = "3" * 40,
     ) -> dict:
         observed = requested if observed is None else observed
         start = 1_800_000_000 + index * 21_600 if start is None else start
@@ -69,10 +71,13 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
             "migration_lock_sha256": hashlib.sha256((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes()).hexdigest(),
             "schema_identity": {
                 "schema": "trillionnium.authoritative-schema-report.v1", "profile": schema_profile,
-                "schema_version": version, "storage_writer_epoch": 2,
+                "schema_version": version, "storage_writer_epoch": 3,
                 "chain_digest": chains[schema_profile]["chain_sha256"],
                 "digest_algorithm": "ordered-path-git-blob-sha256.v1",
                 "source_commit": "1" * 40, "upgrade_source_commit": "2" * 40,
+                # An explicit synthetic previous-revision publisher, independent
+                # of the candidate that only performs read-only verification.
+                "v2_apply_source_commit": v2_apply_source_commit,
                 "migration_applied": False, "applied_steps": 0, "table_count": tables,
                 "compatibility_credit": False,
             },
@@ -139,6 +144,9 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
             self.assertEqual(report["requested_duration_seconds"], 86_400)
             self.assertEqual(report["observed_duration_seconds"], 86_400)
             self.assertEqual(report["maximum_segment_gap_seconds"], 0)
+            self.assertEqual(report["schema_identity"], self.capacity(index=0)["schema_identity"])
+            self.assertEqual(report["schema_identity"]["v2_apply_source_commit"], "3" * 40)
+            self.assertNotEqual(report["schema_identity"]["v2_apply_source_commit"], report["candidate_commit"])
             self.assertFalse(any(report["claim_boundary"].values()))
 
     def test_index_previous_digest_failure_and_short_duration_rejected(self):
@@ -240,7 +248,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
         self.assertIn("capacity/endurance source contract: OK", result.stdout)
 
     def test_mixed_or_missing_schema_identity_cannot_form_an_endurance_ledger(self):
-        for mutation in ("missing", "old_epoch", "wrong_chain", "wrong_algorithm", "mutation_claim", "changed_provenance", "wrong_lock"):
+        for mutation in ("missing", "old_epoch", "missing_prior", "invalid_prior", "changed_prior", "wrong_chain", "wrong_algorithm", "mutation_claim", "changed_provenance", "wrong_lock"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 paths = self.four_segment_ledger(root)
@@ -249,7 +257,13 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
                 if mutation == "missing":
                     capacity.pop("schema_identity")
                 elif mutation == "old_epoch":
-                    schema["storage_writer_epoch"] = 1
+                    schema["storage_writer_epoch"] = 2
+                elif mutation == "missing_prior":
+                    schema.pop("v2_apply_source_commit")
+                elif mutation == "invalid_prior":
+                    schema["v2_apply_source_commit"] = "short"
+                elif mutation == "changed_prior":
+                    schema["v2_apply_source_commit"] = "4" * 40
                 elif mutation == "wrong_chain":
                     schema["chain_digest"] = "e" * 64
                 elif mutation == "wrong_algorithm":
@@ -290,9 +304,50 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths = self.four_segment_ledger(Path(temporary))
             value = paths[0].read_text()
-            paths[0].write_text(value.replace('"storage_writer_epoch":2', '"storage_writer_epoch":1,"storage_writer_epoch":2'))
+            ambiguous = value.replace('"storage_writer_epoch":3', '"storage_writer_epoch":2,"storage_writer_epoch":3')
+            self.assertNotEqual(value, ambiguous)
+            paths[0].write_text(ambiguous)
             with self.assertRaisesRegex(self.finalizer.ValidationError, "duplicate JSON key storage_writer_epoch"):
                 self.finalizer.validate(paths, "24h")
+
+    def test_actual_capacity_manifest_code_preserves_full_verified_schema_provenance(self):
+        # Execute the real manifest producer with captured schema input and
+        # synthetic pgbench metrics; this test does not execute a database.
+        source = self.checker.SMOKE.read_text(encoding="utf-8")
+        self.assertEqual(source.count("<<'PY'\n"), 1)
+        program = source.split("<<'PY'\n", 1)[1].removesuffix("PY\n")
+        for profile in ("postgresql", "cockroachdb"):
+            for context in ("upgraded", "fresh"):
+                with self.subTest(profile=profile, context=context), tempfile.TemporaryDirectory() as temporary:
+                    evidence = Path(temporary)
+                    capacity = self.capacity(index=0, profile=profile)
+                    identity = capacity["schema_identity"]
+                    if context == "fresh":
+                        for publisher in ("source_commit", "upgrade_source_commit", "v2_apply_source_commit"):
+                            identity[publisher] = capacity["candidate_commit"]
+                    (evidence / "schema-identity.json").write_bytes(canonical(identity))
+                    (evidence / "pgbench.stdout").write_text(
+                        "number of transactions actually processed: 100\n"
+                        "number of failed transactions: 0\n"
+                        "latency average = 1.0 ms\n"
+                        "tps = 10.0\n", encoding="utf-8",
+                    )
+                    (evidence / "pgbench.stderr").write_text("", encoding="utf-8")
+                    environment = dict(os.environ, TRNM_DATABASE_LOGICAL_ID="synthetic-capacity-fixture")
+                    completed = subprocess.run(
+                        [sys.executable, "-c", program, str(ROOT), str(evidence), profile,
+                         capacity["client_image_reference"], "21600", "21600", "1800000000", "1800021600",
+                         "4", "2", capacity["candidate_commit"], capacity["candidate_tree"]],
+                        cwd=ROOT, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=30, check=False,
+                    )
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    produced = json.loads((evidence / "manifest.json").read_text(encoding="utf-8"))
+                    self.assertEqual(produced["schema_identity"], identity)
+                    self.assertEqual(produced["schema_identity"]["storage_writer_epoch"], 3)
+                    self.assertEqual(produced["schema_identity"]["v2_apply_source_commit"], identity["v2_apply_source_commit"])
+                    self.assertEqual(produced["migration_lock_sha256"], capacity["migration_lock_sha256"])
+                    self.finalizer.validate_capacity_manifest(produced, evidence / "manifest.json")
 
 
 if __name__ == "__main__":

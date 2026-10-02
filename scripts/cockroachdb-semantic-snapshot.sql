@@ -10,7 +10,8 @@ WITH rows AS (
            'chain_digest', chain_digest,
            'digest_algorithm', digest_algorithm,
            'storage_writer_epoch', storage_writer_epoch,
-           'upgrade_source_commit', upgrade_source_commit
+           'upgrade_source_commit', upgrade_source_commit,
+           'v2_apply_source_commit', v2_apply_source_commit
          ) AS value
   FROM trnm_schema_metadata
   UNION ALL
@@ -110,14 +111,22 @@ WITH rows AS (
            'user_id', encode(user_id, 'hex'),
            'value_bytes', encode(value_bytes, 'hex'),
            'version_digest', encode(version_digest, 'hex'),
+           'value_jsonb_text', value_jsonb::TEXT,
+           'public_version', public_version,
+           'value_projection_digest', encode(value_projection_digest, 'hex'),
+           'value_origin', value_origin,
+           'source_manifest_digest', encode(source_manifest_digest, 'hex'),
+           'request_native_text', CASE WHEN value_bytes IS NULL THEN NULL ELSE pg_catalog.convert_from(value_bytes,'UTF8')::JSONB::TEXT END,
            'read_permission', read_permission,
            'write_permission', write_permission,
            'updated_at_ms', updated_at_ms,
+           'create_time_text', create_time::TEXT,
+           'update_time_text', update_time::TEXT,
            'create_epoch', extract(epoch FROM create_time),
            'update_epoch', extract(epoch FROM update_time)
          )
   FROM trnm_storage_objects
 )
-SELECT table_name || '|' || value::text
+SELECT table_name || '|' || value::text AS snapshot_row
 FROM rows
 ORDER BY table_name, value::text;

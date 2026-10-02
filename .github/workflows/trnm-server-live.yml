@@ -119,6 +119,9 @@ jobs:
           evidence="run/server-live/${PROFILE}"
           test -s "$evidence/SHA256SUMS"
           test -s "$evidence/summary.json"
+          python3 scripts/check-trnm-server.py --live-packet "$evidence" \
+            --profile "$PROFILE" --commit "$CANDIDATE_SHA" --tree "$(git rev-parse HEAD^{tree})"
+          sha256sum --check "$evidence/SHA256SUMS"
           python3 - <<'PY'
           import json
           import os
@@ -135,6 +138,8 @@ jobs:
               'raw_version_conditions',
               'storage_timestamps',
               'schema_upgrade',
+              'storage_jsonb_v3_projection',
+              'storage_native_jsonb',
               'health_ready',
               'unauthenticated_mutation_rejected',
               'http_bootstrap_commit_duplicate_conflict',
@@ -144,6 +149,14 @@ jobs:
               'process_restart_exact_receipt_replay',
           ):
               assert summary[field] is True, (field, summary[field])
+          assert type(summary['schema_v3_extra_cases']) is int and summary['schema_v3_extra_cases'] == 41
+          assert summary['schema_v3_case_families'] == {
+              'shapes': 8, 'illegal_legacy': 9, 'catalog_drift': 6,
+              'partial_resume': 3, 'metadata_validation': 9, 'opaque_history': 6,
+          }
+          assert all(type(value) is int for value in summary['schema_v3_case_families'].values())
+          for field in ('schema_version', 'storage_writer_epoch', 'authoritative_migrations_count'):
+              assert type(summary[field]) is int and summary[field] == 3
           assert summary['entity_revision'] == 3
           assert summary['event_sequence'] == 3
           assert summary['command_receipts'] == 3

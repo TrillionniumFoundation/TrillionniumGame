@@ -196,7 +196,7 @@ schemas.validate_identity(fresh, profile=profile, chains=chains, schema_version=
                           table_count=table_count, mode='fresh', source_commit=commit)
 schemas.validate_identity(restored, profile=profile, chains=chains, schema_version=version,
                           table_count=table_count, mode='verify')
-for field in ('source_commit', 'upgrade_source_commit'):
+for field in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit'):
     require(restored[field] == fresh[field], 'restored backup schema provenance differs')
 check = {'schema': 'trillionnium.authoritative-schema-identity-check.v1', 'profile': profile,
          'schema_version': version, 'chain_digest': fresh['chain_digest'],
@@ -206,6 +206,15 @@ for name in ('schema-identity-check.json', 'restored-schema-identity-check.json'
             'retained backup schema check differs')
 
 ordered = lock['profiles'][profile]['ordered_files']
+require(len(ordered) == 3 and fresh['schema_version'] == 3 and fresh['storage_writer_epoch'] == 3,
+        'backup schema v3 complete-chain ABI differs')
+projection = load('backup_projection', 'scripts/check-pgwire-backup-restore.py')
+source_snapshot = projection.validate_storage_snapshot_bytes(
+    (retained / 'source-storage-v3.txt').read_bytes(), profile, fresh, 'restore')
+restored_snapshot = projection.validate_storage_snapshot_bytes(
+    (retained / 'restored-storage-v3.txt').read_bytes(), profile, restored, 'restore')
+require(source_snapshot == restored_snapshot, 'restored storage v3 witness summary differs')
+(retained / 'storage-v3-snapshot-check.json').write_text(json.dumps(source_snapshot, sort_keys=True) + '\n')
 for item in ordered:
     path = item['path']
     require(not (source / path).is_symlink(), 'backup migration source symlink is forbidden')
@@ -224,7 +233,7 @@ identity = {
     'job_identity_kind': 'workflow_job_key_and_matrix_profile',
     'schema_version': fresh['schema_version'], 'storage_writer_epoch': fresh['storage_writer_epoch'],
     'chain_digest': fresh['chain_digest'], 'digest_algorithm': fresh['digest_algorithm'],
-    'source_commit': fresh['source_commit'], 'upgrade_source_commit': fresh['upgrade_source_commit'],
+    'source_commit': fresh['source_commit'], 'upgrade_source_commit': fresh['upgrade_source_commit'], 'v2_apply_source_commit': fresh['v2_apply_source_commit'],
     'compatibility_credit': False, 'accepted_evidence': False, 'production_ready': False,
 }
 (retained / 'identity.json').write_text(json.dumps(identity, sort_keys=True, separators=(',', ':')) + '\n')
@@ -333,12 +342,25 @@ if [[ "$profile" == postgresql ]]; then
     INSERT INTO trnm_refresh_tokens VALUES
       (decode(repeat('a1',16),'hex'),decode(repeat('a3',16),'hex'),
        decode(repeat('a4',32),'hex'),0,0,10,NULL);
-    INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES
-      ('restore','fixture',decode(repeat('a5',16),'hex'),decode('010203','hex'),
-       decode(repeat('a6',32),'hex'),2,1,10);
+    -- Known raw request and native JSONB text have independent fingerprints.
+    WITH input AS (SELECT decode('207b202262223a20322c202261223a20312e3030207d20','hex') AS request),
+         projected AS (SELECT request, convert_from(request,'UTF8') AS request_text,
+                       (convert_from(request,'UTF8'))::JSONB AS native_value FROM input)
+    INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms)
+    SELECT 'restore', 'fixture', decode(repeat('a5',16),'hex'), request, sha256(request),
+           native_value, md5(request_text), sha256(convert_to(native_value::TEXT,'UTF8')),
+           'write-request-bytes', NULL, 2, 1, 10 FROM projected;
+    -- A synthetic storage fixture manifest marks unknown history, never an invented request.
+    INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms) VALUES
+      ('restore', 'unknown-empty', decode(repeat('a5',16),'hex'), NULL, NULL,
+       'null'::JSONB, '', sha256(convert_to(('null'::JSONB)::TEXT,'UTF8')), 'nakama-export-unknown-request',
+       sha256(convert_to('synthetic storage fixture manifest','UTF8')), 2, 1, 10),
+      ('restore', 'unknown-unicode', decode(repeat('a5',16),'hex'), NULL, NULL,
+       '[3, true, null]'::JSONB, '版本A*', sha256(convert_to(('[3, true, null]'::JSONB)::TEXT,'UTF8')),
+       'nakama-export-unknown-request', sha256(convert_to('synthetic storage fixture manifest','UTF8')), 2, 1, 10);
     INSERT INTO trnm_storage_objects
-      (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms, create_time, update_time)
-      SELECT collection, 'known-time', user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms,
+      (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms, create_time, update_time)
+      SELECT collection, 'known-time', user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms,
         '1969-12-31 23:59:59.999999+00'::TIMESTAMPTZ, '2024-02-29 00:00:00.123456+00'::TIMESTAMPTZ
       FROM trnm_storage_objects WHERE collection='restore' AND object_key='fixture';
     INSERT INTO trnm_authority_leases
@@ -359,6 +381,8 @@ if [[ "$profile" == postgresql ]]; then
 
   begin_stage source-snapshot
   snapshot trnm "$evidence/source.csv"
+  docker exec -i "$container" psql -X -q -v ON_ERROR_STOP=1 -U trnm -d trnm \
+    < scripts/postgresql-semantic-snapshot.sql > "$evidence/source-storage-v3.txt"
   begin_stage backup
   docker exec "$container" pg_dump -Fc --no-owner --no-privileges \
     -U trnm -d trnm > "$evidence/backup.dump"
@@ -380,6 +404,8 @@ if [[ "$profile" == postgresql ]]; then
     > "$evidence/restored-schema-identity-check.json"
   begin_stage restored-snapshot
   snapshot trnm_restore "$evidence/restored.csv"
+  docker exec -i "$container" psql -X -q -v ON_ERROR_STOP=1 -U trnm -d trnm_restore \
+    < scripts/postgresql-semantic-snapshot.sql > "$evidence/restored-storage-v3.txt"
 else
   database_url='postgres://root@127.0.0.1:26257/trnm?sslmode=disable'
   begin_stage pull-image "$evidence/image-pull.log"
@@ -435,12 +461,25 @@ else
     INSERT INTO trnm_refresh_tokens VALUES
       (decode(repeat('a1',16),'hex'),decode(repeat('a3',16),'hex'),
        decode(repeat('a4',32),'hex'),0,0,10,NULL);
-    INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms) VALUES
-      ('restore','fixture',decode(repeat('a5',16),'hex'),decode('010203','hex'),
-       decode(repeat('a6',32),'hex'),2,1,10);
+    -- Known raw request and native JSONB text have independent fingerprints.
+    WITH input AS (SELECT decode('207b202262223a20322c202261223a20312e3030207d20','hex') AS request),
+         projected AS (SELECT request, pg_catalog.convert_from(request,'UTF8') AS request_text,
+                       (pg_catalog.convert_from(request,'UTF8'))::JSONB AS native_value FROM input)
+    INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms)
+    SELECT 'restore', 'fixture', decode(repeat('a5',16),'hex'), request, decode(sha256(request),'hex'),
+           native_value, md5(request_text), decode(sha256(native_value::TEXT),'hex'),
+           'write-request-bytes', NULL, 2, 1, 10 FROM projected;
+    -- A synthetic storage fixture manifest marks unknown history, never an invented request.
+    INSERT INTO trnm_storage_objects (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms) VALUES
+      ('restore', 'unknown-empty', decode(repeat('a5',16),'hex'), NULL, NULL,
+       'null'::JSONB, '', decode(sha256(('null'::JSONB)::TEXT),'hex'), 'nakama-export-unknown-request',
+       decode(sha256('synthetic storage fixture manifest'),'hex'), 2, 1, 10),
+      ('restore', 'unknown-unicode', decode(repeat('a5',16),'hex'), NULL, NULL,
+       '[3, true, null]'::JSONB, '版本A*', decode(sha256(('[3, true, null]'::JSONB)::TEXT),'hex'),
+       'nakama-export-unknown-request', decode(sha256('synthetic storage fixture manifest'),'hex'), 2, 1, 10);
     INSERT INTO trnm_storage_objects
-      (collection, object_key, user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms, create_time, update_time)
-      SELECT collection, 'known-time', user_id, value_bytes, version_digest, read_permission, write_permission, updated_at_ms,
+      (collection, object_key, user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms, create_time, update_time)
+      SELECT collection, 'known-time', user_id, value_bytes, version_digest, value_jsonb, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms,
         '1969-12-31 23:59:59.999999+00'::TIMESTAMPTZ, '2024-02-29 00:00:00.123456+00'::TIMESTAMPTZ
       FROM trnm_storage_objects WHERE collection='restore' AND object_key='fixture';
     INSERT INTO trnm_authority_leases
@@ -462,6 +501,9 @@ else
 
   begin_stage source-snapshot
   snapshot trnm "$evidence/source.csv"
+  docker exec -i "$container" /cockroach/cockroach sql --insecure --host=127.0.0.1:26257 \
+    --database=trnm --set=errexit=true --format=tsv \
+    < scripts/cockroachdb-semantic-snapshot.sql > "$evidence/source-storage-v3.txt"
   begin_stage backup "$evidence/backup.log"
   docker exec "$container" /cockroach/cockroach sql --insecure \
     --host=127.0.0.1:26257 --database=defaultdb --set=errexit=true \
@@ -490,6 +532,9 @@ else
     > "$evidence/restored-schema-identity-check.json"
   begin_stage restored-snapshot
   snapshot trnm_restore "$evidence/restored.csv"
+  docker exec -i "$container" /cockroach/cockroach sql --insecure --host=127.0.0.1:26257 \
+    --database=trnm_restore --set=errexit=true --format=tsv \
+    < scripts/cockroachdb-semantic-snapshot.sql > "$evidence/restored-storage-v3.txt"
 fi
 
 begin_stage validate-migration-chain "$evidence/migration-chain-validation.json"
@@ -498,11 +543,12 @@ python3 scripts/check-migration-lock.py > "$evidence/migration-chain-validation.
 (cd "$evidence" && sha256sum source.csv restored.csv > snapshot-sha256.txt)
 begin_stage compare-snapshots
 cmp "$evidence/source.csv" "$evidence/restored.csv"
+cmp "$evidence/source-storage-v3.txt" "$evidence/restored-storage-v3.txt"
 begin_stage seal-evidence
 docker inspect "$container" > "$evidence/container-inspect.json"
 docker logs "$container" > "$evidence/container.log" 2>&1
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.backup-restore.v1","profile":"$profile","backup_created":true,"empty_restore":true,"semantic_snapshot_equal":true,"production_pitr":false,"multi_node_restore":false}
+{"schema":"trillionnium.backup-restore.v1","profile":"$profile","backup_created":true,"empty_restore":true,"semantic_snapshot_equal":true,"production_pitr":false,"multi_node_restore":false,"schema_version":3,"storage_writer_epoch":3,"authoritative_migration_file_count":3,"storage_v3_fixture_count":4}
 EOF
 seal_backup_evidence
 printf 'backup/restore contract passed: profile=%s evidence=%s\n' \

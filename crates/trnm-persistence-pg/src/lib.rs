@@ -32,10 +32,11 @@ pub use storage_metadata::{
     StoredStorageObject,
 };
 pub use trnm_storage_core::{
-    Actor as StorageActor, BatchOperation as StorageBatchOperation, ContentVersion,
-    DeleteOperation as StorageDeleteOperation, IntegrityDigest,
-    MutationReceipt as StorageMutationReceipt, ReadPermission, StorageObject, StorageObjectKey,
-    StorageState, VersionCheck, WriteOperation as StorageWriteOperation, WritePermission,
+    Actor as StorageActor, BatchOperation as StorageBatchOperation, CollisionWitness,
+    ContentVersion, DeleteOperation as StorageDeleteOperation, IntegrityDigest,
+    MutationReceipt as StorageMutationReceipt, PublicVersion, ReadPermission, StorageObject,
+    StorageObjectKey, StorageState, VersionCheck, WriteOperation as StorageWriteOperation,
+    WritePermission, MAX_PROJECTION_VALUE_BYTES, MAX_REQUEST_VALUE_BYTES,
 };
 
 use std::collections::BTreeSet;

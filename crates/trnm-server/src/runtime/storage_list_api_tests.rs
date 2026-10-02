@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
 use trnm_persistence_pg::{
-    CommitOutcome, CommitRequest, ContentVersion, EntityHead, EntityId, IntegrityDigest,
-    ReadPermission, StorageActor, StorageListPosition, StorageObject, StorageObjectKey,
-    StorageTimes, StorageTimestamp, StoredStorageClientListPage, StoredStorageObject,
-    WritePermission,
+    CollisionWitness, CommitOutcome, CommitRequest, ContentVersion, EntityHead, EntityId,
+    IntegrityDigest, PublicVersion, ReadPermission, StorageActor, StorageListPosition,
+    StorageObject, StorageObjectKey, StorageTimes, StorageTimestamp, StoredStorageClientListPage,
+    StoredStorageObject, WritePermission,
 };
 
 use super::app::Repository;
@@ -93,12 +93,99 @@ fn object(key: &str, owner: UserId, read: ReadPermission) -> StorageObject {
     let value = br#"{"value":1}"#.to_vec();
     StorageObject {
         key: StorageObjectKey::new_nakama("inventory", key, owner).unwrap(),
-        version: ContentVersion::from_value(&value),
+        version: ContentVersion::from_value(&value).into(),
+        collision_witness: Some(CollisionWitness::from_request(&value, &value).unwrap()),
         integrity_digest: IntegrityDigest::from_value(&value),
         value,
         read_permission: read,
         write_permission: WritePermission::Owner,
     }
+}
+
+fn historical_object(key: &str, native: &str, version: &str) -> StorageObject {
+    StorageObject {
+        key: StorageObjectKey::new_nakama("inventory", key, USER).unwrap(),
+        value: native.as_bytes().to_vec(),
+        version: PublicVersion::new(version).unwrap(),
+        integrity_digest: IntegrityDigest::from_value(native.as_bytes()),
+        collision_witness: None,
+        read_permission: ReadPermission::Public,
+        write_permission: WritePermission::Owner,
+    }
+}
+
+#[test]
+fn storage_list_preserves_native_history_shapes_and_opaque_public_versions() {
+    let cases = [
+        ("null", "".to_owned()),
+        ("[1, 1.0, false, null]", "*".to_owned()),
+        ("\"native string\"", "UPPERCASE-NONHEX".to_owned()),
+        ("1.000", "雪".repeat(32)),
+        ("true", "trailing ".to_owned()),
+    ];
+    let objects = cases
+        .iter()
+        .enumerate()
+        .map(|(index, (native, version))| {
+            historical_object(&format!("history-{index}"), native, version)
+        })
+        .collect();
+    let mut repo = repository(objects, None);
+    let response = handle(&mut repo, &request("/v2/storage/inventory?limit=100"), USER);
+    assert_eq!(response.status, 200);
+    let encoded = json(&response);
+    for (object, (native, version)) in encoded["objects"].as_array().unwrap().iter().zip(&cases) {
+        assert_eq!(
+            object["value"].as_str().unwrap().as_bytes(),
+            native.as_bytes()
+        );
+        if version.is_empty() {
+            assert!(object.get("version").is_none());
+        } else {
+            assert_eq!(object["version"].as_str().unwrap(), version);
+        }
+        assert!(object.get("create_time").is_none());
+        assert!(object.get("update_time").is_none());
+    }
+}
+
+#[test]
+fn storage_list_encoded_response_budget_rejects_partial_objects_with_code_eight() {
+    let native = format!("\"{}\"", "\\\"".repeat(4 * 1024 * 1024));
+    let mut repo = repository(
+        vec![
+            historical_object("a", &native, "history-a"),
+            historical_object("b", &native, "history-b"),
+        ],
+        None,
+    );
+    let response = handle(&mut repo, &request("/v2/storage/inventory?limit=2"), USER);
+    assert_eq!(response.status, 429);
+    assert_eq!(
+        json(&response),
+        serde_json::json!({"code":8,"message":"Error listing storage objects."})
+    );
+    assert!(json(&response).get("objects").is_none());
+    assert!(json(&response).get("cursor").is_none());
+}
+
+#[test]
+fn storage_list_repository_resource_exhaustion_is_redacted_without_integrity_code() {
+    let mut repo = repository(vec![], None);
+    repo.page = Err(DomainError::new(
+        StableCode::ResourceExhausted,
+        "private native row budget",
+        RetryClass::Never,
+    ));
+    let response = handle(&mut repo, &request("/v2/storage/inventory"), USER);
+    assert_eq!(response.status, 429);
+    assert_eq!(
+        json(&response),
+        serde_json::json!({"code":8,"message":"Error listing storage objects."})
+    );
+    assert!(!String::from_utf8(response.body)
+        .unwrap()
+        .contains("private"));
 }
 fn position(object: &StorageObject) -> StorageListPosition {
     StorageListPosition {

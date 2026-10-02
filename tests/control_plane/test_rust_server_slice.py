@@ -51,13 +51,29 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertEqual(result["schema"], "trillionnium.server-source-check.v3")
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["binary"], "trnm-server")
-        self.assertEqual(result["runtime_module_count"], 24)
+        self.assertEqual(result["runtime_module_count"], 26)
         self.assertGreaterEqual(result["source_marker_count"], 20)
         self.assertFalse(result["claims"]["compiled"])
         self.assertFalse(result["claims"]["live_process_executed"])
         self.assertFalse(result["claims"]["live_database_bound"])
         self.assertFalse(result["claims"]["wire_compatible"])
         self.assertFalse(result["claims"]["production_ready"])
+
+    def test_standalone_runtime_inventory_requires_both_native_projection_modules(self) -> None:
+        spec = importlib.util.spec_from_file_location("server_source_inventory", SOURCE_CHECKER)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        actual = {path.name for path in (ROOT / "crates/trnm-server/src/runtime").glob("*.rs") if path.is_file()}
+        module.validate_runtime_file_inventory(actual)
+        for omitted in ("storage_api_projection_tests.rs", "storage_api_v3_live.rs"):
+            with self.subTest(omitted=omitted), self.assertRaisesRegex(module.ValidationError, "file set drift"):
+                module.validate_runtime_file_inventory(actual - {omitted})
+        with self.assertRaisesRegex(module.ValidationError, "file set drift"):
+            module.validate_runtime_file_inventory(actual | {"unregistered_runtime.rs"})
+        with self.assertRaisesRegex(module.ValidationError, "file set drift"):
+            module.validate_runtime_file_inventory((actual - {"storage_api_v3_live.rs"}) | {"unregistered_runtime.rs"})
 
     def test_status_remains_fail_closed(self) -> None:
         status = json.loads(STATUS.read_text(encoding="utf-8"))

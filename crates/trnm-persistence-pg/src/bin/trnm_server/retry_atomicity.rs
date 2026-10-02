@@ -31,9 +31,9 @@ fn emit_schema_report(marker: &str, report: &SchemaMigrationReport) {
     }
     // Profile/algorithm are static names, provenance is checked hexadecimal
     // and the digest is hexadecimal: no unescaped external text enters JSON.
-    println!("{marker}={{\"schema\":\"trillionnium.authoritative-schema-report.v1\",\"profile\":\"{}\",\"schema_version\":{},\"chain_digest\":\"{}\",\"digest_algorithm\":\"{}\",\"storage_writer_epoch\":{},\"source_commit\":\"{}\",\"upgrade_source_commit\":\"{}\",\"migration_applied\":{},\"table_count\":{},\"applied_steps\":{},\"compatibility_credit\":false}}",
+    println!("\n{marker}={{\"schema\":\"trillionnium.authoritative-schema-report.v1\",\"profile\":\"{}\",\"schema_version\":{},\"chain_digest\":\"{}\",\"digest_algorithm\":\"{}\",\"storage_writer_epoch\":{},\"source_commit\":\"{}\",\"upgrade_source_commit\":\"{}\",\"v2_apply_source_commit\":\"{}\",\"migration_applied\":{},\"table_count\":{},\"applied_steps\":{},\"compatibility_credit\":false}}",
         report.identity.profile.metadata_value(), report.identity.schema_version, digest, report.identity.digest_algorithm,
-        report.identity.storage_writer_epoch, report.identity.source_commit, report.identity.upgrade_source_commit,
+        report.identity.storage_writer_epoch, report.identity.source_commit, report.identity.upgrade_source_commit, report.identity.v2_apply_source_commit,
         report.migration_applied, report.table_count, report.applied_steps);
 }
 struct InjectedRepository {
@@ -303,12 +303,21 @@ pub fn prove(database_url: &str) {
         .unwrap()
         .verify_authoritative_schema()
         .unwrap();
+    let table_count: i64 = inspector
+        .query_one(
+            "SELECT count(*)::BIGINT FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'trnm_%' AND table_type='BASE TABLE'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    let table_count = usize::try_from(table_count).unwrap();
+    assert_eq!(table_count, 10);
     emit_schema_report(
         "retry_schema_verify_report",
         &SchemaMigrationReport {
             identity,
             migration_applied: false,
-            table_count: 10,
+            table_count,
             applied_steps: 0,
         },
     );

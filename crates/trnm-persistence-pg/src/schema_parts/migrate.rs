@@ -27,8 +27,7 @@ impl PgRepository {
     /// Apply only the compile-time, Git-blob-validated ordered chain. Existing
     /// databases need an independently drained/revoked legacy writer role.
     /// The runner observes the barrier; it never revokes or kills sessions.
-    /// Revision dispatch currently covers only the locked v1/v2 additive DDL;
-    /// it does not implement native JSONB, DML backfill or a v3 catalog grammar.
+    /// The v3 typed backfill keeps raw witnesses and publishes epoch 3 last.
     pub fn migrate_authoritative_schema(
         &mut self,
         source_commit: &str,
@@ -108,6 +107,10 @@ impl PgRepository {
             recorded = read_metadata(&mut *self.client, &catalog)?;
         }
         let mut original = recorded.ok_or_else(|| data_loss("schema_metadata_binding_failed"))?;
+        validate_recorded_revision(&original, profile)?;
+        // Reject all illegal raw legacy data before any revision DDL. This also
+        // protects a v1 -> v2 -> v3 invocation from partially upgrading v1.
+        preflight_native_storage(&mut *self.client, profile, false)?;
         loop {
             let catalog = read_catalog(&mut *self.client)?;
             let prefix = catalog_prefix(&catalog, profile)?;
@@ -148,10 +151,34 @@ impl PgRepository {
                     if locked_target.version != target.version {
                         return Err(failed_precondition("schema_metadata_publish_conflict"));
                     }
-                    for action in &actions(profile)[locked_prefix..target.action_range.end] {
+                    if target.version == 3 {
                         transaction
-                            .batch_execute(action.sql)
+                            .batch_execute(
+                                "LOCK TABLE public.trnm_storage_objects IN ACCESS EXCLUSIVE MODE",
+                            )
                             .map_err(map_postgres_error)?;
+                        preflight_native_storage(&mut transaction, profile, false)?;
+                    }
+                    let mut next = locked_prefix;
+                    while next < target.action_range.end {
+                        let action = &actions(profile)[next];
+                        match action.kind {
+                            MigrationActionKind::BackfillStorageJsonbV3 => {
+                                backfill_native_storage(&mut transaction)?
+                            }
+                            _ => transaction
+                                .batch_execute(action.sql)
+                                .map_err(map_postgres_error)?,
+                        }
+                        let catalog = read_catalog(&mut transaction)?;
+                        let advanced = catalog_prefix(&catalog, profile)?;
+                        if advanced <= next || advanced > target.action_range.end {
+                            return Err(failed_precondition("schema_action_catalog_not_ready"));
+                        }
+                        next = advanced;
+                    }
+                    if target.version == 3 {
+                        preflight_native_storage(&mut transaction, profile, true)?;
                     }
                     let complete = read_catalog(&mut transaction)?;
                     if catalog_prefix(&complete, profile)? != target.action_range.end {
@@ -174,12 +201,11 @@ impl PgRepository {
                     // Resume only the exact next-revision catalog prefix, with
                     // unchanged old metadata before each DDL action. External
                     // DDL can fail this attempt; it is not silently repaired.
-                    for (index, action) in actions(profile)
-                        .iter()
-                        .enumerate()
-                        .take(target.action_range.end)
-                        .skip(prefix)
-                    {
+                    if target.version == 3 {
+                        preflight_native_storage(&mut *self.client, profile, false)?;
+                    }
+                    let mut index = prefix;
+                    while index < target.action_range.end {
                         let before = read_catalog(&mut *self.client)?;
                         if catalog_prefix(&before, profile)? != index {
                             return Err(failed_precondition("schema_action_catalog_not_ready"));
@@ -187,13 +213,31 @@ impl PgRepository {
                         let current = read_metadata(&mut *self.client, &before)?
                             .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
                         ensure_metadata_unchanged(&original, &current)?;
-                        self.client
-                            .batch_execute(action.sql)
-                            .map_err(map_postgres_error)?;
+                        if !fresh {
+                            verify_legacy_writer_barrier(
+                                &mut *self.client,
+                                legacy_writer_role.unwrap(),
+                                profile,
+                            )?;
+                        }
+                        let action = &actions(profile)[index];
+                        match action.kind {
+                            MigrationActionKind::BackfillStorageJsonbV3 => self
+                                .backfill_native_storage_cockroach(
+                                    &original,
+                                    if fresh { None } else { legacy_writer_role },
+                                )?,
+                            _ => self
+                                .client
+                                .batch_execute(action.sql)
+                                .map_err(map_postgres_error)?,
+                        }
                         let updated = read_catalog(&mut *self.client)?;
-                        if catalog_prefix(&updated, profile)? != index + 1 {
+                        let advanced = catalog_prefix(&updated, profile)?;
+                        if advanced <= index || advanced > target.action_range.end {
                             return Err(failed_precondition("schema_action_catalog_not_ready"));
                         }
+                        index = advanced;
                     }
                     let mut transaction = self
                         .client
@@ -218,6 +262,9 @@ impl PgRepository {
                         .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
                     ensure_metadata_unchanged(&original, &current)?;
                     validate_recorded_revision(&current, profile)?;
+                    if target.version == 3 {
+                        preflight_native_storage(&mut transaction, profile, true)?;
+                    }
                     let published = publish_metadata(
                         &mut transaction,
                         profile,
@@ -240,5 +287,38 @@ impl PgRepository {
             table_count: REQUIRED_TABLES.len(),
             applied_steps,
         })
+    }
+    fn backfill_native_storage_cockroach(
+        &mut self,
+        original: &RecordedMetadata,
+        role: Option<&str>,
+    ) -> Result<(), DomainError> {
+        let mut cursor = None;
+        loop {
+            let mut transaction = self
+                .client
+                .build_transaction()
+                .isolation_level(IsolationLevel::Serializable)
+                .start()
+                .map_err(map_postgres_error)?;
+            transaction.query_one("SELECT singleton FROM public.trnm_schema_metadata WHERE singleton=1 FOR UPDATE",&[]).map_err(map_postgres_error)?;
+            let catalog = read_catalog(&mut transaction)?;
+            let current = read_metadata(&mut transaction, &catalog)?
+                .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
+            ensure_metadata_unchanged(original, &current)?;
+            if let Some(role) = role {
+                verify_legacy_writer_barrier(&mut transaction, role, DatabaseProfile::CockroachDb)?;
+            }
+            let row = read_next_legacy_storage(&mut transaction, &catalog, cursor.as_ref(), true)?;
+            if let Some(row) = row {
+                fill_native_storage_row(&mut transaction, &row)?;
+                cursor = Some((row.collection, row.key, row.user));
+            } else {
+                transaction.commit().map_err(map_postgres_error)?;
+                break;
+            }
+            transaction.commit().map_err(map_postgres_error)?;
+        }
+        Ok(())
     }
 }

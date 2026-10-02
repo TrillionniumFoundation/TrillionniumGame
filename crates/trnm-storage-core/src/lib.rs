@@ -6,9 +6,14 @@ use std::fmt;
 use sha2::{Digest as _, Sha256};
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
 
+mod projection;
+pub use projection::{
+    CollisionWitness, PublicVersion, MAX_PROJECTION_VALUE_BYTES, MAX_REQUEST_VALUE_BYTES,
+};
+
 const MAX_COLLECTION_BYTES: usize = 128;
 const MAX_KEY_BYTES: usize = 128;
-const MAX_VALUE_BYTES: usize = 1024 * 1024;
+const MAX_VALUE_BYTES: usize = MAX_REQUEST_VALUE_BYTES;
 const MAX_BATCH_OPERATIONS: usize = 100;
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -108,9 +113,9 @@ pub enum WritePermission {
     Owner = 1,
 }
 
-/// Public Nakama-compatible storage version: lowercase hexadecimal MD5 of the
-/// exact stored value bytes. The type cannot be confused with an internal
-/// integrity digest.
+/// Generated write-request version: lowercase hexadecimal MD5 of the exact
+/// request bytes. Native rendered values and opaque persisted public tokens
+/// must not be interpreted as this type or hashed to reconstruct their token.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ContentVersion([u8; 32]);
 
@@ -189,6 +194,18 @@ impl From<&str> for ExpectedVersion {
 
 impl From<ContentVersion> for ExpectedVersion {
     fn from(value: ContentVersion) -> Self {
+        Self(value.as_str().to_owned())
+    }
+}
+
+impl From<PublicVersion> for ExpectedVersion {
+    fn from(value: PublicVersion) -> Self {
+        Self(value.as_str().to_owned())
+    }
+}
+
+impl From<&PublicVersion> for ExpectedVersion {
+    fn from(value: &PublicVersion) -> Self {
         Self(value.as_str().to_owned())
     }
 }
@@ -306,11 +323,20 @@ impl StorageObjectKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StorageObject {
     pub key: StorageObjectKey,
+    /// Externally supplied projection bytes; the default pure model uses the
+    /// identity projection and does not implement a native JSONB renderer.
     pub value: Vec<u8>,
-    pub version: ContentVersion,
+    pub version: PublicVersion,
     pub integrity_digest: IntegrityDigest,
+    pub collision_witness: Option<CollisionWitness>,
     pub read_permission: ReadPermission,
     pub write_permission: WritePermission,
+}
+
+impl StorageObject {
+    pub fn verify_integrity(&self) -> Result<(), DomainError> {
+        verify_object_integrity(self)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -359,7 +385,7 @@ impl BatchOperation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MutationReceipt {
     pub key: StorageObjectKey,
-    pub previous_version: Option<ContentVersion>,
+    pub previous_version: Option<PublicVersion>,
     pub current_version: Option<ContentVersion>,
 }
 
@@ -398,12 +424,29 @@ impl StorageState {
         actor: Actor,
         operations: &[BatchOperation],
     ) -> Result<Vec<MutationReceipt>, DomainError> {
+        self.apply_batch_projected(actor, operations, |request| Ok(request.to_vec()))
+    }
+
+    /// Apply a batch with an adapter-supplied projection. The closure must be
+    /// bounded and side-effect-free; only this model's staged objects roll back.
+    /// Authorization/OCC/integrity and blind no-op checks precede projection.
+    pub fn apply_batch_projected<F>(
+        &mut self,
+        actor: Actor,
+        operations: &[BatchOperation],
+        mut projector: F,
+    ) -> Result<Vec<MutationReceipt>, DomainError>
+    where
+        F: FnMut(&[u8]) -> Result<Vec<u8>, DomainError>,
+    {
         validate_batch(operations)?;
         let mut staged = self.objects.clone();
         let mut receipts = Vec::with_capacity(operations.len());
         for operation in operations {
             let receipt = match operation {
-                BatchOperation::Write(write) => apply_write(&mut staged, actor, write)?,
+                BatchOperation::Write(write) => {
+                    apply_write(&mut staged, actor, write, &mut projector)?
+                }
                 BatchOperation::Delete(delete) => apply_delete(&mut staged, actor, delete)?,
             };
             receipts.push(receipt);
@@ -413,14 +456,17 @@ impl StorageState {
     }
 }
 
-fn apply_write(
+fn apply_write<F>(
     objects: &mut BTreeMap<StorageObjectKey, StorageObject>,
     actor: Actor,
     operation: &WriteOperation,
-) -> Result<MutationReceipt, DomainError> {
+    projector: &mut F,
+) -> Result<MutationReceipt, DomainError>
+where
+    F: FnMut(&[u8]) -> Result<Vec<u8>, DomainError>,
+{
     validate_value(&operation.value)?;
     let version = ContentVersion::from_value(&operation.value);
-    let integrity_digest = IntegrityDigest::from_value(&operation.value);
     let previous = objects.get(&operation.key).cloned();
     // Insert-only checks owner authority without consulting an existing row's
     // write ACL. An existing key rejects the version even when write is disabled.
@@ -434,20 +480,38 @@ fn apply_write(
 
     if let Some(object) = previous.as_ref() {
         verify_object_integrity(object)?;
-        if object.version == version && object.value != operation.value {
+        if object.version.as_str() == version.as_str()
+            && object
+                .collision_witness
+                .is_some_and(|witness| !witness.matches_request(&operation.value))
+        {
             return Err(error(
                 StableCode::DataLoss,
                 "storage_public_version_collision_or_integrity_mismatch",
                 RetryClass::Never,
             ));
         }
+        if operation.expected == VersionCheck::Any
+            && object.version.as_str() == version.as_str()
+            && object.read_permission == operation.read_permission
+            && object.write_permission == operation.write_permission
+        {
+            return Ok(MutationReceipt {
+                key: operation.key.clone(),
+                previous_version: Some(object.version.clone()),
+                current_version: Some(version),
+            });
+        }
     }
 
+    let value = projector(&operation.value)?;
+    let collision_witness = CollisionWitness::from_request(&operation.value, &value)?;
     let next = StorageObject {
         key: operation.key.clone(),
-        value: operation.value.clone(),
-        version,
-        integrity_digest,
+        value,
+        version: version.into(),
+        integrity_digest: collision_witness.projection_digest(),
+        collision_witness: Some(collision_witness),
         read_permission: operation.read_permission,
         write_permission: operation.write_permission,
     };
@@ -477,6 +541,7 @@ fn apply_delete(
             return Err(version_error());
         }
     }
+    verify_object_integrity(&previous)?;
     objects.remove(&operation.key);
     Ok(MutationReceipt {
         key: operation.key.clone(),
@@ -501,6 +566,9 @@ fn validate_batch(operations: &[BatchOperation]) -> Result<(), DomainError> {
                 "duplicate_storage_key_in_batch",
                 RetryClass::Never,
             ));
+        }
+        if let BatchOperation::Write(write) = operation {
+            validate_value(&write.value)?;
         }
     }
     Ok(())
@@ -586,15 +654,18 @@ fn can_read(actor: Actor, object: &StorageObject) -> bool {
 }
 
 fn verify_object_integrity(object: &StorageObject) -> Result<(), DomainError> {
-    if object.integrity_digest.matches_value(&object.value) {
-        Ok(())
-    } else {
-        Err(error(
+    projection::validate_projection_budget(&object.value)?;
+    if !object.integrity_digest.matches_value(&object.value) {
+        return Err(error(
             StableCode::DataLoss,
             "storage_integrity_digest_mismatch",
             RetryClass::Never,
-        ))
+        ));
     }
+    if let Some(witness) = object.collision_witness.as_ref() {
+        witness.validate_projection(&object.version, &object.value)?;
+    }
+    Ok(())
 }
 
 fn md5_digest(input: &[u8]) -> [u8; 16] {
@@ -670,6 +741,9 @@ const fn version_error() -> DomainError {
 const fn error(code: StableCode, reason: &'static str, retry: RetryClass) -> DomainError {
     DomainError::new(code, reason, retry)
 }
+
+#[cfg(test)]
+mod projection_tests;
 
 #[cfg(test)]
 mod tests {
@@ -915,7 +989,7 @@ mod tests {
             .remove(0);
         assert_eq!(
             receipt.previous_version,
-            Some(ContentVersion::from_value(b"v1"))
+            Some(ContentVersion::from_value(b"v1").into())
         );
         assert_eq!(
             receipt.current_version,
@@ -1375,7 +1449,7 @@ mod tests {
             .apply_batch(Actor::User(user(1)), &[delete])
             .unwrap()
             .remove(0);
-        assert_eq!(receipt.previous_version, Some(version));
+        assert_eq!(receipt.previous_version, Some(version.into()));
         assert_eq!(receipt.current_version, None);
         assert_eq!(state.object_count(), 0);
     }
@@ -1389,8 +1463,9 @@ mod tests {
             StorageObject {
                 key: object_key,
                 value: b"corrupt-different-value".to_vec(),
-                version: ContentVersion::from_value(b"v1"),
+                version: ContentVersion::from_value(b"v1").into(),
                 integrity_digest: integrity(b"corrupt-different-value"),
+                collision_witness: Some(CollisionWitness::from_request(b"v1", b"v1").unwrap()),
                 read_permission: ReadPermission::Owner,
                 write_permission: WritePermission::Owner,
             },
@@ -1408,10 +1483,7 @@ mod tests {
                 )],
             )
             .unwrap_err();
-        assert_eq!(
-            error.reason(),
-            "storage_public_version_collision_or_integrity_mismatch"
-        );
+        assert_eq!(error.reason(), "storage_collision_witness_binding_mismatch");
     }
 
     #[test]
@@ -1548,7 +1620,7 @@ mod tests {
                     assert_eq!(state, seeded);
                 } else {
                     let receipt = outcome.unwrap();
-                    assert_eq!(receipt[0].previous_version, Some(current));
+                    assert_eq!(receipt[0].previous_version, Some(current.into()));
                     assert_eq!(
                         receipt[0].current_version,
                         Some(ContentVersion::from_value(b"v2"))

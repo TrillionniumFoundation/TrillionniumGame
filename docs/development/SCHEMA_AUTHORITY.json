@@ -42,7 +42,7 @@
       }
     ],
     "metadata_table": "trnm_schema_metadata",
-    "schema_version": 2,
+    "schema_version": 3,
     "identity_rule": "Every build, migration, adapter test, backup and restore artifact must record the complete ordered migration-chain SHA-256 and candidate commit/tree.",
     "postgresql_connection_fault_source_candidate": {
       "harness": "scripts/ci-postgresql-connection-faults.sh",
@@ -155,6 +155,26 @@
       "rollback": "No drop or mixed v1/v2 writer rollback; forward repair only after re-establishing the exclusive writer barrier.",
       "accepted": false,
       "compatibility_credit": false
+    },
+    "storage_jsonb_upgrade_source_candidate": {
+      "adr": "NAKAMA-STORAGE-NATIVE-JSONB-V3",
+      "migration": "0003_storage_jsonb_up.sql",
+      "schema_version": 3,
+      "storage_writer_epoch": 3,
+      "engine": "crates/trnm-persistence-pg/src/schema.rs",
+      "backfill": "crates/trnm-persistence-pg/src/schema_parts/jsonb_backfill.rs",
+      "value_authority": "One native JSONB value; object, array, string, number, boolean and JSON null history remains legal. HTTP writes retain object validation. No raw-byte read fallback.",
+      "public_version": "Independent native VARCHAR(32) token; generated ACK MD5 is over request bytes, never native rendering. Historical empty/opaque/Unicode versions remain literal.",
+      "witness": "Legacy Rust v2 bytes and new request bytes retain SHA256/MD5/native-render binding; unknown Nakama request origin has NULL raw pair and nonzero32-byte source-manifest binding. A real source-bound Nakama importer remains separate work.",
+      "catalog": "Closed typed actions, exact nullability/default/type/character typmod, named validated CHECK deparsers and primary-key order. No SQL splitter or silent repair.",
+      "preflight": "Entire keyset source scan before any persistent action; bounded 1MiB raw witness and 16MiB native projection. Reject illegal binary/UTF8/JSON/native numbers without data or metadata conversion.",
+      "postgresql": "SERIALIZABLE metadata lock and ACCESS EXCLUSIVE storage lock; native preflight, DDL, row backfill, complete postcondition and full-old-tuple CAS publish share transaction.",
+      "cockroachdb": "Native global preflight, exact ordered DDL prefixes, one-row SERIALIZABLE backfill transactions fenced by old metadata/row tuple, complete global postcondition, metadata publication last.",
+      "history": "Foundation source/time and all known/NULL storage timestamps unchanged; v2_apply_source_commit permanently retains actual prior v2 publisher, upgrade_source_commit records v3 publisher.",
+      "rollback": "Forward repair under exclusive writer barrier; no schema2 writer or destructive down migration after epoch3 publication.",
+      "accepted": false,
+      "compatibility_credit": false,
+      "migration_compatible": false
     }
   },
   "non_authoritative": [
@@ -216,7 +236,9 @@
       "crates/trnm-persistence-pg/src/storage.rs",
       "crates/trnm-persistence-pg/src/outbox.rs",
       "crates/trnm-persistence-pg/src/schema.rs",
-      "crates/trnm-persistence-pg/src/storage_metadata.rs"
+      "crates/trnm-persistence-pg/src/storage_metadata.rs",
+      "crates/trnm-persistence-pg/src/schema_parts/jsonb_backfill.rs",
+      "crates/trnm-persistence-pg/src/storage_parts/06_native_projection.rs"
     ],
     "source_coverage_candidate": {
       "all_required_tables_referenced": true,
@@ -248,6 +270,15 @@
           "trnm_storage_objects.update_time"
         ],
         "semantics": "Nakama storage only uses the database transaction clock, explicit INSERT/UPDATE values and RETURNING receipts. Nullable v1 history remains unknown; no defaults or backfill. Other public contract clocks remain explicit caller inputs.",
+        "accepted": false
+      },
+      {
+        "id": "NAKAMA-STORAGE-NATIVE-JSONB-V3",
+        "fields": [
+          "trnm_storage_objects.value_jsonb",
+          "trnm_storage_objects.public_version"
+        ],
+        "semantics": "Native JSONB rendering is separate from original-request MD5. Candidate limits request1MiB/native16MiB/staged and read32MiB/encoded HTTP32MiB need independent profile qualification. Legal projection overflow is ResourceExhausted, never DataLoss. Unknown original request and timestamp import remain unresolved.",
         "accepted": false
       }
     ]

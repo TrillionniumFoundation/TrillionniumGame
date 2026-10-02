@@ -155,13 +155,21 @@ fn authorize_write(
     key: &StorageObjectKey,
     existing: Option<&StorageObject>,
 ) -> Result<(), DomainError> {
+    authorize_write_permission(actor, key, existing.map(|object| object.write_permission))
+}
+
+fn authorize_write_permission(
+    actor: Actor,
+    key: &StorageObjectKey,
+    existing: Option<WritePermission>,
+) -> Result<(), DomainError> {
     match actor {
         Actor::Server => Ok(()),
         Actor::User(user) => {
             if user.is_zero() || user != key.user_id() {
                 return Err(write_permission_error());
             }
-            if existing.is_some_and(|object| object.write_permission != WritePermission::Owner) {
+            if existing.is_some_and(|permission| permission != WritePermission::Owner) {
                 return Err(write_permission_error());
             }
             Ok(())

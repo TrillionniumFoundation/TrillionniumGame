@@ -1,7 +1,7 @@
 {
   "schema": "trillionnium.storage-core-status.v2",
   "project_id": "trillionnium-game",
-  "stage": "storage-public-version-source-candidate",
+  "stage": "storage-native-jsonb-projection-source-candidate",
   "baseline": {
     "repository": "heroiclabs/nakama",
     "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
@@ -19,7 +19,11 @@
     "conditional delete by original ExpectedVersion token",
     "public-version collision or integrity mismatch fails as data loss",
     "canonical server HTTP write/delete source adapter validates JSON-object strings before repository mutation",
-    "insert-only conflicts ignore an existing row write ACL after actor-owner binding; blind/exact writes retain permission-first rejection"
+    "insert-only conflicts ignore an existing row write ACL after actor-owner binding; blind/exact writes retain permission-first rejection",
+    "schema3 native JSONB value authority with independent opaque PublicVersion, checked known request witness and unknown source-manifest provenance",
+    "native projection uses explicit TEXT-to-JSONB casts and actual RETURNING; read/list preserve native text and historical scalar/array/null",
+    "request1MiB, native16MiB, staged/read32MiB and actual encoded HTTP32MiB candidate budgets; lawful projection overflow is ResourceExhausted",
+    "typed immutable third migration with global preflight, PostgreSQL atomic conversion and CockroachDB bounded resumable conversion; genuine prior-v2 apply provenance retained"
   ],
   "not_verified": [
     "exact API validation that value is a JSON object",
@@ -36,7 +40,10 @@
     "Opaque exact input conditions now retain their original strings through HTTP, core and repository evaluation without MD5 parsing or a 32-character cap. Historical opaque stored versions, native SQL/NUL behavior and exact gateway/error differential remain unqualified.",
     "Blind writes with unchanged value/version and ACL preserve database timestamps; exact upstream differential and independent acceptance remain open.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
-    "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance."
+    "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
+    "Schema3 source is under exact-source compilation/live validation. Native PostgreSQL/CockroachDB behavior, interrupted-upgrade recovery, NUL condition/error precedence and all resource exceptions still require current native packets, immutable Nakama differential and independent review.",
+    "Source-manifest presence does not prove a source-bound Nakama export/import; original request and original timestamp custody remain unfinished. All full replacement/compatibility/production claims remain false.",
+    "Native JSONB casts/text rendering occur before output lengths are observed. The 16MiB projection guard and 32MiB application guards do not hard-bound database backend materialization memory; database-side resource containment remains unqualified."
   ],
   "gap_ids": [
     "GAP-P1-STORAGE-001"
@@ -69,5 +76,16 @@
     "contract": "contracts/storage/nakama-http-storage-v1.json",
     "accepted": false,
     "compatibility_credit": false
+  },
+  "storage_native_jsonb_source_candidate": {
+    "schema_version": 3,
+    "storage_writer_epoch": 3,
+    "request_bytes": 1048576,
+    "native_value_bytes": 16777216,
+    "staged_or_read_bytes": 33554432,
+    "encoded_http_response_bytes": 33554432,
+    "accepted": false,
+    "compatibility_credit": false,
+    "native_oracle_qualified": false
   }
 }

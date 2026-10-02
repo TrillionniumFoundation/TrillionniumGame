@@ -396,8 +396,8 @@ explicit writer epoch and half-open range in the append-only action inventory.
 Historical v1 and v2 digests remain distinct and immutable; unknown revisions
 are rejected. Publication compares all previous metadata fields with NULL-safe
 predicates, preserves foundation provenance and counts the revisions actually
-published. A historical digest does not grant current serve readiness. The engine still supports only the locked two-file v1-to-v2 chain.
-This registry preparation does not implement schema v3, native JSONB storage or
-historical data import, and does not make an older revision ready to serve.
+published. A historical digest does not grant current serve readiness. The engine supports the locked three-file v1-to-v2-to-v3 chain and typed bounded native JSONB conversion. Historical Nakama import remains separate work, and an older revision is not ready to serve.
 
 Backup/restore and Cockroach retry CI retain actual execution packets through the repository's local upload action. Packets bind the source commit/tree, workflow/run/attempt/job/profile, complete profile SQL chain and real schema reports; retry captures its fresh and read-only reports before deleting its owned test database. Shared archive checks enforce 512 retained entries, 32 MiB payload and 2 MiB compressed/per-file diagnostic limits, then the workflow verifies the uploaded artifact ID, byte count and SHA. These bounded CI fixtures do not qualify production backup volume, multi-node recovery or independent acceptance.
+
+The storage v3 regression targets include `trnm-storage-core` projected model tests, `trnm-persistence-pg --test storage_jsonb`, existing authority/timestamp fixtures, the six isolated schema lifecycle tests and the canonical application fixture. The model's default projector is explicitly identity bytes; only actual native profile runs establish JSONB projection. Preserve existing execution markers and condition matrices, then require the independent `storage_jsonb_v3_live_executed` application marker. All three profile SQL files, exact native schema reports and actual prior-v2 provenance belong in source/prospective, backup, restore, retry and producer archive identity checks.

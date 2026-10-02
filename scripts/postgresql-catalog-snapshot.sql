@@ -10,7 +10,7 @@ WHERE table_schema = 'public'
   AND table_name LIKE 'trnm\_%' ESCAPE '\'
 UNION ALL
 SELECT 'constraint|' || c.conrelid::regclass::text || '|' || c.conname || '|' ||
-       c.contype || '|' || pg_get_constraintdef(c.oid, true)
+       c.contype::text || '|' || pg_get_constraintdef(c.oid, true)
 FROM pg_constraint AS c
 WHERE c.connamespace = 'public'::regnamespace
   AND c.conrelid::regclass::text LIKE 'trnm\_%' ESCAPE '\'

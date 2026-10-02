@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import re
 import sys
@@ -323,12 +324,105 @@ def validate_sql_abi() -> None:
     )
 
 
+def validate_schema_upgrade_fixtures(source: str, extension: str) -> None:
+    """Require the native fixture wiring; source presence proves no DB outcome."""
+    expected_tests = {
+        "authoritative_fresh_repeat_and_readonly_verification",
+        "authoritative_v1_preserves_history_and_observes_actual_legacy_writer_revocation",
+        "authoritative_populated_unbound_and_catalog_drift_fail_closed",
+        "authoritative_declared_partial_prefix_resumes_and_malformed_prefixes_reject",
+        "authoritative_existing_empty_v1_requires_a_real_unprivileged_writer_barrier",
+        "authoritative_inherited_storage_privileges_are_not_a_writer_barrier",
+    }
+    actual_tests = re.findall(r"#\[test\]\s*fn\s+(\w+)\s*\(", source)
+    require(len(actual_tests) == 6 and set(actual_tests) == expected_tests,
+            "six original native schema lifecycle tests must remain")
+    require("#[test]" not in extension, "schema scenario helpers must not change the six-test lane")
+    require('include!("schema_upgrade_parts/v3.rs")' in source,
+            "native v3 schema scenarios are not registered")
+    for field in ("schema_version", "storage_writer_epoch"):
+        require(re.search(r'assert_eq!\(identity\.' + field + r',\s*3\)', source) is not None,
+                f"native schema fixture must require current {field} 3")
+    for marker in ("schema_writer_destructive_barrier_executed",
+                   "schema_writer_set_only_barrier_executed", "schema_writer_admin_barrier_executed"):
+        require(marker in source, f"native writer barrier marker removed: {marker}")
+    families = {
+        "v3_preserves_native_legacy_shapes_and_v2_history": ("SHAPE", "shapes", 8),
+        "v3_illegal_legacy_preflight_cases": ("ILLEGAL", "illegal_legacy", 9),
+        "v3_ready_catalog_drift_cases": ("CATALOG_DRIFT", "catalog_drift", 6),
+        "v3_partial_prefix_and_real_backfill_resume": ("PARTIAL", "partial_resume", 3),
+        "v3_recorded_metadata_negative_cases": ("METADATA", "metadata_validation", 9),
+        "v3_unknown_opaque_native_history": ("OPAQUE", "opaque_history", 6),
+    }
+    for function, (constant, marker, count) in families.items():
+        require(re.search(r'\b' + function + r'\(&environment\)', source) is not None,
+                f"native v3 schema scenario family is not executed: {function}")
+        require(re.search(r'const V3_' + constant + r'_CASES:\s*usize\s*=\s*' + str(count) + r';', extension) is not None,
+                f"native v3 schema scenario count differs: {function}")
+        require(f"schema_v3_{marker}_executed profile={{}} extra_cases={{V3_{constant}_CASES}}" in extension,
+                f"profile-bound native v3 schema marker missing: {marker}")
+
+    def body(function: str) -> str:
+        match = re.search(r'\bfn\s+' + function + r'\([^)]*\)[^{]*\{', extension)
+        require(match is not None, f"native v3 fixture function missing: {function}")
+        end = re.search(r'\nfn\s+\w+\(', extension[match.end():])
+        return re.sub(r'\s+', '', extension[match.start():match.end() + end.start()] if end else extension[match.start():])
+
+    illegal = body("v3_illegal_legacy_preflight_cases")
+    for label in ("empty", "binary", "non_utf8", "malformed", "native_number_range",
+                  "wrong_raw_digest", "native_projection_budget", "infinity", "protobuf_range"):
+        require(f'"{label}"' in illegal, f"illegal legacy case missing: {label}")
+    require('letbefore=entire_database_snapshot(&mutinspector)' in illegal and
+            'assert_eq!(entire_database_snapshot(&mutinspector),before,' in illegal,
+            "illegal legacy preflight must compare entire database before and after real runner")
+    require('migrate_authoritative_schema(UPGRADE_SOURCE,23,Some(&legacy)).unwrap_err()' in illegal and
+            'rejected.code(),expected_code' in illegal and
+            'let expected_code = if label == \"native_projection_budget\"'.replace(' ', '') in illegal and
+            'StableCode::ResourceExhausted' in illegal and
+            '}else{StableCode::DataLoss}' in illegal and
+            'octet_length($1::TEXT::JSONB::TEXT)::BIGINT' in illegal and
+            'row.get::<_,i64>(0)>16*1024*1024' in illegal,
+            "illegal legacy must fail closed through the real migration runner")
+    partial = body("v3_partial_prefix_and_real_backfill_resume")
+    for marker in ('forearlyin[true,false]', 'fixture_stop_backfill',
+                   'rejected.reason(),"database_constraint_violation"',
+                   'assert_eq!(first,fixture.profile==DatabaseProfile::CockroachDb)',
+                   'assert_eq!(after,before)', 'assert_eq!(after.catalog,before.catalog)',
+                   'assert_eq!(after.constraints,before.constraints)',
+                   'DROP CONSTRAINT fixture_stop_backfill', 'assert_published_v3(&report,fixture.profile)'):
+        require(marker.replace(" ", "") in partial, f"real native backfill interruption/resume proof missing: {marker}")
+    metadata = body("v3_recorded_metadata_negative_cases")
+    for field in ("schema_version", "profile", "source_commit", "applied_at_ms", "chain_digest",
+                  "digest_algorithm", "storage_writer_epoch", "upgrade_source_commit", "v2_apply_source_commit"):
+        require(f'"{field}"' in metadata, f"persisted metadata invariant case missing: {field}")
+    require("not a concurrency proof" in extension,
+            "persisted-input fixtures must preserve the unverified concurrent CAS boundary")
+    for profile in ("postgresql", "cockroachdb"):
+        for file in ("0002_storage_timestamps_up.sql", "0003_storage_jsonb_up.sql"):
+            require(f"migrations/{profile}/{file}" in extension,
+                    f"historical/current profile fixture source missing: {profile}/{file}")
+    digest_body = body("historical_v2_digest")
+    lock = load_json(ROOT / "migrations/MIGRATION_CHAIN.lock.json")
+    for profile in ("postgresql", "cockroachdb"):
+        entries = lock["profiles"][profile]["ordered_files"][:2]
+        digest = hashlib.sha256()
+        for index, row in enumerate(entries):
+            digest.update(index.to_bytes(8, "big"))
+            digest.update(row["path"].encode("utf-8") + b"\0")
+            digest.update(bytes.fromhex(row["git_blob_sha1"]))
+        require(digest.hexdigest() in digest_body, f"{profile}: fixture historical v2 chain digest is stale")
+
+
 def main() -> int:
     try:
         digests = validate_authority()
         validate_quarantine()
         scan_forbidden_consumers()
         validate_sql_abi()
+        validate_schema_upgrade_fixtures(
+            (ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade.rs").read_text(encoding="utf-8"),
+            (ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade_parts/v3.rs").read_text(encoding="utf-8"),
+        )
     except (ValidationError, OSError) as exc:
         print(f"schema authority validation failed: {exc}", file=sys.stderr)
         return 1

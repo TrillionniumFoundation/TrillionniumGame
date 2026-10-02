@@ -93,9 +93,9 @@ fn run() -> Result<(), &'static str> {
     for byte in report.identity.chain_digest.get().as_bytes() {
         write!(digest, "{byte:02x}").expect("String write");
     }
-    println!("{{\"schema\":\"trillionnium.authoritative-schema-report.v1\",\"profile\":\"{}\",\"schema_version\":{},\"chain_digest\":\"{}\",\"digest_algorithm\":\"{}\",\"storage_writer_epoch\":{},\"source_commit\":\"{}\",\"upgrade_source_commit\":\"{}\",\"migration_applied\":{},\"table_count\":{},\"applied_steps\":{},\"compatibility_credit\":false}}",
+    println!("{{\"schema\":\"trillionnium.authoritative-schema-report.v1\",\"profile\":\"{}\",\"schema_version\":{},\"chain_digest\":\"{}\",\"digest_algorithm\":\"{}\",\"storage_writer_epoch\":{},\"source_commit\":\"{}\",\"upgrade_source_commit\":\"{}\",\"v2_apply_source_commit\":\"{}\",\"migration_applied\":{},\"table_count\":{},\"applied_steps\":{},\"compatibility_credit\":false}}",
         report.identity.profile.metadata_value(), report.identity.schema_version, digest, report.identity.digest_algorithm,
-        report.identity.storage_writer_epoch, report.identity.source_commit, report.identity.upgrade_source_commit,
+        report.identity.storage_writer_epoch, report.identity.source_commit, report.identity.upgrade_source_commit, report.identity.v2_apply_source_commit,
         report.migration_applied, report.table_count, report.applied_steps);
     Ok(())
 }

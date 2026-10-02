@@ -47,38 +47,29 @@ fn validate_actor_and_owner(actor: Actor, owner: Option<UserId>) -> Result<(), D
 /// PostgreSQL uses `pg_catalog.convert_to(..., 'UTF8')`. Ambient locale or collation is
 /// therefore not authoritative for collection identity, page boundaries, or
 /// cursor continuation.
-fn storage_list_query(profile: DatabaseProfile) -> &'static str {
-    match profile {
-        DatabaseProfile::PostgreSql => {
-            "SELECT object_key, user_id, value_bytes, version_digest, \
-                    read_permission, write_permission \
-             FROM public.trnm_storage_objects \
-             WHERE pg_catalog.convert_to(collection, 'UTF8') = pg_catalog.convert_to($1, 'UTF8') \
-               AND ($2::bytea IS NULL OR user_id = $2) \
-               AND (pg_catalog.convert_to(object_key, 'UTF8') > pg_catalog.convert_to($3, 'UTF8') \
-                    OR (pg_catalog.convert_to(object_key, 'UTF8') = pg_catalog.convert_to($3, 'UTF8') \
-                        AND user_id > $4)) \
-               AND ($5::bytea IS NULL OR read_permission = 2 \
-                    OR (user_id = $5 AND read_permission = 1)) \
-             ORDER BY pg_catalog.convert_to(object_key, 'UTF8') ASC, user_id ASC \
-             LIMIT $6"
-        }
-        DatabaseProfile::CockroachDb => {
-            "SELECT object_key, user_id, value_bytes, version_digest, \
-                    read_permission, write_permission \
-             FROM public.trnm_storage_objects \
-             WHERE collection::BYTES = $1::STRING::BYTES \
-               AND ($2::bytea IS NULL OR user_id = $2) \
-               AND (object_key::BYTES > $3::STRING::BYTES \
-                    OR (object_key::BYTES = $3::STRING::BYTES AND user_id > $4)) \
-               AND ($5::bytea IS NULL OR read_permission = 2 \
-                    OR (user_id = $5 AND read_permission = 1)) \
-             ORDER BY object_key::BYTES ASC, user_id ASC \
-             LIMIT $6"
-        }
-    }
+fn storage_list_query(profile: DatabaseProfile) -> String {
+    let (predicate, ordering) = match profile {
+        DatabaseProfile::PostgreSql => (
+            "pg_catalog.convert_to(collection, 'UTF8') = pg_catalog.convert_to($1, 'UTF8') \
+             AND ($2::bytea IS NULL OR user_id = $2) \
+             AND (pg_catalog.convert_to(object_key, 'UTF8') > pg_catalog.convert_to($3, 'UTF8') \
+                  OR (pg_catalog.convert_to(object_key, 'UTF8') = pg_catalog.convert_to($3, 'UTF8') AND user_id > $4)) \
+             AND ($5::bytea IS NULL OR read_permission = 2 OR (user_id = $5 AND read_permission = 1))",
+            "pg_catalog.convert_to(object_key, 'UTF8') ASC, user_id ASC",
+        ),
+        DatabaseProfile::CockroachDb => (
+            "collection::BYTES = $1::STRING::BYTES \
+             AND ($2::bytea IS NULL OR user_id = $2) \
+             AND (object_key::BYTES > $3::STRING::BYTES \
+                  OR (object_key::BYTES = $3::STRING::BYTES AND user_id > $4)) \
+             AND ($5::bytea IS NULL OR read_permission = 2 OR (user_id = $5 AND read_permission = 1))",
+            "object_key::BYTES ASC, user_id ASC",
+        ),
+    };
+    storage_paged_query(profile, predicate, ordering, 6)
 }
 
+#[cfg(test)]
 fn finish_storage_page(
     mut objects: Vec<StorageObject>,
     actor: Actor,
@@ -89,6 +80,15 @@ fn finish_storage_page(
     if has_more {
         objects.truncate(limit);
     }
+    finish_visible_storage_page(objects, actor, owner, has_more)
+}
+
+fn finish_visible_storage_page(
+    objects: Vec<StorageObject>,
+    actor: Actor,
+    owner: Option<UserId>,
+    has_more: bool,
+) -> StorageListPage {
     let next = has_more.then(|| {
         (
             actor,
@@ -127,37 +127,34 @@ fn validate_client_list_request(
 
 // These queries intentionally use SQL text ordering, as the pinned Nakama
 // client-list projection does. The existing typed list retains byte ordering.
-fn storage_client_list_public_query() -> &'static str {
-    "SELECT object_key, user_id, value_bytes, version_digest, \
-            read_permission, write_permission, create_time, update_time \
-     FROM public.trnm_storage_objects \
-     WHERE collection = $1 AND read_permission = 2 \
-       AND ($2::TEXT IS NULL \
-            OR (collection, read_permission, object_key, user_id) > ($1, 2, $2, $3)) \
-     ORDER BY read_permission ASC, object_key ASC, user_id ASC \
-     LIMIT $4"
+fn storage_client_list_public_query(profile: DatabaseProfile) -> String {
+    storage_paged_query(
+        profile,
+        "collection = $1 AND read_permission = 2 \
+         AND ($2::TEXT IS NULL OR (collection, read_permission, object_key, user_id) > ($1, 2, $2, $3))",
+        "read_permission ASC, object_key ASC, user_id ASC",
+        4,
+    )
 }
 
-fn storage_client_list_own_query() -> &'static str {
-    "SELECT object_key, user_id, value_bytes, version_digest, \
-            read_permission, write_permission, create_time, update_time \
-     FROM public.trnm_storage_objects \
-     WHERE collection = $1 AND user_id = $2 AND read_permission >= 1 \
-       AND ($3::TEXT IS NULL \
-            OR (collection, user_id, read_permission, object_key) > ($1, $2, $4::INT4, $3)) \
-     ORDER BY read_permission ASC, object_key ASC \
-     LIMIT $5"
+fn storage_client_list_own_query(profile: DatabaseProfile) -> String {
+    storage_paged_query(
+        profile,
+        "collection = $1 AND user_id = $2 AND read_permission >= 1 \
+         AND ($3::TEXT IS NULL OR (collection, user_id, read_permission, object_key) > ($1, $2, $4::INT4, $3))",
+        "read_permission ASC, object_key ASC",
+        5,
+    )
 }
 
-fn storage_client_list_foreign_query() -> &'static str {
-    "SELECT object_key, user_id, value_bytes, version_digest, \
-            read_permission, write_permission, create_time, update_time \
-     FROM public.trnm_storage_objects \
-     WHERE collection = $1 AND user_id = $2 AND read_permission = 2 \
-       AND ($3::TEXT IS NULL \
-            OR (collection, read_permission, user_id, object_key) > ($1, 2, $2, $3)) \
-     ORDER BY object_key ASC \
-     LIMIT $4"
+fn storage_client_list_foreign_query(profile: DatabaseProfile) -> String {
+    storage_paged_query(
+        profile,
+        "collection = $1 AND user_id = $2 AND read_permission = 2 \
+         AND ($3::TEXT IS NULL OR (collection, read_permission, user_id, object_key) > ($1, 2, $2, $3))",
+        "object_key ASC",
+        4,
+    )
 }
 
 fn finish_stored_client_storage_page(

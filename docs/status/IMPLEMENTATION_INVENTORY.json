@@ -191,19 +191,31 @@
         "W4"
       ],
       "status": "public-version-source-candidate",
+      "source_files": [
+        "crates/trnm-storage-core/src/lib.rs",
+        "crates/trnm-storage-core/src/projection.rs",
+        "crates/trnm-storage-core/src/projection_tests.rs"
+      ],
+      "auxiliary_source_files": [
+        "crates/trnm-storage-core/src/bin/trnm-storage-version.rs"
+      ],
       "implemented": [
         "batch atomicity model",
         "ACL model",
         "empty/star/exact optimistic concurrency",
         "server-owned objects",
-        "public ContentVersion derived as lowercase MD5 hex of exact value bytes",
-        "separate internal IntegrityDigest type",
+        "generated ContentVersion derived as lowercase MD5 hex of exact write-request bytes",
+        "opaque persisted PublicVersion with a 32 Unicode-character bound and independent raw ExpectedVersion conditions",
+        "internal projection SHA-256 and checked private request collision witness; unknown history remains unwitnessed",
+        "identity default model and an invoked adapter-supplied projection seam with atomic batch staging",
+        "independent 1 MiB request and 16 MiB projection budgets",
+        "11 additional Rust projection regressions inventoried as source, without execution or compatibility credit",
         "pinned version vectors"
       ],
       "missing": [
-        "JSON-object API validation",
-        "database/index integration",
-        "cursor behavior",
+        "native JSONB renderer is outside this pure core; profile adapter and schema cutover need exact-head qualification",
+        "official API and SQL integration acceptance, indexes and runtime hooks",
+        "complete original cursor and concurrent-page differential",
         "wire/database differential",
         "independent review"
       ],
@@ -347,7 +359,7 @@
       ],
       "evidence_ids": [],
       "claim_credit": false,
-      "storage_http_mutations": {"contract":"contracts/storage/nakama-http-storage-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A","TG-D1-46DC42DFD49DB606"],"accepted":false,"gap_closed":false}
+      "storage_http_mutations": {"contract":"contracts/storage/nakama-http-storage-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","projection_tests":"crates/trnm-server/src/runtime/storage_api_projection_tests.rs","live_projection_fixture":"crates/trnm-server/src/runtime/storage_api_v3_live.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A","TG-D1-46DC42DFD49DB606"],"accepted":false,"gap_closed":false}
     },
     {
       "id": "COMP-CANONICAL",

@@ -34,6 +34,24 @@ class DatabaseQualificationPaths(unittest.TestCase):
         self.assertIn('CommitOutcome::Duplicate(applied)', implementation)
         self.assertIn('retry_exhausted', implementation)
 
+    def test_both_retry_processes_emit_actual_v3_provenance_and_table_counts(self):
+        for path in ('crates/trnm-persistence-pg/src/bin/trnm_server/retry_atomicity.rs',
+                     'crates/trnm-server/src/runtime/retry_atomicity.rs'):
+            implementation = self.text(path)
+            with self.subTest(path=path):
+                self.assertIn('emit_schema_report("retry_schema_apply_report", &report)', implementation)
+                self.assertIn('"retry_schema_verify_report"', implementation)
+                self.assertIn('.verify_authoritative_schema()', implementation)
+                self.assertIn('report.identity.v2_apply_source_commit', implementation)
+                self.assertIn('SELECT count(*)::BIGINT FROM information_schema.tables', implementation)
+                self.assertNotIn('table_count: 10', implementation)
+                self.assertEqual(implementation.count('println!("assertion='), 7)
+        workflow = self.text('.github/workflows/cockroach-serialization-retry.yml')
+        for marker in ("schemas.validate_identity(applied", "schemas.validate_identity(verified",
+                       "identity['authoritative_migration_file_count'] == 3", "v2_apply_source_commit",
+                       "files['migration-chain.lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()"):
+            self.assertIn(marker, workflow)
+
     def test_live_jobs_require_new_assertions(self):
         tls = self.text('.github/workflows/pg-tls-rotation.yml')
         crdb = self.text('.github/workflows/cockroach-serialization-retry.yml')

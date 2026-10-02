@@ -88,7 +88,9 @@
     "storage_http_read_source_candidate": true,
     "storage_http_list_source_candidate": true,
     "storage_client_list_sql_projection_source_candidate": true,
-    "storage_unsigned_client_list_offset_source_candidate": true
+    "storage_unsigned_client_list_offset_source_candidate": true,
+    "storage_jsonb_v3_source_candidate": true,
+    "storage_public_version_separated_from_request_digest": true
   },
   "scope": {
     "baseline": "heroiclabs/nakama@v3.40.0",
@@ -145,5 +147,24 @@
     "nakama_client": "Separate unsigned original gob offset; current authenticated principal independently selects SQL ACL and text ordering.",
     "accepted": false,
     "compatibility_credit": false
+  },
+  "storage_jsonb_v3_source_candidate": {
+    "schema_version": 3,
+    "storage_writer_epoch": 3,
+    "status": "connected-source-candidate",
+    "native_value_authority": "value_jsonb; explicit UTF8 decoding for byte witnesses on both profiles",
+    "public_version": "independent native VARCHAR(32), generated write ACK MD5 of exact request bytes",
+    "migration": "immutable foundation and timestamp SQL plus reviewed typed 0003; preserve actual v2 publisher and historical times; metadata published last",
+    "remaining": [
+      "source-bound lossless Nakama snapshot/import and source custody",
+      "source-legal empty keys and wider ACL history",
+      "same-key staged batches",
+      "database backend JSONB cast/render memory containment",
+      "immutable Nakama differential and conflict-free independent acceptance"
+    ],
+    "accepted": false,
+    "gap_closed": false,
+    "production_ready": false,
+    "full_replacement": false
   }
 }

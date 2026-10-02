@@ -8,7 +8,7 @@ fn decode_stored_storage_object(
 ) -> Result<StoredStorageObject, DomainError> {
     Ok(StoredStorageObject {
         object: decode_storage_object(key, row)?,
-        times: decode_storage_times(row, 4)?,
+        times: decode_storage_times(row, 12)?,
     })
 }
 
@@ -58,7 +58,7 @@ fn decode_nakama_listed_storage_object_with_metadata(
 ) -> Result<StoredStorageObject, DomainError> {
     Ok(StoredStorageObject {
         object: decode_nakama_listed_storage_object(collection, row)?,
-        times: decode_storage_times(row, 6)?,
+        times: decode_storage_times(row, 14)?,
     })
 }
 
@@ -67,21 +67,21 @@ fn decode_storage_object_at(
     row: &Row,
     offset: usize,
 ) -> Result<StorageObject, DomainError> {
-    let value: Vec<u8> = row
-        .try_get(offset)
-        .map_err(|_| data_loss("invalid_storage_value_bytes"))?;
-    if value.len() > MAX_VALUE_BYTES {
-        return Err(data_loss("invalid_storage_value_bytes"));
-    }
+    let value = decode_native_value(row, offset)?;
+    let version = PublicVersion::new(
+        row.try_get::<_, String>(offset + 2)
+            .map_err(|_| data_loss("invalid_storage_public_version"))?,
+    )
+    .map_err(|_| data_loss("invalid_storage_public_version"))?;
     let integrity_digest = IntegrityDigest::new(decode_digest(
-        row.try_get(offset + 1)
+        row.try_get(offset + 3)
             .map_err(|_| data_loss("invalid_storage_integrity_digest"))?,
         "invalid_storage_integrity_digest",
     )?)
     .map_err(|_| data_loss("invalid_storage_integrity_digest"))?;
     verify_storage_integrity(&value, integrity_digest)?;
     let read_permission = match row
-        .try_get::<_, i16>(offset + 2)
+        .try_get::<_, i16>(offset + 4)
         .map_err(|_| data_loss("invalid_storage_read_permission"))?
     {
         0 => ReadPermission::None,
@@ -90,21 +90,87 @@ fn decode_storage_object_at(
         _ => return Err(data_loss("invalid_storage_read_permission")),
     };
     let write_permission = match row
-        .try_get::<_, i16>(offset + 3)
+        .try_get::<_, i16>(offset + 5)
         .map_err(|_| data_loss("invalid_storage_write_permission"))?
     {
         0 => WritePermission::None,
         1 => WritePermission::Owner,
         _ => return Err(data_loss("invalid_storage_write_permission")),
     };
-    Ok(StorageObject {
+    let origin: String = row
+        .try_get(offset + 6)
+        .map_err(|_| data_loss("invalid_storage_value_origin"))?;
+    let raw: Option<Vec<u8>> = row
+        .try_get(offset + 7)
+        .map_err(|_| data_loss("invalid_storage_request_witness"))?;
+    let raw_length: Option<i64> = row
+        .try_get(offset + 8)
+        .map_err(|_| data_loss("invalid_storage_request_witness"))?;
+    let raw_digest: Option<Vec<u8>> = row
+        .try_get(offset + 9)
+        .map_err(|_| data_loss("invalid_storage_request_witness"))?;
+    let manifest: Option<Vec<u8>> = row
+        .try_get(offset + 10)
+        .map_err(|_| data_loss("invalid_storage_source_manifest"))?;
+    let raw_projection: Option<String> = row
+        .try_get(offset + 11)
+        .map_err(|_| data_loss("invalid_storage_request_witness"))?;
+    let collision_witness = match origin.as_str() {
+        "legacy-rust-v2-bytes" | "write-request-bytes" => {
+            let length = raw_length
+                .and_then(|length| usize::try_from(length).ok())
+                .ok_or_else(|| data_loss("invalid_storage_request_witness"))?;
+            if length > MAX_VALUE_BYTES {
+                return Err(storage_resource_exhausted(
+                    "storage_request_witness_budget_exceeded",
+                ));
+            }
+            let raw = raw.ok_or_else(|| data_loss("invalid_storage_request_witness"))?;
+            if length != raw.len() || manifest.is_some() {
+                return Err(data_loss("invalid_storage_request_witness"));
+            }
+            let digest = IntegrityDigest::new(decode_digest(
+                raw_digest.ok_or_else(|| data_loss("invalid_storage_request_witness"))?,
+                "invalid_storage_request_witness",
+            )?)
+            .map_err(|_| data_loss("invalid_storage_request_witness"))?;
+            if !digest.matches_value(&raw)
+                || raw_projection.as_ref().map(String::as_bytes) != Some(value.as_slice())
+            {
+                return Err(data_loss("storage_request_witness_mismatch"));
+            }
+            let witness = CollisionWitness::from_request(&raw, &value)?;
+            witness.validate_projection(&version, &value)?;
+            Some(witness)
+        }
+        "nakama-export-unknown-request" => {
+            if raw.is_some()
+                || raw_length.is_some()
+                || raw_digest.is_some()
+                || raw_projection.is_some()
+            {
+                return Err(data_loss("invalid_storage_unknown_request_provenance"));
+            }
+            IntegrityDigest::new(decode_digest(
+                manifest.ok_or_else(|| data_loss("invalid_storage_source_manifest"))?,
+                "invalid_storage_source_manifest",
+            )?)
+            .map_err(|_| data_loss("invalid_storage_source_manifest"))?;
+            None
+        }
+        _ => return Err(data_loss("invalid_storage_value_origin")),
+    };
+    let object = StorageObject {
         key,
-        version: ContentVersion::from_value(&value),
+        version,
         value,
         integrity_digest,
+        collision_witness,
         read_permission,
         write_permission,
-    })
+    };
+    object.verify_integrity()?;
+    Ok(object)
 }
 
 fn verify_storage_integrity(value: &[u8], stored: IntegrityDigest) -> Result<(), DomainError> {

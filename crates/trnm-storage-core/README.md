@@ -14,7 +14,7 @@ The module's current maturity is `public-version-source-candidate`. Promotion re
 
 ## Responsibilities
 
-Batch atomicity, ACL evaluation, server-owned objects, public content versions, internal integrity digests, and OCC conditions.
+Batch atomicity, ACL evaluation, server-owned objects, persisted public versions, generated request versions, projection integrity, checked request fingerprints, and OCC conditions.
 
 Non-goals: It does not own JSON HTTP validation, database indexes, query execution, cursor encoding, or wire adapters.
 
@@ -26,7 +26,9 @@ Dependency direction is reviewed as part of package authority. This module must 
 
 ## Public contracts
 
-For the pinned Nakama profile, public ContentVersion is lowercase MD5 over exact stored value bytes. Internal IntegrityDigest is a distinct SHA-256 strong type derived only by the storage boundary; write callers cannot inject it, and stored digests must verify against exact value bytes on readback.
+`ContentVersion` is the generated lowercase MD5 over exact write-request bytes and remains a `Copy` type. `PublicVersion` is the separate persisted string, checked only for at most 32 Unicode characters. Empty, star, nonhex, uppercase and control strings are legal at this pure boundary; a database adapter separately checks its native text-input rules. `ExpectedVersion` retains the complete incoming condition without normalization or the stored column's length cap. Mutation receipts retain `Some(empty)` for an existing historical version; successful write acknowledgements carry the generated `ContentVersion`.
+
+`StorageObject.value` holds supplied projection bytes and `IntegrityDigest` verifies their SHA-256. A known `CollisionWitness` has private checked fields for request SHA, request byte length, generated request version and projection SHA. It validates the public-version and projection binding and compares incoming request fingerprints for collision hardening. An unknown witness is legal and cannot be fabricated from the rendered value. Neither SHA nor a witness authenticates a source against an actor able to rewrite every field; source-import provenance belongs to the persistence/import boundary.
 
 Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
 
@@ -41,11 +43,17 @@ index, migration or SDK compatibility claim.
 
 Blind, create-only, and exact-version writes are distinct. Batch failure is atomic; ACL and version results must be deterministic.
 
+An authorized blind write whose generated token and ACL equal the existing row returns a receipt while preserving its projection and witness. A known request-fingerprint mismatch rejects as DataLoss. Unknown request provenance permits that no-op even when the historical projection differs from the incoming request. Exact writes use the mutation path even for identical request bytes. Native text is never compared to raw request bytes as evidence of an MD5 collision.
+
+The default `StorageState::apply_batch` is explicitly an identity/raw pure model, including its existing binary fixtures; it does not render JSONB. `apply_batch_projected` executes a bounded, side-effect-free supplied projection closure after authorization, OCC, integrity and no-op checks. Projection failure rolls back this model's entire staged batch. The seam supplies no native renderer or database qualification and cannot roll back a caller's external side effects.
+
+Request values retain the candidate 1 MiB bound. Projection bytes have a separate 16 MiB bound; a legal projection beyond that budget returns ResourceExhausted rather than DataLoss. Adapters also own total request, response, transaction and native rendering budgets. These restrictions require explicit profile qualification rather than a universal Nakama size claim.
+
 All inputs, loops, retries, batches, queues, allocations, and shutdown paths are bounded. Unexpected states fail closed. Duplicate, stale, timeout, cancellation, restart, and partial-failure behavior must be represented in deterministic tests where applicable.
 
 ## Security and privacy
 
-MD5 is used only for compatibility and receives no integrity-authentication credit. Canonical SHA-256 detects stored-byte corruption but is not a MAC or authenticity proof. Payload, ACL, and identifier bounds are mandatory.
+MD5 is used only for request-version compatibility and receives no integrity-authentication credit. SHA-256 detects projection/request corruption but is not a MAC or authenticity proof. Payload, ACL, and identifier bounds are mandatory.
 
 Secrets, raw tokens, user payloads, receipts, and provider credentials are not logged or used as metric labels. Any new cryptographic, parser, unsafe, native, or externally reachable boundary requires the appropriate threat, fuzz, and independent review.
 
