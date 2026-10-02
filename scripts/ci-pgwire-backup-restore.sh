@@ -278,6 +278,8 @@ orders=(
   family_id
   'family_id,token_id'
   'collection,object_key,user_id'
+  singleton
+  'manifest_digest,page_index'
 )
 
 seed_rust_contracts() {

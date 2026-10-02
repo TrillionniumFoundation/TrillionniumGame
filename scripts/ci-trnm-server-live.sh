@@ -20,6 +20,9 @@ evidence_root=${TRNM_EVIDENCE_ROOT:-run/server-live}
 evidence="$evidence_root/$profile"
 rm -rf "$evidence"
 mkdir -p "$evidence"
+# Cargo runs integration tests from the crate directory. Retain the original
+# archive paths while passing absolute directories across that cwd boundary.
+evidence_absolute=$(cd "$evidence" && pwd -P)
 
 server_port=${TRNM_SERVER_PORT:-17350}
 admin_token='trnm_server_live_admin_token_0123456789abcdef'
@@ -373,10 +376,10 @@ TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
 TRNM_DATABASE_PROFILE="$profile" \
 TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \
-TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence/storage-source-upstream" \
+TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence_absolute/storage-source-upstream" \
 TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" \
 TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" \
-TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence/storage-v4-import-packets" \
+TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence_absolute/storage-v4-import-packets" \
   cargo test -p trnm-persistence-pg --locked --test storage_import_v4 \
     storage_v4_source_export_custody_resume_finish_and_tamper_are_native \
     -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/storage-v4-import.log"

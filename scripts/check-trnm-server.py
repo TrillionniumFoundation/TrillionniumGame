@@ -367,7 +367,10 @@ def validate_storage_live_harness(source: str) -> None:
         return commands.index(command)
 
     once("set -euo pipefail")
+    absolute_directory = once('evidence_absolute=$(cd "$evidence" && pwd -P)')
     migration = once('"$binary" migrate > "$evidence/migrate.log" 2>&1')
+    if not absolute_directory < migration:
+        fail("storage import directories must be absolute before native execution")
     prefix = (
         'CARGO_TERM_COLOR=never TRNM_REQUIRE_LIVE_DATABASE=1 '
         'TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" '
@@ -432,10 +435,10 @@ def validate_storage_live_harness(source: str) -> None:
             previous_end = archive
             environment += (
                 'TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" '
-                'TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence/storage-source-upstream" '
+                'TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence_absolute/storage-source-upstream" '
                 'TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" '
                 'TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" '
-                'TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence/storage-v4-import-packets" '
+                'TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence_absolute/storage-v4-import-packets" '
             )
         start = once(
             environment + cargo + ' -- --exact --nocapture --test-threads=1 2>&1 | '

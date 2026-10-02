@@ -120,10 +120,10 @@ python3 scripts/check-trnm-server.py \\
   > "$evidence/storage-v4-source-archive.log"
 '''
 IMPORT_ENVIRONMENT = ENVIRONMENT + '''TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \\
-TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence/storage-source-upstream" \\
+TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence_absolute/storage-source-upstream" \\
 TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" \\
 TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" \\
-TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence/storage-v4-import-packets" \\
+TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence_absolute/storage-v4-import-packets" \\
 '''
 V4_IMPORT = lane(
     "trnm-persistence-pg", "--test storage_import_v4",
@@ -177,6 +177,7 @@ fi
 
 PREFIX = '''#!/usr/bin/env bash
 set -euo pipefail
+evidence_absolute=$(cd "$evidence" && pwd -P)
 "$binary" migrate > "$evidence/migrate.log" 2>&1
 '''
 # The actual archive block is also executed against temporary files below.
@@ -393,6 +394,8 @@ class StorageListLiveContractTests(unittest.TestCase):
 
     def test_v4_import_requires_whole_source_materialization_and_exact_live_execution(self) -> None:
         for changed in (
+            FIXTURE.replace('evidence_absolute=$(cd "$evidence" && pwd -P)\n', ""),
+            FIXTURE.replace('$evidence_absolute/storage-', '$evidence/storage-'),
             FIXTURE.replace(IMPORT_ANNEX, ""), FIXTURE.replace(V4_IMPORT, ""),
             FIXTURE.replace(V4_IMPORT, V4_IMPORT + V4_IMPORT),
             FIXTURE.replace("--test storage_import_v4", "--test storage_permissions_v4"),
@@ -402,13 +405,72 @@ class StorageListLiveContractTests(unittest.TestCase):
             FIXTURE.replace('"storage_v4_import":true', '"storage_v4_import":false'),
             FIXTURE.replace('TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha"', 'TRNM_STORAGE_TEST_PRODUCER_COMMIT="$other_sha"'),
             FIXTURE.replace('TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree"', 'TRNM_STORAGE_TEST_PRODUCER_TREE="$other_tree"'),
-            FIXTURE.replace('TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence/storage-v4-import-packets"', 'TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$unretained"'),
+            FIXTURE.replace('TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence_absolute/storage-v4-import-packets"', 'TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$unretained"'),
         ):
             with self.subTest(changed=changed):
                 self.reject(changed)
 
 class ActualNativeLaneShellTests(unittest.TestCase):
     """Run production shell guards with mock Cargo logs, never a database."""
+
+    def test_import_directories_survive_cargo_crate_working_directory(self) -> None:
+        setup = ACTUAL_HARNESS[ACTUAL_HARNESS.index("evidence_root="):
+                               ACTUAL_HARNESS.index("server_port=")]
+        block = ACTUAL_HARNESS[ACTUAL_HARNESS.index('begin_stage storage-v4-import "'):
+                               ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            crate = root / "crates" / "mock-persistence"
+            crate.mkdir(parents=True)
+            probe = root / "probe.py"
+            probe.write_text('''import os
+from pathlib import Path
+source = Path(os.environ["TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY"])
+target = Path(os.environ["TRNM_STORAGE_IMPORT_EVIDENCE_ROOT"])
+assert source.is_absolute() and target.is_absolute()
+assert source.parent == target.parent == Path(os.environ["EXPECTED_EVIDENCE"])
+for name in ["initial-schema.sql", "core-storage.go", "LICENSE"]:
+    assert (source / name).read_bytes() == b"synthetic path-boundary fixture"
+target.mkdir()
+(target / "observed.txt").write_text("synthetic-only; no database credit")
+print("storage_v4_import_live_executed profile=postgresql")
+print("test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s")
+''')
+            bootstrap = '''set -euo pipefail
+profile=postgresql
+database_url=synthetic-database-configuration
+candidate_sha=1111111111111111111111111111111111111111
+candidate_tree=2222222222222222222222222222222222222222
+begin_stage() { return 0; }
+cargo() { (cd "$MOCK_CRATE"; python3 "$MOCK_PROBE"); }
+'''
+            materialize = '''mkdir -p "$evidence/storage-source-upstream"
+for member in initial-schema.sql core-storage.go LICENSE; do
+  printf 'synthetic path-boundary fixture' > "$evidence/storage-source-upstream/$member"
+done
+'''
+            for configured in ("run/evidence with spaces", str(root / "absolute evidence")):
+                expected = (root / configured / "postgresql").resolve()
+                env = {**os.environ, "TRNM_EVIDENCE_ROOT": configured,
+                       "MOCK_CRATE": str(crate), "MOCK_PROBE": str(probe),
+                       "EXPECTED_EVIDENCE": str(expected)}
+                with self.subTest(configured=configured):
+                    script = bootstrap + setup + materialize + block
+                    result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
+                                            text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertTrue((expected / "storage-v4-import-packets/observed.txt").is_file())
+                    self.assertFalse((crate / "run").exists())
+                    # Reproduce the original relative paths against the same
+                    # cwd transition, without changing archived file names.
+                    old = script.replace('$evidence_absolute/storage-', '$evidence/storage-')
+                    failure = subprocess.run(["bash", "-c", old], cwd=root, env=env,
+                                             text=True, capture_output=True, timeout=10)
+                    if not Path(configured).is_absolute():
+                        self.assertNotEqual(failure.returncode, 0)
+                        self.assertNotIn("storage_v4_import_live_executed", failure.stdout)
+                    else:
+                        self.assertEqual(failure.returncode, 0, failure.stdout + failure.stderr)
 
     def run_block(self, block: str, lines: list[str], status: int = 0) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as name:
@@ -417,6 +479,7 @@ class ActualNativeLaneShellTests(unittest.TestCase):
             bootstrap = '''set -euo pipefail
 profile=postgresql
 evidence=$MOCK_ROOT
+evidence_absolute=$MOCK_ROOT
 database_url=synthetic-database-configuration
 candidate_sha=1111111111111111111111111111111111111111
 candidate_tree=2222222222222222222222222222222222222222

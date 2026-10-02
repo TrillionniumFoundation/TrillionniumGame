@@ -232,7 +232,15 @@ python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identit
 
 sql_exec "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'trnm_%'" \
   | tr -d '[:space:]' >"$evidence/table-count.txt"
-test "$(cat "$evidence/table-count.txt")" = 10
+actual_table_count=$(cat "$evidence/table-count.txt")
+if [[ "$actual_table_count" != 12 ]]; then
+  if [[ "$actual_table_count" =~ ^[0-9]{1,20}$ ]]; then
+    printf 'PG-wire authoritative table count mismatch: expected=12 actual=%s\n' "$actual_table_count" >&2
+  else
+    echo 'PG-wire authoritative table count mismatch: expected=12 actual=invalid' >&2
+  fi
+  false
+fi
 
 cargo build --locked --package trnm-persistence-pg \
   --bin trnm-pg-command --bin trnm-pg-retry \

@@ -35,6 +35,72 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
         cls.images = json.loads((ROOT / "config/database-test-images.json").read_text())
         cls.workflow = (ROOT / ".github/workflows/database-backup-restore.yml").read_text()
 
+    def snapshot_shell(self, profile, declarations=None):
+        # Execute the producer's actual arrays and each actual snapshot body.
+        # Docker alone is mocked: this verifies shell expansion and complete
+        # deterministic SQL selection, not a native backup/restore result.
+        arrays = re.findall(r"^(?:tables|orders)=\(\n.*?^\)$", self.script,
+                            re.MULTILINE | re.DOTALL)
+        self.assertEqual(len(arrays), 2)
+        snapshots = re.findall(r"^  snapshot\(\) \{\n.*?^  \}$", self.script,
+                               re.MULTILINE | re.DOTALL)
+        self.assertEqual(len(snapshots), 2)
+        body = snapshots[0 if profile == "postgresql" else 1]
+        self.assertIn("psql" if profile == "postgresql" else "/cockroach/cockroach", body)
+        source = ("set -euo pipefail\n" + (declarations or "\n".join(arrays))
+                  + '\ncontainer=synthetic-backup-fixture\nqueries="$1"\n'
+                  + 'docker() { printf "%s\\n" "$*" >> "$queries"; }\n'
+                  + body + '\nsnapshot synthetic_database "$2"\n')
+        with tempfile.TemporaryDirectory() as directory:
+            queries = Path(directory) / "queries.log"
+            output = Path(directory) / "snapshot.csv"
+            result = subprocess.run(["bash", "-c", source, "backup-snapshot-test",
+                                     str(queries), str(output)], text=True,
+                                    capture_output=True, check=False, timeout=10)
+            return result, queries.read_text().splitlines(), output.read_text().splitlines()
+
+    def test_actual_profile_snapshots_cover_twelve_tables_with_native_key_orders(self):
+        expected = [
+            ("trnm_schema_metadata", "singleton"),
+            ("trnm_entity_heads", "entity_id"),
+            ("trnm_command_receipts", "entity_id,command_id"),
+            ("trnm_events", "entity_id,sequence"),
+            ("trnm_outbox", "intent_id"),
+            ("trnm_command_outbox", "entity_id,command_id,position"),
+            ("trnm_authority_leases", "entity_id"),
+            ("trnm_session_families", "family_id"),
+            ("trnm_refresh_tokens", "family_id,token_id"),
+            ("trnm_storage_objects", "collection,object_key,user_id"),
+            ("trnm_storage_import_jobs", "singleton"),
+            ("trnm_storage_import_pages", "manifest_digest,page_index"),
+        ]
+        self.assertEqual({table for table, _ in expected}, CHECKER.EXPECTED_TABLES)
+        for profile in ("postgresql", "cockroachdb"):
+            with self.subTest(profile=profile):
+                result, queries, headers = self.snapshot_shell(profile)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(headers, ["TABLE|" + table for table, _ in expected])
+                self.assertEqual(len(queries), 12)
+                parsed = [re.search(r"SELECT \* FROM ([a-z_]+) ORDER BY ([a-z_,]+)$",
+                                    line) for line in queries]
+                self.assertTrue(all(parsed))
+                self.assertEqual([match.groups() for match in parsed], expected)
+
+    def test_original_ten_order_array_fails_at_first_new_journal_for_both_profiles(self):
+        arrays = re.findall(r"^(?:tables|orders)=\(\n.*?^\)$", self.script,
+                            re.MULTILINE | re.DOTALL)
+        self.assertEqual(len(arrays), 2)
+        old_orders = arrays[1].replace("  singleton\n  'manifest_digest,page_index'\n", "")
+        self.assertNotEqual(old_orders, arrays[1])
+        for profile in ("postgresql", "cockroachdb"):
+            with self.subTest(profile=profile):
+                result, queries, headers = self.snapshot_shell(
+                    profile, arrays[0] + "\n" + old_orders)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unbound variable", result.stderr)
+                self.assertEqual(len(queries), 10)
+                self.assertEqual(headers[-1], "TABLE|trnm_storage_import_jobs")
+
     def shell_function(self, name):
         start = re.search(rf"^{name}\(\) \{{\n", self.script, re.MULTILINE)
         self.assertIsNotNone(start, f"missing shell function: {name}")
