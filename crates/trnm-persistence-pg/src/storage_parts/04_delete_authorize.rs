@@ -1,3 +1,27 @@
+// Only the explicit Nakama delete policy permits an authoritative missing-row
+// no-op. The typed mixed batch still rejects missing deletes as before.
+fn apply_nakama_delete(
+    transaction: &mut Transaction<'_>,
+    staged: &mut BTreeMap<StorageObjectKey, Option<StoredStorageObject>>,
+    actor: Actor,
+    operation: &DeleteOperation,
+) -> Result<StoredStorageMutationReceipt, DomainError> {
+    if actor == Actor::Server
+        && operation.expected_version.is_none()
+        && staged.get(&operation.key).is_some_and(Option::is_none)
+    {
+        return Ok(StoredStorageMutationReceipt {
+            receipt: MutationReceipt {
+                key: operation.key.clone(),
+                previous_version: None,
+                current_version: None,
+            },
+            times: StorageTimes::default(),
+        });
+    }
+    apply_delete(transaction, staged, actor, operation)
+}
+
 fn apply_delete(
     transaction: &mut Transaction<'_>,
     staged: &mut BTreeMap<StorageObjectKey, Option<StoredStorageObject>>,

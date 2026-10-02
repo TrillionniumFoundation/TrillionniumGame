@@ -144,7 +144,7 @@
     "version": "Write omitted/null/empty maps to any; star maps to must-not-exist; all other strings are original exact conditions. Delete omitted/null/empty has no condition; every nonempty string, including star, is an original exact condition. No MD5-format, case or 32-character input restriction; overall request budgets still apply."
   },
   "response_contract": {
-    "write": "Nonempty acks preserve request order and include collection,key,version,user_id. Version is generated from exact request bytes, never JSONB rendering; previous Some(empty) remains an existing object. Genuine database create_time/update_time use RFC3339 UTC 0/3/6/9 fractional digits. Unknown historical fields remain absent.",
+    "write": "Every write occurrence returns its own ACK in original request position after whole-batch commit. Nonempty acks include collection,key,version,user_id. Version is generated from exact request bytes, never JSONB rendering; previous Some(empty) remains an existing object. Genuine database create_time/update_time use RFC3339 UTC 0/3/6/9 fractional digits. Unknown historical fields remain absent.",
     "delete": "{}",
     "empty": "{}",
     "rejection": "storage-specific code 3 / HTTP 400 for OCC, write permission or delete notfound/version/permission rejection; internal repository details redacted",
@@ -180,7 +180,7 @@
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
     "Historical v1 rows have unknown original timestamps. An original-time import manifest or independently accepted unknown-history policy is required before replacement; no epoch or migration time is fabricated.",
     "List route/query/gob cursor and SQL client projection are bounded source candidates; exact gateway, gob, collation, pagination under concurrent changes and oracle/SDK qualification remain open. Search/index and Runtime before/after hooks remain unfinished.",
-    "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. The separate client-list request accepts empty/dot/control collection text up to 4096 bytes and decodes authoritative Unicode-character-bounded rows. Budgets and path/query restrictions still differ from upstream.",
+    "Homogeneous HTTP write/delete batches preserve repeated keys through a separate canonical-owner policy, with at most 100 occurrences. Internal heterogeneous batches and batch-read retain duplicate-key rejection; strict new-write key validation and broader upstream bounds remain unqualified. Client-list request budgets and stored Unicode row domains are separate.",
     "Opaque exact input strings and independently stored historical public tokens are represented at source. Native TEXT/JSONB NUL behavior is observed separately on each actual profile fixture; it is not immutable Nakama/gateway differential or acceptance. A synthetic unknown-request fixture manifest is not an implemented original Nakama export importer.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
@@ -188,7 +188,9 @@
     "Batch read uses bounded per-key statements in one readonly transaction, while upstream chooses a single query shape. Duplicate multiplicity, returned ordering and concurrency behavior require immutable differential.",
     "Quoted integer trailing-token forms such as permissionRead:\"1 true\" are rejected; the pinned decoder can consume the first number token. Exact malformed decoder parity remains open.",
     "Storage metadata source now records database transaction time independently from legacy caller-clock updated_at_ms. Full precision and no-op/update behavior still require immutable upstream differential.",
-    "Unsigned Nakama cursor offsets deliberately differ from the internal authenticated scope-bound cursor profile. Independent security/protocol review and immutable differential remain required; malformed gob and query errors are not globally qualified."
+    "Unsigned Nakama cursor offsets deliberately differ from the internal authenticated scope-bound cursor profile. Independent security/protocol review and immutable differential remain required; malformed gob and query errors are not globally qualified.",
+    "The bounded Go 1.26.5 ordinal sorter is translated from pinned BSD source. Raw Runtime owner-string representations, hook/index positional behavior, native conditional-SQL lock/error timing, ambiguous commit reconciliation and official SDK/immutable-oracle qualification remain open. No identity, ACL, occurrence, version, error or durable-effect difference is normalized.",
+    "Pinned Go write pgx.Batch can wait on a later locked key before returning an earlier write-permission rejection, while the Rust occurrence path rejects the earlier occurrence before reaching that key. Sequential delete has no all-key prelock. This write failure-timing difference remains open and cannot be normalized; target-native CI does not grant immutable-oracle or independent acceptance."
   ],
   "claims": {
     "compatibility_credit": false,
@@ -210,7 +212,10 @@
     "client_list_repository_test": "crates/trnm-persistence-pg/tests/authority_storage_parts/03_storage_list.rs::nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
     "client_list_execution_required": "The same live harness requires TRNM_REQUIRE_LIVE_DATABASE=1, one exact authority_storage repository test with zero failed/ignored, matching nakama_client_list_projection_executed profile marker, explicit skip rejection and a sealed nakama-client-list-projection.log. Source checks and local results do not admit exact-object live or independent evidence.",
     "jsonb_v3_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs::prove_storage_jsonb_v3_app",
-    "jsonb_v3_execution_required": "The same single canonical App test must emit an exact profile marker with history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3, plus exactly one actual native-input accepted/rejected observation with compatibility_credit=false. Preserve the previous write_cases=15/delete_cases=18/batch_cases=2 marker. Retained packet validation checks the actual four profile SQL bytes, sizes and hashes, schema4/epoch4 and fresh prior-v2/prior-v3 publishers; source and local tests grant no acceptance."
+    "jsonb_v3_execution_required": "The same single canonical App test must emit an exact profile marker with history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3, plus exactly one actual native-input accepted/rejected observation with compatibility_credit=false. Preserve the previous write_cases=15/delete_cases=18/batch_cases=2 marker. Retained packet validation checks the actual four profile SQL bytes, sizes and hashes, schema4/epoch4 and fresh prior-v2/prior-v3 publishers; source and local tests grant no acceptance.",
+    "homogeneous_repository_test": "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs::nakama_duplicate_batches_preserve_step_receipts_and_native_atomicity",
+    "homogeneous_execution_required": "Separate required single-test lane with one successful terminal result, six exact unique profile markers, explicit skip rejection and sealed storage-duplicate-batches.log. Three source-DDL rows/pages with actual exporter/importer custody and complete fifteen-field assertions are separate from the existing eight-row/four-page/nine-JSON import fixture; source-DDL is not a running Nakama oracle or production issuer trust. The occurrence-lock marker checks an earlier missing delete rejects while a later native row remains externally locked; it does not qualify pgx write-pipeline timing or the complete upstream concurrency/error schedule.",
+    "homogeneous_application_execution_required": "The existing single canonical App fixture additionally requires storage_homogeneous_app_executed profile marker with write_occurrences=13 rollback_cases=3. Preserve previous write_cases=15/delete_cases=18/batch_cases=2 and JSONB/schema families unchanged."
   },
   "mutation_repository": "Authorization, native TEXT input binding, OCC and stored projection/witness integrity checks precede no-op selection. Native incoming JSONB admission also precedes a blind no-op; an unknown matching token cannot bypass a native JSONB rejection. A blind write with stored public token equal to generated request MD5 and equal ACLs preserves native payload, provenance and times; known request fingerprints must match, while unknown original requests are not fabricated. Exact writes always project request bytes through the actual database JSONB cast, update known request witness and transaction update_time, preserving nullable original creation. Atomic batch commit still precedes ACK. Insert-only binds actor to owner and rejects an existing valid row as a version conflict regardless of its write ACL; blind/exact retain permission-first rejection. Profile SQL/NUL behavior remains distinct from immutable Nakama compatibility.",
   "list_repository": {
@@ -255,5 +260,27 @@
     "production_ready": false,
     "source_import_contract": "contracts/database/foundation-schema.v1.json#storage_source_import"
   },
-  "native_resource_boundary": "Projection16MiB/aggregate32MiB/encodedHTTP32MiB guards constrain returned/application bytes. They observe lengths after native SQL materialization and do not prove a database backend memory ceiling; actual database-side memory containment remains unqualified."
+  "native_resource_boundary": "Projection16MiB/aggregate32MiB/encodedHTTP32MiB guards constrain returned/application bytes. They observe lengths after native SQL materialization and do not prove a database backend memory ceiling; actual database-side memory containment remains unqualified.",
+  "homogeneous_mutation_batches": {
+    "status": "source-candidate",
+    "maximum_occurrences": 100,
+    "sort_source_lock": "contracts/storage/nakama-sort-source-lock-v1.json",
+    "sort_profile": "go1.26.5-sort.Sort-canonical-owner-tuples",
+    "public_owner": "canonical-session-uuid",
+    "duplicate_key_policy": "preserve-every-write-or-delete-occurrence",
+    "write_ack_order": "original-input-ordinal",
+    "step_validation": "fresh-per-occurrence-acl-occ-native-current-row",
+    "atomicity": "whole-batch-commit-or-rollback",
+    "typed_mixed_duplicate_keys": "reject",
+    "batch_read_duplicate_keys": "reject",
+    "automatic_mutation_retry": false,
+    "runtime_raw_owner_representation_parity": false,
+    "hook_index_qualification": false,
+    "native_lock_schedule_qualified": false,
+    "accepted": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "full_nakama_replacement": false,
+    "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged"
+  }
 }

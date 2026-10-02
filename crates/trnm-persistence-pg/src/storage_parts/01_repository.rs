@@ -316,7 +316,35 @@ impl PgRepository {
         operations: &[BatchOperation],
         updated_at_ms: u64,
     ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
-        validate_batch(operations)?;
+        self.apply_storage_batch_with_policy(actor, operations, updated_at_ms, None)
+    }
+
+    /// Separate homogeneous Nakama policy; the existing typed mixed policy is
+    /// unchanged. Canonical-owner execution uses the pinned Go sort permutation.
+    pub fn apply_storage_batch_nakama_with_metadata(
+        &mut self,
+        actor: Actor,
+        operations: &[BatchOperation],
+        updated_at_ms: u64,
+        kind: NakamaBatchKind,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        self.apply_storage_batch_with_policy(actor, operations, updated_at_ms, Some(kind))
+    }
+
+    fn apply_storage_batch_with_policy(
+        &mut self,
+        actor: Actor,
+        operations: &[BatchOperation],
+        updated_at_ms: u64,
+        kind: Option<NakamaBatchKind>,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        let order = match kind {
+            Some(kind) => plan_nakama_batch(operations, kind)?,
+            None => {
+                validate_batch(operations)?;
+                (0..operations.len()).collect()
+            }
+        };
         for operation in operations {
             authorize_write_permission(actor, operation.key(), None)?;
         }
@@ -333,16 +361,39 @@ impl PgRepository {
         )?;
 
         let mut locked = BTreeMap::new();
-        for key in sorted_keys(operations) {
-            locked.insert(key.clone(), lock_storage_access(&mut transaction, &key)?);
+        if kind.is_none() {
+            // The strict typed policy retains its unique sorted lock set.
+            for key in sorted_keys(operations) {
+                locked.insert(key.clone(), lock_storage_access(&mut transaction, &key)?);
+            }
         }
         let mut staged = BTreeMap::new();
-        let mut receipts = Vec::with_capacity(operations.len());
-        for operation in operations {
-            let access = locked
-                .get(operation.key())
-                .ok_or_else(|| data_loss("storage_batch_lock_missing"))?;
-            validate_locked_operation(&mut transaction, actor, operation, access.as_ref())?;
+        let mut receipts = vec![None; operations.len()];
+        for ordinal in order {
+            let operation = &operations[ordinal];
+            // The canonical occurrence plan already orders every key. Lock and
+            // validate only this occurrence before advancing to a later key;
+            // never reuse an initial ACL/version as later occurrence authority.
+            let refreshed_access = if kind.is_some() {
+                lock_storage_access(&mut transaction, operation.key())?
+            } else {
+                None
+            };
+            let access = if kind.is_some() {
+                refreshed_access.as_ref()
+            } else {
+                locked
+                    .get(operation.key())
+                    .ok_or_else(|| data_loss("storage_batch_lock_missing"))?
+                    .as_ref()
+            };
+            let authoritative_missing_delete = matches!(operation,
+                BatchOperation::Delete(delete) if actor == Actor::Server
+                    && delete.expected_version.is_none() && access.is_none())
+                && kind == Some(NakamaBatchKind::Delete);
+            if !authoritative_missing_delete {
+                validate_locked_operation(&mut transaction, actor, operation, access)?;
+            }
             staged.insert(
                 operation.key().clone(),
                 load_for_update(&mut transaction, operation.key(), self.profile)?,
@@ -358,12 +409,20 @@ impl PgRepository {
                     self.profile,
                 )?,
                 BatchOperation::Delete(delete) => {
-                    apply_delete(&mut transaction, &mut staged, actor, delete)?
+                    if kind == Some(NakamaBatchKind::Delete) {
+                        apply_nakama_delete(&mut transaction, &mut staged, actor, delete)?
+                    } else {
+                        apply_delete(&mut transaction, &mut staged, actor, delete)?
+                    }
                 }
             };
             verify_storage_staged_budget(&staged)?;
-            receipts.push(receipt);
+            receipts[ordinal] = Some(receipt);
         }
+        let receipts = receipts
+            .into_iter()
+            .map(|receipt| receipt.ok_or_else(|| data_loss("storage_batch_receipt_missing")))
+            .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().map_err(map_postgres_error)?;
         Ok(receipts)
     }

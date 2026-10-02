@@ -9,9 +9,9 @@ use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, ContentVersion, CreateSessionFamily, DatabaseProfile, EntityHead,
     EntityId, IntegrityDigest, PgRepository, ReadPermission, RefreshTokenCredential,
     SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageListPosition,
-    StorageObjectKey, StorageState, StorageTimes, StorageTimestamp, StorageWriteOperation,
-    StoredStorageClientListPage, StoredStorageMutationReceipt, StoredStorageObject, VersionCheck,
-    WritePermission,
+    StorageNakamaBatchKind, StorageObjectKey, StorageState, StorageTimes, StorageTimestamp,
+    StorageWriteOperation, StoredStorageClientListPage, StoredStorageMutationReceipt,
+    StoredStorageObject, VersionCheck, WritePermission,
 };
 use trnm_session_core::RevocationReason;
 use trnm_token_jwt_adapter::json::JsonValue;
@@ -124,6 +124,40 @@ impl Repository for StorageRepository {
                 receipts
                     .into_iter()
                     .map(|receipt| {
+                        let timestamp = StorageTimestamp {
+                            seconds: 1_700_000_000,
+                            nanos: 123_456_000,
+                        };
+                        StoredStorageMutationReceipt {
+                            receipt,
+                            times: StorageTimes {
+                                create: Some(timestamp),
+                                update: Some(timestamp),
+                            },
+                        }
+                    })
+                    .collect()
+            })
+    }
+
+    fn apply_storage_batch_nakama(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        _updated_at_ms: u64,
+        kind: StorageNakamaBatchKind,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        let mut state = self.state();
+        state.storage_batches += 1;
+        state.last_actor = Some(actor);
+        state
+            .storage
+            .apply_nakama_batch(actor, operations, kind)
+            .map(|receipts| {
+                receipts
+                    .into_iter()
+                    .map(|receipt| {
+                        // Model-only synthetic times; never native timestamp evidence.
                         let timestamp = StorageTimestamp {
                             seconds: 1_700_000_000,
                             nanos: 123_456_000,
@@ -2057,6 +2091,122 @@ fn canonical_storage_api_live_database() {
         assert_eq!(
             persisted_storage_value(&mut control, "sword", LIVE_USER),
             None
+        );
+
+        // Execute the new homogeneous bridge through the actual canonical App.
+        // These additional cases do not change the historical15/18/2 inventory.
+        let duplicate_values: Vec<String> = (0..13)
+            .map(|ordinal| format!("{{\"ordinal\":{ordinal}}}"))
+            .collect();
+        let duplicate_input = serde_json::json!({"objects": duplicate_values.iter()
+            .enumerate().map(|(ordinal, value)| serde_json::json!({
+                "collection":LIVE_COLLECTION,
+                "key":if ordinal < 2 { "dup-app-b" } else { "dup-app-a" },
+                "value":value,"permission_read":1,
+                "permission_write":if ordinal == 0 { 0 } else { 1 }
+            })).collect::<Vec<_>>()})
+        .to_string();
+        let duplicate_written =
+            app.handle(&request("/v2/storage", Some(&credential), &duplicate_input));
+        assert_eq!(duplicate_written.status, 200);
+        let duplicate_json = json(&duplicate_written);
+        let duplicate_acks = duplicate_json["acks"].as_array().unwrap();
+        assert_eq!(duplicate_acks.len(), 13);
+        for (ordinal, ack) in duplicate_acks.iter().enumerate() {
+            assert_eq!(ack["collection"], LIVE_COLLECTION);
+            assert_eq!(
+                ack["key"],
+                if ordinal < 2 {
+                    "dup-app-b"
+                } else {
+                    "dup-app-a"
+                }
+            );
+            assert_eq!(ack["user_id"], LIVE_USER_UUID);
+            assert_eq!(
+                ack["version"],
+                ContentVersion::from_value(duplicate_values[ordinal].as_bytes()).as_str()
+            );
+            assert!(ack["create_time"].as_str().is_some());
+            assert!(ack["update_time"].as_str().is_some());
+            assert_eq!(ack["create_time"], duplicate_acks[0]["create_time"]);
+            assert_eq!(ack["update_time"], duplicate_acks[0]["update_time"]);
+        }
+        let duplicate_rows = storage_live_snapshot(&mut control);
+        for (name, final_ordinal, write_permission) in [("dup-app-a", 12, 1), ("dup-app-b", 0, 0)] {
+            let row = duplicate_rows.iter().find(|row| row.key == name).unwrap();
+            let raw = duplicate_values[final_ordinal].as_bytes();
+            let native = native_storage_render(&mut control, &duplicate_values[final_ordinal]);
+            assert_eq!(row.owner, LIVE_USER.as_bytes());
+            assert_eq!(row.value, native);
+            assert_eq!(row.public_version, ContentVersion::from_value(raw).as_str());
+            assert_eq!(row.raw_value.as_deref(), Some(raw));
+            assert_eq!(
+                row.raw_integrity.as_deref(),
+                Some(IntegrityDigest::from_value(raw).get().as_bytes().as_slice())
+            );
+            assert_eq!(
+                row.projection_integrity,
+                IntegrityDigest::from_value(native.as_bytes())
+                    .get()
+                    .as_bytes()
+            );
+            assert_eq!(row.value_origin, "write-request-bytes");
+            assert_eq!(row.source_manifest, None);
+            assert_eq!(
+                (row.read_permission, row.write_permission),
+                (1, write_permission)
+            );
+            assert!(row.updated_at_ms > 0);
+            assert!(row.create_micros.is_some() && row.update_micros.is_some());
+            assert_eq!(row.create_micros, row.update_micros);
+        }
+        let duplicate_acl = serde_json::json!({"objects":[
+            {"collection":LIVE_COLLECTION,"key":"dup-app-a","value":"{\"late\":1}","permission_write":0},
+            {"collection":LIVE_COLLECTION,"key":"dup-app-a","value":"{\"late\":2}","permission_write":1}
+        ]}).to_string();
+        let duplicate_insert = serde_json::json!({"objects":[
+            {"collection":LIVE_COLLECTION,"key":"dup-app-insert","value":"{\"step\":1}","version":"*"},
+            {"collection":LIVE_COLLECTION,"key":"dup-app-insert","value":"{\"step\":2}","version":"*"}
+        ]}).to_string();
+        let duplicate_delete = serde_json::json!({"object_ids":[
+            {"collection":LIVE_COLLECTION,"key":"dup-app-a"},
+            {"collection":LIVE_COLLECTION,"key":"dup-app-a"}
+        ]})
+        .to_string();
+        for (path, input, message) in [
+            (
+                "/v2/storage",
+                duplicate_acl,
+                "Storage write rejected - permission denied.",
+            ),
+            (
+                "/v2/storage",
+                duplicate_insert,
+                "Storage write rejected - version check failed.",
+            ),
+            (
+                "/v2/storage/delete",
+                duplicate_delete,
+                "Storage delete rejected - not found, version check failed, or permission denied.",
+            ),
+        ] {
+            let before = storage_live_snapshot(&mut control);
+            let response = app.handle(&request(path, Some(&credential), &input));
+            assert_eq!(response.status, 400);
+            assert_eq!(
+                json(&response),
+                serde_json::json!({"code":3,"message":message})
+            );
+            assert_eq!(
+                storage_live_snapshot(&mut control),
+                before,
+                "canonical App duplicate failure changed scoped native tuple fields"
+            );
+        }
+        println!(
+            "\nstorage_homogeneous_app_executed profile={} write_occurrences=13 rollback_cases=3",
+            profile.metadata_value()
         );
 
         let logout = app.handle(&Request::new(

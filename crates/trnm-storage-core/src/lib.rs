@@ -6,6 +6,7 @@ use std::fmt;
 use sha2::{Digest as _, Sha256};
 use trnm_contracts::{Digest32, DomainError, RetryClass, StableCode, UserId};
 
+mod nakama_sort;
 mod projection;
 mod stored_domain;
 pub use projection::{
@@ -371,6 +372,55 @@ impl BatchOperation {
     }
 }
 
+/// Homogeneous Nakama mutation mode. The strict internal mixed-batch entry
+/// points retain their existing duplicate-key rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NakamaBatchKind {
+    Write,
+    Delete,
+}
+
+/// Keep all occurrences and return execution ordinals sorted by the pinned
+/// collection/key/canonical-owner comparator and Go 1.26.5 sort permutation.
+/// Raw runtime owner representations and complete native parity remain separate.
+pub fn plan_nakama_batch(
+    operations: &[BatchOperation],
+    kind: NakamaBatchKind,
+) -> Result<Vec<usize>, DomainError> {
+    if operations.is_empty() || operations.len() > MAX_BATCH_OPERATIONS {
+        return Err(error(
+            StableCode::InvalidArgument,
+            "invalid_storage_batch_size",
+            RetryClass::Never,
+        ));
+    }
+    for operation in operations {
+        match (kind, operation) {
+            (NakamaBatchKind::Write, BatchOperation::Write(write)) => validate_value(&write.value)?,
+            (NakamaBatchKind::Delete, BatchOperation::Delete(_)) => {}
+            _ => {
+                return Err(error(
+                    StableCode::InvalidArgument,
+                    "mixed_nakama_storage_batch",
+                    RetryClass::Never,
+                ))
+            }
+        }
+    }
+    let mut order: Vec<_> = (0..operations.len()).collect();
+    nakama_sort::go1265_sort_ordinals(&mut order, |left, right| {
+        operations[left].key() < operations[right].key()
+    })
+    .map_err(|_| {
+        error(
+            StableCode::InvalidArgument,
+            "invalid_storage_batch_size",
+            RetryClass::Never,
+        )
+    })?;
+    Ok(order)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MutationReceipt {
     pub key: StorageObjectKey,
@@ -440,6 +490,70 @@ impl StorageState {
             };
             receipts.push(receipt);
         }
+        self.objects = staged;
+        Ok(receipts)
+    }
+    /// Occurrence-preserving Nakama homogeneous batch candidate. No hooks,
+    /// native JSONB renderer, native timestamps or Go-sort parity are implied.
+    pub fn apply_nakama_batch(
+        &mut self,
+        actor: Actor,
+        operations: &[BatchOperation],
+        kind: NakamaBatchKind,
+    ) -> Result<Vec<MutationReceipt>, DomainError> {
+        self.apply_nakama_batch_projected(actor, operations, kind, |request| Ok(request.to_vec()))
+    }
+
+    pub fn apply_nakama_batch_projected<F>(
+        &mut self,
+        actor: Actor,
+        operations: &[BatchOperation],
+        kind: NakamaBatchKind,
+        mut projector: F,
+    ) -> Result<Vec<MutationReceipt>, DomainError>
+    where
+        F: FnMut(&[u8]) -> Result<Vec<u8>, DomainError>,
+    {
+        let order = plan_nakama_batch(operations, kind)?;
+        for operation in operations {
+            validate_owner_actor(actor, operation.key())?;
+        }
+        let mut staged = self.objects.clone();
+        let mut receipts = vec![None; operations.len()];
+        for ordinal in order {
+            let receipt = match &operations[ordinal] {
+                BatchOperation::Write(write) => {
+                    apply_write(&mut staged, actor, write, &mut projector)?
+                }
+                BatchOperation::Delete(delete) => {
+                    if actor == Actor::Server
+                        && delete.expected_version.is_none()
+                        && !staged.contains_key(&delete.key)
+                    {
+                        MutationReceipt {
+                            key: delete.key.clone(),
+                            previous_version: None,
+                            current_version: None,
+                        }
+                    } else {
+                        apply_delete(&mut staged, actor, delete)?
+                    }
+                }
+            };
+            receipts[ordinal] = Some(receipt);
+        }
+        let receipts = receipts
+            .into_iter()
+            .map(|receipt| {
+                receipt.ok_or_else(|| {
+                    error(
+                        StableCode::DataLoss,
+                        "storage_batch_receipt_missing",
+                        RetryClass::Never,
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.objects = staged;
         Ok(receipts)
     }
@@ -1723,3 +1837,6 @@ mod tests {
         assert_eq!(global, before);
     }
 }
+
+#[cfg(test)]
+mod nakama_batch_tests;

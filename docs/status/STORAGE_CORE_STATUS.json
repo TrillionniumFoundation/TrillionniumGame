@@ -23,7 +23,8 @@
     "schema3 native JSONB value authority with independent opaque PublicVersion, checked known request witness and unknown source-manifest provenance",
     "native projection uses explicit TEXT-to-JSONB casts and actual RETURNING; read/list preserve native text and historical scalar/array/null",
     "request1MiB, native16MiB, staged/read32MiB and actual encoded HTTP32MiB candidate budgets; lawful projection overflow is ResourceExhausted",
-    "typed immutable third migration with global preflight, PostgreSQL atomic conversion and CockroachDB bounded resumable conversion; genuine prior-v2 apply provenance retained"
+    "typed immutable third migration with global preflight, PostgreSQL atomic conversion and CockroachDB bounded resumable conversion; genuine prior-v2 apply provenance retained",
+    "bounded homogeneous Nakama storage batch source preserves each occurrence, uses pinned Go 1.26.5 canonical-owner execution ordinals and returns receipts at original input positions; strict typed mixed batches keep duplicate rejection"
   ],
   "not_verified": [
     "exact API validation that value is a JSON object",
@@ -36,7 +37,7 @@
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
     "Schema v2 records genuine database transaction timestamps separately from the core content model; write acknowledgements preserve microseconds and read/list project seconds. Unknown original v1 times remain absent, so original-time import/policy and immutable differential remain open.",
     "List route, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
-    "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
+    "Strict typed mixed-batch and HTTP batch-read paths retain duplicate rejection. The separate homogeneous Nakama write/delete candidate preserves duplicate occurrences within 100 operations; runtime raw-owner representations, larger batches, complete identifier domains and native write batch-drain timing remain unqualified.",
     "Opaque exact input conditions now retain their original strings through HTTP, core and repository evaluation without MD5 parsing or a 32-character cap. Historical opaque stored versions, native SQL/NUL behavior and exact gateway/error differential remain unqualified.",
     "Blind writes with unchanged value/version and ACL preserve database timestamps; exact upstream differential and independent acceptance remain open.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
@@ -87,5 +88,45 @@
     "accepted": false,
     "compatibility_credit": false,
     "native_oracle_qualified": false
+  },
+  "nakama_homogeneous_batch_source_candidate": {
+    "source_files": [
+      "crates/trnm-storage-core/src/nakama_sort.rs",
+      "crates/trnm-storage-core/src/nakama_batch_tests.rs"
+    ],
+    "sort_source_lock": "contracts/storage/nakama-sort-source-lock-v1.json",
+    "license": "third_party/go-sort/LICENSE",
+    "sort_test_functions": [
+      "binary_thirteen_permutations_preserve_occurrences_and_key_order",
+      "insertion_boundary_keeps_occurrences_and_original_ordinals",
+      "oversized_input_rejects_before_comparison_or_permutation",
+      "source_predicted_thirteen_operations_change_last_duplicate"
+    ],
+    "batch_test_functions": [
+      "nakama_duplicate_client_delete_rolls_back_and_server_missing_is_explicit_noop",
+      "nakama_exact_condition_observes_the_preceding_same_key_insert",
+      "nakama_policy_is_homogeneous_and_internal_mixed_policy_remains_distinct",
+      "nakama_sorted_candidate_preserves_input_ack_ordinals_and_projected_witnesses",
+      "nakama_step_acl_occ_and_insert_only_failures_restore_the_whole_model",
+      "nakama_three_server_writes_bypass_step_acl_without_collapsing_acks",
+      "nakama_two_client_writes_keep_occurrence_receipts_and_last_step_state",
+      "thirteen_occurrences_follow_observed_go_order_without_reordering_acks"
+    ],
+    "max_operations": 100,
+    "owner_order": "canonical-user-id",
+    "receipt_order": "original-input-ordinal",
+    "typed_mixed_duplicate_policy": "reject",
+    "scope": "Pure identity/projection model and pinned Go 1.26.5 ordinal permutation; native SQL, timestamps, hooks and index effects require separate profile qualification.",
+    "open_boundaries": [
+      "Nakama write pgx.Batch drains later queued SQL before returning an earlier ACL rejection; this sequential source path may reject before that drain.",
+      "Runtime raw OwnerID representations, pointer aliases, native lock schedules, hooks, indexes and complete gateway/SDK differential remain open."
+    ],
+    "accepted": false,
+    "compatibility_credit": false,
+    "database_durable": false,
+    "native_lock_schedule_compatible": false,
+    "runtime_owner_representation_parity": false,
+    "hooks_and_index_compatible": false,
+    "full_nakama_replacement": false
   }
 }

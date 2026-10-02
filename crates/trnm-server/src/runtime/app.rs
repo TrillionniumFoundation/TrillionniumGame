@@ -7,8 +7,8 @@ use trnm_persistence_pg::{
     CommitOutcome, CommitReceipt, CommitRequest, EntityHead, EntityId, EventId, EventInput,
     IntentId, IntentKind, OutboxInput, PgRepository, RefreshRotationOutcome, RotateRefreshToken,
     SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageListPosition,
-    StorageObjectKey, StoredStorageClientListPage, StoredStorageMutationReceipt,
-    StoredStorageObject,
+    StorageNakamaBatchKind, StorageObjectKey, StoredStorageClientListPage,
+    StoredStorageMutationReceipt, StoredStorageObject,
 };
 use trnm_session_core::RevocationReason;
 
@@ -107,6 +107,21 @@ pub trait Repository: std::fmt::Debug {
         ))
     }
 
+    fn apply_storage_batch_nakama(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+        kind: StorageNakamaBatchKind,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        let _ = (actor, operations, updated_at_ms, kind);
+        Err(DomainError::new(
+            StableCode::Unimplemented,
+            "nakama_storage_repository_unavailable",
+            RetryClass::Never,
+        ))
+    }
+
     fn verify_access_session(
         &mut self,
         family: SessionFamilyId,
@@ -188,6 +203,22 @@ impl Repository for PgRepository {
         updated_at_ms: u64,
     ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
         PgRepository::apply_storage_batch_with_metadata(self, actor, operations, updated_at_ms)
+    }
+
+    fn apply_storage_batch_nakama(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+        kind: StorageNakamaBatchKind,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        PgRepository::apply_storage_batch_nakama_with_metadata(
+            self,
+            actor,
+            operations,
+            updated_at_ms,
+            kind,
+        )
     }
 
     fn verify_access_session(

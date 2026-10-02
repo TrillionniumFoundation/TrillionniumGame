@@ -40,9 +40,10 @@ pub use storage_metadata::{
 pub use trnm_storage_core::{
     Actor as StorageActor, BatchOperation as StorageBatchOperation, CollisionWitness,
     ContentVersion, DeleteOperation as StorageDeleteOperation, IntegrityDigest,
-    MutationReceipt as StorageMutationReceipt, PublicVersion, ReadPermission, StorageObject,
-    StorageObjectKey, StorageState, VersionCheck, WriteOperation as StorageWriteOperation,
-    WritePermission, MAX_PROJECTION_VALUE_BYTES, MAX_REQUEST_VALUE_BYTES,
+    MutationReceipt as StorageMutationReceipt, NakamaBatchKind as StorageNakamaBatchKind,
+    PublicVersion, ReadPermission, StorageObject, StorageObjectKey, StorageState, VersionCheck,
+    WriteOperation as StorageWriteOperation, WritePermission, MAX_PROJECTION_VALUE_BYTES,
+    MAX_REQUEST_VALUE_BYTES,
 };
 
 use std::collections::BTreeSet;

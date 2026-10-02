@@ -247,6 +247,8 @@ grep -Fxq "storage_opaque_conditions_live_executed profile=${profile} write_case
 grep -Fxq "storage_jsonb_v3_live_executed profile=${profile} history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3" \
   "$evidence/canonical-storage-app.log"
 test "$(grep -Ec "^storage_jsonb_v3_native_inputs profile=${profile} condition_sql=(accepted|rejected) payload_sql=(accepted|rejected) compatibility_credit=false$" "$evidence/canonical-storage-app.log")" -eq 1
+grep -Fxq "storage_homogeneous_app_executed profile=${profile} write_occurrences=13 rollback_cases=3" "$evidence/canonical-storage-app.log"
+test "$(grep -Ec '^storage_homogeneous_app_executed ' "$evidence/canonical-storage-app.log")" -eq 1
 if grep -Fq 'canonical_storage_api_live_skipped' "$evidence/canonical-storage-app.log"; then
   echo 'canonical storage App database lane skipped instead of executing' >&2
   exit 1
@@ -396,6 +398,44 @@ if grep -Fq 'storage_v4_import_live_skipped' "$evidence/storage-v4-import.log"; 
   echo 'storage v4 import native fixture skipped instead of executing' >&2
   exit 1
 fi
+# Preserve every homogeneous mutation occurrence through the real repository.
+# This source-DDL fixture is separate from the existing eight-row import packet.
+begin_stage storage-duplicate-batches "$evidence/storage-duplicate-batches.log"
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \
+TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence_absolute/storage-source-upstream" \
+TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" \
+TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" \
+  cargo test -p trnm-persistence-pg --locked --test storage_duplicate_batches \
+    nakama_duplicate_batches_preserve_step_receipts_and_native_atomicity \
+    -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/storage-duplicate-batches.log"
+storage_duplicate_batches_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/storage-duplicate-batches.log"
+)
+[[ "$storage_duplicate_batches_test_count" =~ ^[0-9]+$ ]]
+test "$storage_duplicate_batches_test_count" -eq 1
+test "$(grep -Ec '^test result:' "$evidence/storage-duplicate-batches.log")" -eq 1
+grep -Fxq "nakama_duplicate_batches_executed profile=${profile}" "$evidence/storage-duplicate-batches.log"
+test "$(grep -Ec '^nakama_duplicate_batches_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
+grep -Fxq "nakama_duplicate_late_json_rejection profile=${profile} independent_probe_sqlstate=22P02 actual_batch_domain_code=InvalidArgument" "$evidence/storage-duplicate-batches.log"
+test "$(grep -Ec '^nakama_duplicate_late_json_rejection ' "$evidence/storage-duplicate-batches.log")" -eq 1
+grep -Fxq "nakama_duplicate_success_full_tuple_executed profile=${profile} fields=15" "$evidence/storage-duplicate-batches.log"
+test "$(grep -Ec '^nakama_duplicate_success_full_tuple_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
+grep -Fxq "nakama_duplicate_go13_executed profile=${profile} occurrences=13 final_ordinals=a12_b0 ack_positions=original fields=15" "$evidence/storage-duplicate-batches.log"
+test "$(grep -Ec '^nakama_duplicate_go13_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
+grep -Fxq "nakama_duplicate_imported_history_executed profile=${profile} source_rows=3 pages=3 witness_null=true full_tuple_fields=15 source_execution_class=native-source-ddl-fixture" "$evidence/storage-duplicate-batches.log"
+test "$(grep -Ec '^nakama_duplicate_imported_history_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
+grep -Fxq "nakama_duplicate_occurrence_locks_executed profile=${profile} missing_delete_rejected_before_late_lock=true fields=15" "$evidence/storage-duplicate-batches.log"
+test "$(grep -Ec '^nakama_duplicate_occurrence_locks_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
+if grep -Fq 'nakama_duplicate_batches_skipped' "$evidence/storage-duplicate-batches.log"; then
+  echo 'storage duplicate-batch database lane skipped instead of executing' >&2
+  exit 1
+fi
+
 begin_stage schema-upgrade "$evidence/schema-upgrade.log"
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
@@ -634,7 +674,7 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
 
 begin_stage seal "$evidence/summary.json" "$evidence/database-assertions.txt"
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"storage_v4_acl":true,"storage_v4_import":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \

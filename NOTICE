@@ -47,3 +47,12 @@ No upstream Go implementation is compiled or copied by this adapter.
 respective owners. The Apache License does not grant trademark rights. This
 project is not represented as endorsed by, sponsored by, or affiliated with
 Heroic Labs or BluGe Labs.
+
+The bounded Rust storage occurrence sorter is a modified translation of Go
+1.26.5 sort.Sort and its generated interface sorter, Copyright 2009 and 2022
+The Go Authors. All rights reserved. Original source at golang/go commit
+c19862e5f8415b4f24b189d065ed739517c548ba is governed by the BSD license
+reproduced in third_party/go-sort/LICENSE. Modification: Rust ordinal sorting
+with a 100-operation bound for canonical-owner batches. Source identities are
+registered in contracts/storage/nakama-sort-source-lock-v1.json. No Go sorter
+executable is a target-service dependency.

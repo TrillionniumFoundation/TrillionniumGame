@@ -65,9 +65,10 @@ JSONB_MARKER = '''grep -Fxq "storage_jsonb_v3_live_executed profile=${profile} h
 '''
 NATIVE_INPUT_MARKER = '''test "$(grep -Ec "^storage_jsonb_v3_native_inputs profile=${profile} condition_sql=(accepted|rejected) payload_sql=(accepted|rejected) compatibility_credit=false$" "$evidence/canonical-storage-app.log")" -eq 1
 '''
+HOMOGENEOUS_APP_MARKER = 'grep -Fxq "storage_homogeneous_app_executed profile=${profile} write_occurrences=13 rollback_cases=3" "$evidence/canonical-storage-app.log"\ntest "$(grep -Ec \'^storage_homogeneous_app_executed \' "$evidence/canonical-storage-app.log")" -eq 1\n'
 CANONICAL = CANONICAL.replace(
     "if grep -Fq 'canonical_storage_api_live_skipped'",
-    OPAQUE_MARKER + JSONB_MARKER + NATIVE_INPUT_MARKER + "if grep -Fq 'canonical_storage_api_live_skipped'"
+    OPAQUE_MARKER + JSONB_MARKER + NATIVE_INPUT_MARKER + HOMOGENEOUS_APP_MARKER + "if grep -Fq 'canonical_storage_api_live_skipped'"
 )
 PROJECTION = lane(
     "trnm-persistence-pg", "--test authority_storage",
@@ -139,6 +140,22 @@ V4_IMPORT = V4_IMPORT.replace("if grep -Fq 'storage_v4_import_live_skipped'",
                             V4_IMPORT_UNIQUE + "if grep -Fq 'storage_v4_import_live_skipped'")
 V4_IMPORT = V4_IMPORT.replace('grep -Fxq "storage_v4_import_live_executed',
                             V4_IMPORT_TERMINAL + 'grep -Fxq "storage_v4_import_live_executed')
+DUPLICATE_ENVIRONMENT = ENVIRONMENT + 'TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" \\\nTRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence_absolute/storage-source-upstream" \\\nTRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" \\\nTRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" \\\n'
+DUPLICATES = lane(
+    "trnm-persistence-pg", "--test storage_duplicate_batches", MODULE.STORAGE_DUPLICATE_SELECTOR,
+    MODULE.STORAGE_DUPLICATE_LOG, "storage_duplicate_batches_test_count",
+    "nakama_duplicate_batches_executed", "nakama_duplicate_batches_skipped",
+).replace(ENVIRONMENT, DUPLICATE_ENVIRONMENT)
+DUPLICATE_GUARDS = "".join(
+    f'grep -Fxq "{marker} profile=${{profile}}{suffix}" "$evidence/{MODULE.STORAGE_DUPLICATE_LOG}"\n'
+    f'test "$(grep -Ec \'^{marker} \' "$evidence/{MODULE.STORAGE_DUPLICATE_LOG}")" -eq 1\n'
+    for marker, suffix in MODULE.STORAGE_DUPLICATE_MARKERS
+)
+DUPLICATE_TERMINAL = 'test "$(grep -Ec \'^test result:\' "$evidence/storage-duplicate-batches.log")" -eq 1\n'
+DUPLICATES = (DUPLICATES[:DUPLICATES.index('grep -Fxq "nakama_duplicate_batches_executed')] +
+              DUPLICATE_TERMINAL + DUPLICATE_GUARDS +
+              DUPLICATES[DUPLICATES.index("if grep -Fq 'nakama_duplicate_batches_skipped'"):])
+
 SCHEMA_FAMILIES = {
     "shapes": 8, "illegal_legacy": 9, "catalog_drift": 6,
     "partial_resume": 3, "metadata_validation": 9, "opaque_history": 6,
@@ -192,8 +209,8 @@ EOF
 find "$evidence" -type f ! -name SHA256SUMS -print0 \\
   | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
 '''
-SUFFIX = SUFFIX.replace('"storage_v4_acl":true,', '"storage_v4_acl":true,"storage_v4_import":true,')
-FIXTURE = PREFIX + CANONICAL + PROJECTION + OCC + TIMESTAMPS + NATIVE_JSONB + V4_ACL + IMPORT_ANNEX + V4_IMPORT + SCHEMA + SCHEMA_V3 + SUFFIX
+SUFFIX = SUFFIX.replace('"storage_v4_acl":true,', '"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,')
+FIXTURE = PREFIX + CANONICAL + PROJECTION + OCC + TIMESTAMPS + NATIVE_JSONB + V4_ACL + IMPORT_ANNEX + V4_IMPORT + DUPLICATES + SCHEMA + SCHEMA_V3 + SUFFIX
 
 
 class StorageListLiveContractTests(unittest.TestCase):
@@ -228,7 +245,7 @@ class StorageListLiveContractTests(unittest.TestCase):
 
     def test_zero_multiple_failed_or_ignored_results_cannot_be_counted(self) -> None:
         for counter in ["canonical_storage_test_count", "nakama_client_list_test_count",
-                        "storage_occ_test_count", "storage_timestamps_test_count", "storage_native_jsonb_test_count", "storage_v4_acl_test_count"]:
+                        "storage_occ_test_count", "storage_timestamps_test_count", "storage_native_jsonb_test_count", "storage_v4_acl_test_count", "storage_duplicate_batches_test_count"]:
             with self.subTest(counter=counter):
                 self.reject(FIXTURE.replace(f'test "${counter}" -eq 1', f'test "${counter}" -ge 0'))
                 self.reject(FIXTURE.replace(f'test "${counter}" -eq 1', f'test "${counter}" -ge 1'))
@@ -410,6 +427,86 @@ class StorageListLiveContractTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 self.reject(changed)
 
+    def test_homogeneous_lane_and_app_marker_cannot_be_missing_relabelled_or_unsealed(self) -> None:
+        for changed in (
+            FIXTURE.replace(DUPLICATES, ""), FIXTURE.replace(DUPLICATES, DUPLICATES + DUPLICATES),
+            FIXTURE.replace(DUPLICATES, "\n".join("# " + line for line in DUPLICATES.splitlines()) + "\n"),
+            FIXTURE.replace(MODULE.STORAGE_DUPLICATE_SELECTOR, "filter_that_runs_zero_tests"),
+            FIXTURE.replace("nakama_duplicate_batches_skipped", "unchecked_duplicate_skip"),
+            FIXTURE.replace(DUPLICATE_TERMINAL, ""),
+            FIXTURE.replace('"storage_homogeneous_batches":true', '"storage_homogeneous_batches":false'),
+            FIXTURE.replace('"storage_homogeneous_app":true', '"storage_homogeneous_app":false'),
+            FIXTURE.replace(HOMOGENEOUS_APP_MARKER, ""),
+            FIXTURE.replace("write_occurrences=13 rollback_cases=3", "write_occurrences=12 rollback_cases=3"),
+            FIXTURE.replace('find "$evidence" -type f', 'find "$evidence" -type f ! -name storage-duplicate-batches.log'),
+        ):
+            with self.subTest(changed=changed):
+                self.reject(changed)
+        for guard in DUPLICATE_GUARDS.splitlines():
+            self.reject(FIXTURE.replace(guard + "\n", "", 1))
+        for environment in DUPLICATE_ENVIRONMENT.splitlines():
+            self.reject(FIXTURE.replace(DUPLICATES, DUPLICATES.replace(environment + "\n", "", 1)))
+
+    def test_homogeneous_source_lock_and_policy_remain_bounded_truthful_and_bsd_attributed(self) -> None:
+        contract = json.loads((ROOT / "contracts/storage/nakama-http-storage-v1.json").read_text())
+        source_lock = json.loads((ROOT / "contracts/storage/nakama-sort-source-lock-v1.json").read_text())
+        license_data = (ROOT / "third_party/go-sort/LICENSE").read_bytes()
+        notice = (ROOT / "NOTICE").read_text()
+        sorter = (ROOT / "crates/trnm-storage-core/src/nakama_sort.rs").read_text()
+        def validate(c=contract, lock=source_lock, data=license_data, n=notice, sort=sorter):
+            MODULE.validate_homogeneous_storage_contract(c, lock, data, n, sort)
+        validate()
+        for field, value in (("maximum_occurrences", 101), ("maximum_occurrences", True),
+                             ("runtime_raw_owner_representation_parity", True), ("automatic_mutation_retry", True),
+                             ("accepted", 0), ("accepted", True), ("write_ack_order", "sorted-execution-order"),
+                             ("typed_mixed_duplicate_keys", "collapse"), ("batch_read_duplicate_keys", "allow"),
+                             ("row_lock_policy", "prelock-all-unique-keys")):
+            changed = json.loads(json.dumps(contract))
+            changed["homogeneous_mutation_batches"][field] = value
+            with self.subTest(field=field), self.assertRaises(SystemExit):
+                validate(c=changed)
+        for field, value in (("source_commit", "1" * 40), ("nakama_native_differential_accepted", True),
+                             ("runtime_owner_representation_parity", 0), ("license_path", "NOTICE")):
+            changed = {**source_lock, field: value}
+            with self.subTest(lock_field=field), self.assertRaises(SystemExit):
+                validate(lock=changed)
+        for field, value in (("sha256", "1" * 64), ("git_blob_sha1", "2" * 40),
+                             ("size", True), ("downloaded", 1)):
+            changed = json.loads(json.dumps(source_lock)); changed["files"][2][field] = value
+            with self.subTest(pin_field=field), self.assertRaises(SystemExit):
+                validate(lock=changed)
+        for changed in (license_data[:-1], license_data + b"tamper", b"BSD license"):
+            with self.assertRaises(SystemExit): validate(data=changed)
+        for marker in ("Copyright 2009", "Copyright 2022", "// Modified:", "if data.len() > 100"):
+            with self.subTest(marker=marker), self.assertRaises(SystemExit):
+                validate(sort=sorter.replace(marker, "removed", 1))
+        with self.assertRaises(SystemExit): validate(n=notice.replace("Copyright 2009 and 2022", "Copyright omitted"))
+
+    def test_homogeneous_source_seam_requires_occurrences_fresh_acl_and_original_receipts(self) -> None:
+        inputs = [(ROOT / path).read_text() for path in (
+            "crates/trnm-storage-core/src/lib.rs",
+            "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs",
+            "crates/trnm-server/src/runtime/storage_api.rs",
+            "crates/trnm-server/src/runtime/pool.rs",
+            "crates/trnm-server/src/runtime/retry.rs",
+        )]
+        MODULE.validate_homogeneous_storage_source(*inputs)
+        for index, marker in (
+            (0, "nakama_sort::go1265_sort_ordinals"), (0, "receipts[ordinal] = Some(receipt)"),
+            (1, "lock_storage_access(&mut transaction, operation.key())?"), (1, "if kind.is_none() {"),
+            (1, "load_for_update(&mut transaction, operation.key(), self.profile)?"),
+            (2, "repository.apply_storage_batch_nakama("),
+            (3, "repository.apply_storage_batch_nakama_with_metadata("),
+            (4, "apply_storage_batch_nakama(actor, operations, updated_at_ms, kind)"),
+        ):
+            changed = inputs.copy(); changed[index] = changed[index].replace(marker, "removed_homogeneous_seam")
+            with self.subTest(index=index, marker=marker), self.assertRaises(SystemExit):
+                MODULE.validate_homogeneous_storage_source(*changed)
+
+        changed = inputs.copy(); changed[1] += "\nlock_nakama_storage_key(&mut transaction, &key)?;\n"
+        with self.assertRaises(SystemExit): MODULE.validate_homogeneous_storage_source(*changed)
+
+
 class ActualNativeLaneShellTests(unittest.TestCase):
     """Run production shell guards with mock Cargo logs, never a database."""
 
@@ -417,7 +514,7 @@ class ActualNativeLaneShellTests(unittest.TestCase):
         setup = ACTUAL_HARNESS[ACTUAL_HARNESS.index("evidence_root="):
                                ACTUAL_HARNESS.index("server_port=")]
         block = ACTUAL_HARNESS[ACTUAL_HARNESS.index('begin_stage storage-v4-import "'):
-                               ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
+                               ACTUAL_HARNESS.index("begin_stage storage-duplicate-batches")]
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             crate = root / "crates" / "mock-persistence"
@@ -537,7 +634,7 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
 
     def test_real_import_block_rejects_empty_missing_duplicate_skip_wrong_profile_and_terminal(self) -> None:
         block = ACTUAL_HARNESS[ACTUAL_HARNESS.index('begin_stage storage-v4-import "'):
-                               ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
+                               ACTUAL_HARNESS.index("begin_stage storage-duplicate-batches")]
         marker = "storage_v4_import_live_executed profile=postgresql"
         lines = [marker, "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"]
         self.assertEqual(self.run_block(block, lines).returncode, 0)
@@ -554,6 +651,62 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
                 result = self.run_block(block, changed)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("synthetic-guards-passed-no-live-credit", result.stdout)
+        self.assertEqual(self.run_block(block, lines, status=37).returncode, 37)
+
+
+    def test_real_duplicate_block_rejects_every_missing_wrong_extra_skipped_and_failed_observation(self) -> None:
+        block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage storage-duplicate-batches"):
+                               ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
+        markers = [f"{marker} profile=postgresql{suffix}" for marker, suffix in MODULE.STORAGE_DUPLICATE_MARKERS]
+        terminal = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"
+        lines = markers + [terminal]
+        self.assertEqual(self.run_block(block, lines).returncode, 0)
+        for marker in markers:
+            for changed in (
+                [line for line in lines if line != marker], lines + [marker],
+                lines + [marker.replace("profile=postgresql", "profile=cockroachdb")],
+                [line.replace(marker, "test injected-prefix ... " + marker) for line in lines],
+            ):
+                with self.subTest(marker=marker, lines=changed):
+                    result = self.run_block(block, changed)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("synthetic-guards-passed-no-live-credit", result.stdout)
+        for changed in (
+            [], lines + [terminal], lines + ["test result: FAILED. 0 passed; 1 failed; 0 ignored;"],
+            lines + ["nakama_duplicate_batches_skipped reason=optional_database_absent"],
+            [line.replace("1 passed", "0 passed") for line in lines],
+            [line.replace("0 failed", "1 failed") for line in lines],
+            [line.replace("0 ignored", "1 ignored") for line in lines],
+            [line.replace("profile=postgresql", "profile=cockroachdb") for line in lines],
+        ):
+            with self.subTest(lines=changed):
+                self.assertNotEqual(self.run_block(block, changed).returncode, 0)
+        self.assertEqual(self.run_block(block, lines, status=37).returncode, 37)
+
+
+    def test_real_canonical_block_requires_additional_homogeneous_marker_without_replacing_old_cases(self) -> None:
+        block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage canonical-storage-app"):
+                               ACTUAL_HARNESS.index("begin_stage nakama-client-list-projection")]
+        app = "storage_homogeneous_app_executed profile=postgresql write_occurrences=13 rollback_cases=3"
+        lines = [
+            "canonical_storage_api_live_executed profile=postgresql",
+            "storage_opaque_conditions_live_executed profile=postgresql write_cases=15 delete_cases=18 batch_cases=2",
+            "storage_jsonb_v3_live_executed profile=postgresql history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
+            "storage_jsonb_v3_native_inputs profile=postgresql condition_sql=rejected payload_sql=rejected compatibility_credit=false",
+            app, "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s",
+        ]
+        self.assertEqual(self.run_block(block, lines).returncode, 0)
+        for changed in (
+            [line for line in lines if line != app], lines + [app],
+            lines + [app.replace("profile=postgresql", "profile=cockroachdb")],
+            [line.replace(app, "test injected-prefix ... " + app) for line in lines],
+            [line.replace("write_occurrences=13", "write_occurrences=12") for line in lines],
+            [line.replace("write_cases=15 delete_cases=18 batch_cases=2", "write_cases=0 delete_cases=0 batch_cases=0") for line in lines],
+            lines + ["canonical_storage_api_live_skipped"],
+        ):
+            result = self.run_block(block, changed)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("synthetic-guards-passed-no-live-credit", result.stdout)
         self.assertEqual(self.run_block(block, lines, status=37).returncode, 37)
 
 
@@ -576,6 +729,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                 "check_config", "fresh_migration", "nakama_client_list_projection", "storage_occ_precedence",
                 "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
                 "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
+                "storage_homogeneous_batches", "storage_homogeneous_app",
                 "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
                 "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
                 "process_restart_exact_receipt_replay",
@@ -620,6 +774,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             "storage_opaque_conditions_live_executed profile=postgresql write_cases=15 delete_cases=18 batch_cases=2",
             "storage_jsonb_v3_live_executed profile=postgresql history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
             "storage_jsonb_v3_native_inputs profile=postgresql condition_sql=rejected payload_sql=rejected compatibility_credit=false",
+            "storage_homogeneous_app_executed profile=postgresql write_occurrences=13 rollback_cases=3",
             "test result: ok. 1 passed; 0 failed; 0 ignored; 99 filtered out; finished in 0.01s",
         ]
         self.write_log(self.log_lines)
@@ -637,6 +792,10 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         self.v4_import_lines = ["storage_v4_import_live_executed profile=postgresql",
                                 "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"]
         self.write_named_log("storage-v4-import.log", self.v4_import_lines)
+        self.duplicate_lines = [f"{marker} profile=postgresql{suffix}" for marker, suffix in MODULE.STORAGE_DUPLICATE_MARKERS] + [
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"
+        ]
+        self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, self.duplicate_lines)
         # Synthetic authority bodies only exercise the real annex hash/path
         # validator without network acquisition. Production has no override.
         authority, exporter, query = MODULE.storage_import_source_authority()
@@ -1170,6 +1329,8 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                                                    for line in self.v4_acl_lines])
         self.write_named_log("storage-v4-import.log", [line.replace("profile=postgresql", "profile=cockroachdb")
                                                       for line in self.v4_import_lines])
+        self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG,
+                             [line.replace("profile=postgresql", "profile=cockroachdb") for line in self.duplicate_lines])
         for condition, payload in (("accepted", "accepted"), ("accepted", "rejected"),
                                    ("rejected", "accepted"), ("rejected", "rejected")):
             with self.subTest(condition=condition, payload=payload):
@@ -1325,6 +1486,41 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             self.reject()
         (self.root / "storage-v4-acl.log").unlink()
         self.reject()
+
+    def test_homogeneous_packet_requires_six_unique_profile_markers_one_result_no_skip_and_truthful_summary(self) -> None:
+        for marker in self.duplicate_lines[:-1]:
+            for changed in (
+                [line for line in self.duplicate_lines if line != marker], self.duplicate_lines + [marker],
+                self.duplicate_lines + [marker.replace("profile=postgresql", "profile=cockroachdb")],
+                [line.replace(marker, "test injected-prefix ... " + marker) for line in self.duplicate_lines],
+            ):
+                with self.subTest(marker=marker):
+                    self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, changed); self.reject()
+        for changed in (
+            [], self.duplicate_lines + [self.duplicate_lines[-1]],
+            self.duplicate_lines + ["nakama_duplicate_batches_skipped reason=optional_database_absent"],
+            [line.replace("1 passed", "0 passed") for line in self.duplicate_lines],
+            [line.replace("0 failed", "1 failed") for line in self.duplicate_lines],
+            [line.replace("0 ignored", "1 ignored") for line in self.duplicate_lines],
+            [line.replace("profile=postgresql", "profile=cockroachdb") for line in self.duplicate_lines],
+            [line.replace("actual_batch_domain_code=InvalidArgument", "actual_batch_domain_code=Internal") for line in self.duplicate_lines],
+        ):
+            self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, changed); self.reject()
+        self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, self.duplicate_lines)
+        for field in ("storage_homogeneous_batches", "storage_homogeneous_app"):
+            for value in (False, 1):
+                self.write_json("summary.json", {**self.summary, field: value}); self.reject()
+        self.write_json("summary.json", self.summary)
+        app = "storage_homogeneous_app_executed profile=postgresql write_occurrences=13 rollback_cases=3"
+        for changed in (
+            [line for line in self.log_lines if line != app], self.log_lines + [app],
+            self.log_lines + [app.replace("profile=postgresql", "profile=cockroachdb")],
+            [line.replace(app, app.replace("13", "12")) for line in self.log_lines],
+            [line.replace(app, "test injected-prefix ... " + app) for line in self.log_lines],
+        ):
+            self.write_log(changed); self.reject()
+        self.write_log(self.log_lines)
+        (self.root / MODULE.STORAGE_DUPLICATE_LOG).unlink(); self.reject()
 
     def test_v4_import_requires_terminal_execution_and_all_materialized_source_bytes(self) -> None:
         for lines in (

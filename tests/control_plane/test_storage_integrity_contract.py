@@ -78,6 +78,7 @@ class StorageIntegrityContractTests(unittest.TestCase):
             "Cargo.toml", "contracts/storage/storage-vectors.json",
             "docs/status/STORAGE_CORE_STATUS.json",
             "docs/status/IMPLEMENTATION_INVENTORY.json", "docs/status/SOURCE_CANDIDATES.json",
+            checker.SORT_LOCK_PATH, checker.SORT_LICENSE_PATH,
             *checker.SOURCE_FILES, *checker.AUXILIARY_SOURCE_FILES,
         ):
             path = root / relative
@@ -91,7 +92,9 @@ class StorageIntegrityContractTests(unittest.TestCase):
         self.assertEqual(result["source_files"], list(checker.SOURCE_FILES))
         self.assertEqual(result["auxiliary_source_files"], list(checker.AUXILIARY_SOURCE_FILES))
         self.assertEqual(result["projection_tests"], 11)
-        self.assertEqual(result["rust_tests"], 37)
+        self.assertEqual(result["rust_tests"], 49)
+        self.assertEqual(result["nakama_sort_tests"], 4)
+        self.assertEqual(result["nakama_batch_tests"], 8)
         self.assertEqual(result["stored_domain_tests"], 7)
         self.assertEqual(result["vector_cases"], 15)
         self.assertFalse(result["cargo_executed_locally"])
@@ -122,6 +125,68 @@ class StorageIntegrityContractTests(unittest.TestCase):
                 (root / "crates/trnm-storage-core/src/unreviewed.rs").write_text("// unlisted source\n")
             with self.subTest(mutation=mutation), self.assertRaises(checker.ValidationError):
                 checker.validate(root)
+
+    def test_homogeneous_modules_bounds_and_original_receipt_inventory_are_required(self) -> None:
+        checker = load_core_checker()
+        mutations = (
+            (0, "mod nakama_sort;", ""),
+            (0, "mod nakama_batch_tests;", ""),
+            (0, "operations.is_empty() || operations.len() > MAX_BATCH_OPERATIONS", "operations.is_empty()"),
+            (0, "receipts[ordinal] = Some(receipt);", "receipts[0] = Some(receipt);"),
+            (0, "operations[left].key() < operations[right].key()", "left < right"),
+            (5, "if data.len() > 100 {", "if data.len() > 1000 {"),
+        )
+        for index, before, after in mutations:
+            root = self.copy_core_contract()
+            path = root / checker.SOURCE_FILES[index]
+            source = path.read_text()
+            self.assertIn(before, source)
+            path.write_text(source.replace(before, after))
+            with self.subTest(mutation=before), self.assertRaises(checker.ValidationError):
+                checker.validate(root)
+        for index, names in ((5, checker.NAKAMA_SORT_TESTS), (6, checker.NAKAMA_BATCH_TESTS)):
+            for name in sorted(names):
+                root = self.copy_core_contract()
+                path = root / checker.SOURCE_FILES[index]
+                path.write_text(path.read_text().replace(f"fn {name}()", f"fn removed_{name}()"))
+                with self.subTest(test=name), self.assertRaisesRegex(checker.ValidationError, "regression inventory"):
+                    checker.validate(root)
+
+    def test_homogeneous_candidate_scope_and_go_license_cannot_be_overclaimed(self) -> None:
+        checker = load_core_checker()
+        for field, value in (
+            ("max_operations", 1000), ("owner_order", "raw-runtime-owner"),
+            ("receipt_order", "sorted-key-order"), ("typed_mixed_duplicate_policy", "allow"),
+            ("source_files", []), ("sort_test_functions", []), ("batch_test_functions", []),
+            ("accepted", True), ("compatibility_credit", True), ("database_durable", True),
+            ("native_lock_schedule_compatible", True), ("runtime_owner_representation_parity", True),
+            ("hooks_and_index_compatible", True), ("full_nakama_replacement", True),
+        ):
+            root = self.copy_core_contract()
+            path = root / "contracts/storage/storage-vectors.json"
+            vectors = json.loads(path.read_text())
+            vectors["nakama_homogeneous_batch_source_candidate"][field] = value
+            path.write_text(json.dumps(vectors))
+            with self.subTest(field=field), self.assertRaises(checker.ValidationError):
+                checker.validate(root)
+        for field, value in (("source_commit", "unbound"), ("modified_rust_path", "other.rs"), ("runtime_owner_representation_parity", True), ("nakama_native_differential_accepted", True)):
+            root = self.copy_core_contract()
+            path = root / checker.SORT_LOCK_PATH
+            lock = json.loads(path.read_text()); lock[field] = value
+            path.write_text(json.dumps(lock))
+            with self.subTest(lock_field=field), self.assertRaises(checker.ValidationError):
+                checker.validate(root)
+        root = self.copy_core_contract()
+        (root / checker.SORT_LICENSE_PATH).write_text("missing original BSD license\n")
+        with self.assertRaisesRegex(checker.ValidationError, "BSD license bytes"):
+            checker.validate(root)
+        root = self.copy_core_contract()
+        path = root / "docs/status/STORAGE_CORE_STATUS.json"
+        status = json.loads(path.read_text())
+        status["nakama_homogeneous_batch_source_candidate"]["accepted"] = True
+        path.write_text(json.dumps(status))
+        with self.assertRaisesRegex(checker.ValidationError, "status homogeneous batch"):
+            checker.validate(root)
 
     def test_raw_projection_version_receipt_and_witness_bindings_cannot_drift(self) -> None:
         checker = load_core_checker()

@@ -26,7 +26,12 @@
     "scripts/ci-trnm-server-live.sh",
     "scripts/print-server-live-failure.py",
     "crates/trnm-server/src/runtime/storage_api_projection_tests.rs",
-    "crates/trnm-server/src/runtime/storage_api_v3_live.rs"
+    "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
+    "crates/trnm-storage-core/src/nakama_sort.rs",
+    "crates/trnm-storage-core/src/nakama_batch_tests.rs",
+    "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs",
+    "contracts/storage/nakama-sort-source-lock-v1.json",
+    "third_party/go-sort/LICENSE"
   ],
   "implemented_source": [
     "explicit check-config, migrate and serve commands",
@@ -92,7 +97,8 @@
     "schema3 native JSONB value authority with independent opaque PublicVersion, checked known request witness and unknown source-manifest provenance",
     "native projection uses explicit TEXT-to-JSONB casts and actual RETURNING; read/list preserve native text and historical scalar/array/null",
     "request1MiB, native16MiB, staged/read32MiB and actual encoded HTTP32MiB candidate budgets; lawful projection overflow is ResourceExhausted",
-    "typed immutable third migration with global preflight, PostgreSQL atomic conversion and CockroachDB bounded resumable conversion; genuine prior-v2 apply provenance retained"
+    "typed immutable third migration with global preflight, PostgreSQL atomic conversion and CockroachDB bounded resumable conversion; genuine prior-v2 apply provenance retained",
+    "separate canonical-owner homogeneous storage write/delete policy preserves every occurrence, refreshes ACL/OCC per step, returns original-position ACKs after whole-batch commit and keeps the internal mixed policy distinct"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this source synchronization",
@@ -117,7 +123,7 @@
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
     "Schema v2 records genuine database transaction timestamps separately from the core content model; write acknowledgements preserve microseconds and read/list project seconds. Unknown original v1 times remain absent, so original-time import/policy and immutable differential remain open.",
     "Client-list/query/gob/SQL projection are bounded source candidates; exact gateway, unsupported gob types, profile collation and concurrent-pagination behavior still require immutable differential. Search/index and Runtime before/after hooks remain unfinished.",
-    "Mutation/batch-read and internal typed-list paths retain duplicate-key, 100-operation and 128-byte/dot/control candidate restrictions. Client-list queries use 4096-byte offsets/collection budgets and decode authoritative Unicode-character-bounded rows. Bounds and exact malformed wire behavior remain unqualified.",
+    "Homogeneous HTTP write/delete batches preserve repeated keys through a separate canonical-owner policy bounded to 100 occurrences. Internal heterogeneous batches and batch-read retain duplicate-key rejection; strict new-write key validation and client-list stored Unicode domains are separate. Broader bounds and exact malformed wire behavior remain unqualified.",
     "Opaque exact input conditions now retain their original strings through HTTP, core and repository evaluation without MD5 parsing or a 32-character cap. Historical opaque stored versions, native SQL/NUL behavior and exact gateway/error differential remain unqualified.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
@@ -311,5 +317,35 @@
     "custody": "Independent expected manifest/receipt/source/binary/Git execution anchors; supplied matching hashes and source-DDL fixtures do not establish production issuer trust or running Nakama.",
     "native_oracle_qualified": false,
     "full_nakama_replacement": false
+  },
+  "storage_homogeneous_mutation_source_candidate": {
+    "status": "source-candidate",
+    "maximum_occurrences": 100,
+    "sort_source_lock": "contracts/storage/nakama-sort-source-lock-v1.json",
+    "sort_profile": "go1.26.5-sort.Sort-canonical-owner-tuples",
+    "public_owner": "canonical-session-uuid",
+    "duplicate_key_policy": "preserve-every-write-or-delete-occurrence",
+    "write_ack_order": "original-input-ordinal",
+    "step_validation": "fresh-per-occurrence-acl-occ-native-current-row",
+    "atomicity": "whole-batch-commit-or-rollback",
+    "typed_mixed_duplicate_keys": "reject",
+    "batch_read_duplicate_keys": "reject",
+    "automatic_mutation_retry": false,
+    "runtime_raw_owner_representation_parity": false,
+    "hook_index_qualification": false,
+    "native_lock_schedule_qualified": false,
+    "accepted": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "full_nakama_replacement": false,
+    "contract": "contracts/storage/nakama-http-storage-v1.json#homogeneous_mutation_batches",
+    "core": "crates/trnm-storage-core/src/lib.rs::plan_nakama_batch",
+    "sorter": "crates/trnm-storage-core/src/nakama_sort.rs",
+    "repository_fixture": "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs",
+    "harness": "scripts/ci-trnm-server-live.sh",
+    "scope": "Canonical principal UUID subset; source-DDL export/import and pure Go ordering observations are separate from immutable Nakama, SDK, production and independent acceptance.",
+    "gap_closed": false,
+    "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged",
+    "write_failure_timing_boundary": "Pinned Go write pgx.Batch can wait on a later locked key before returning an earlier write-permission rejection, while the Rust occurrence path rejects the earlier occurrence before reaching that key. Sequential delete has no all-key prelock. This write failure-timing difference remains open and cannot be normalized; target-native CI does not grant immutable-oracle or independent acceptance."
   }
 }

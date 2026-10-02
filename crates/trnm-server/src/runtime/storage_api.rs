@@ -14,8 +14,8 @@ use serde_json::value::RawValue;
 use trnm_contracts::{DomainError, StableCode, UserId};
 use trnm_persistence_pg::{
     ContentVersion, ReadPermission, StorageActor as Actor, StorageBatchOperation as BatchOperation,
-    StorageDeleteOperation as DeleteOperation, StorageObject, StorageObjectKey, StorageTimes,
-    StorageTimestamp, StorageWriteOperation as WriteOperation,
+    StorageDeleteOperation as DeleteOperation, StorageNakamaBatchKind, StorageObject,
+    StorageObjectKey, StorageTimes, StorageTimestamp, StorageWriteOperation as WriteOperation,
     StoredStorageMutationReceipt as MutationReceipt, StoredStorageObject, VersionCheck,
     WritePermission,
 };
@@ -146,7 +146,12 @@ pub(crate) fn handle<R: Repository>(
     else {
         return gateway_error(500, 13, kind.internal_message());
     };
-    match repository.apply_storage_batch(Actor::User(user), &operations, now_ms) {
+    let batch_kind = match kind {
+        OperationKind::Write => StorageNakamaBatchKind::Write,
+        OperationKind::Delete => StorageNakamaBatchKind::Delete,
+    };
+    match repository.apply_storage_batch_nakama(Actor::User(user), &operations, now_ms, batch_kind)
+    {
         Ok(receipts) => match kind {
             OperationKind::Write => write_response(&operations, &receipts),
             OperationKind::Delete => delete_response(&operations, &receipts),
@@ -1123,6 +1128,25 @@ mod tests {
                 .map(|receipts| receipts.into_iter().map(stored_receipt).collect())
         }
 
+        fn apply_storage_batch_nakama(
+            &mut self,
+            actor: Actor,
+            operations: &[BatchOperation],
+            updated_at_ms: u64,
+            kind: StorageNakamaBatchKind,
+        ) -> Result<Vec<MutationReceipt>, DomainError> {
+            assert!(updated_at_ms > 0);
+            self.calls += 1;
+            self.actor = Some(actor);
+            self.operations = operations.to_vec();
+            if let Some(error) = self.failure {
+                return Err(error);
+            }
+            self.storage
+                .apply_nakama_batch(actor, operations, kind)
+                .map(|receipts| receipts.into_iter().map(stored_receipt).collect())
+        }
+
         fn read_storage_objects(
             &mut self,
             actor: Actor,
@@ -1170,6 +1194,83 @@ mod tests {
             "collection": "profile", "key": key, "value": value, "version": version
         }]})
         .to_string()
+    }
+
+    #[test]
+    fn duplicate_write_occurrences_return_independent_acks_in_original_positions() {
+        let mut repository = TestRepository::default();
+        let a = "{\"foo\":\"bar\"}";
+        let b = "{\"foo\":\"baz\"}";
+        let input = serde_json::json!({"objects":[
+            {"collection":"profile","key":"dup","value":a,"permission_write":1},
+            {"collection":"profile","key":"dup","value":b,"permission_write":0}
+        ]})
+        .to_string();
+        let response = handle(&mut repository, &request("/v2/storage", &input), user());
+        assert_eq!(response.status, 200);
+        let response = body(&response);
+        assert_eq!(response["acks"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            response["acks"][0]["version"],
+            ContentVersion::from_value(a.as_bytes()).as_str()
+        );
+        assert_eq!(
+            response["acks"][1]["version"],
+            ContentVersion::from_value(b.as_bytes()).as_str()
+        );
+        let key = StorageObjectKey::new("profile", "dup", user()).unwrap();
+        assert_eq!(
+            repository.storage.read(Actor::Server, &key).unwrap().value,
+            b.as_bytes()
+        );
+        assert_eq!(repository.calls, 1);
+    }
+
+    #[test]
+    fn duplicate_client_delete_reports_combined_rejection_and_restores_original_model() {
+        let mut repository = TestRepository::default();
+        let created = handle(
+            &mut repository,
+            &request("/v2/storage", &write("dup", "{}", "")),
+            user(),
+        );
+        assert_eq!(created.status, 200);
+        let original = repository.storage.clone();
+        let input = r#"{"object_ids":[{"collection":"profile","key":"dup"},{"collection":"profile","key":"dup"}]}"#;
+        let response = handle(
+            &mut repository,
+            &request("/v2/storage/delete", input),
+            user(),
+        );
+        assert_eq!(response.status, 400);
+        assert_eq!(body(&response)["code"], 3);
+        assert_eq!(body(&response)["message"], REJECTED_DELETE);
+        assert_eq!(repository.storage, original);
+    }
+
+    #[test]
+    fn duplicate_chained_exact_and_later_acl_failure_use_occurrence_state() {
+        let mut repository = TestRepository::default();
+        let a = "{\"v\":1}";
+        let b = "{\"v\":2}";
+        let input = serde_json::json!({"objects":[
+            {"collection":"profile","key":"dup","value":a},
+            {"collection":"profile","key":"dup","value":b,"version":ContentVersion::from_value(a.as_bytes()).as_str()}
+        ]}).to_string();
+        assert_eq!(
+            handle(&mut repository, &request("/v2/storage", &input), user()).status,
+            200
+        );
+        let original = repository.storage.clone();
+        let input = serde_json::json!({"objects":[
+            {"collection":"profile","key":"dup","value":a,"permission_write":0},
+            {"collection":"profile","key":"dup","value":b,"version":"stale"}
+        ]})
+        .to_string();
+        let response = handle(&mut repository, &request("/v2/storage", &input), user());
+        assert_eq!(response.status, 400);
+        assert_eq!(body(&response)["message"], REJECTED_PERMISSION);
+        assert_eq!(repository.storage, original);
     }
 
     #[test]

@@ -7,8 +7,8 @@ use trnm_contracts::{Digest32, DomainError, RetryClass, SessionFamilyId, StableC
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, RefreshRotationOutcome, RotateRefreshToken,
     SessionFamilyRecord, StorageActor, StorageBatchOperation, StorageListPosition,
-    StorageObjectKey, StoredStorageClientListPage, StoredStorageMutationReceipt,
-    StoredStorageObject,
+    StorageNakamaBatchKind, StorageObjectKey, StoredStorageClientListPage,
+    StoredStorageMutationReceipt, StoredStorageObject,
 };
 use trnm_session_core::RevocationReason;
 
@@ -145,6 +145,18 @@ impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
         // The complete read batch has one pool deadline and snapshot. Do not
         // enter the authority-command retry supervisor implicitly.
         self.inner.read_storage_objects(actor, keys)
+    }
+
+    fn apply_storage_batch_nakama(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+        kind: StorageNakamaBatchKind,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        // No durable command identity: one call, including ambiguous commit errors.
+        self.inner
+            .apply_storage_batch_nakama(actor, operations, updated_at_ms, kind)
     }
 
     fn verify_access_session(
@@ -328,6 +340,26 @@ mod tests {
             Err(self.failure)
         }
 
+        fn apply_storage_batch_nakama(
+            &mut self,
+            actor: StorageActor,
+            operations: &[StorageBatchOperation],
+            updated_at_ms: u64,
+            kind: StorageNakamaBatchKind,
+        ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+            assert!(matches!(
+                (kind, &self.operation),
+                (
+                    StorageNakamaBatchKind::Write,
+                    StorageBatchOperation::Write(_)
+                ) | (
+                    StorageNakamaBatchKind::Delete,
+                    StorageBatchOperation::Delete(_)
+                )
+            ));
+            self.apply_storage_batch(actor, operations, updated_at_ms)
+        }
+
         fn list_storage_objects_nakama(
             &mut self,
             actor: StorageActor,
@@ -443,6 +475,69 @@ mod tests {
                     )
                     .unwrap_err();
                 assert_eq!(returned, failure);
+                assert_eq!(repository.inner.calls, 1);
+                let metrics = repository.operational_metrics();
+                assert_eq!(metrics.retry_attempts, 0);
+                assert_eq!(metrics.retries, 0);
+                assert_eq!(metrics.retry_exhausted, 0);
+                assert_eq!(metrics.retry_sleep_milliseconds, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn nakama_homogeneous_storage_batches_are_not_implicitly_retried() {
+        let owner = UserId::new([0x94; 16]);
+        let key = StorageObjectKey::new("profile", "nakama-retry", owner).unwrap();
+        let operations = [
+            (
+                StorageNakamaBatchKind::Write,
+                StorageBatchOperation::Write(StorageWriteOperation {
+                    key: key.clone(),
+                    value: b"{}".to_vec(),
+                    expected: VersionCheck::Any,
+                    read_permission: ReadPermission::OWNER,
+                    write_permission: WritePermission::OWNER,
+                }),
+            ),
+            (
+                StorageNakamaBatchKind::Delete,
+                StorageBatchOperation::Delete(StorageDeleteOperation {
+                    key,
+                    expected_version: None,
+                }),
+            ),
+        ];
+        for (kind, operation) in operations {
+            for retry in [
+                RetryClass::Never,
+                RetryClass::SafeImmediate,
+                RetryClass::SafeBackoff,
+                RetryClass::ResyncRequired,
+            ] {
+                let failure = error(retry);
+                let mut repository = RetryingRepository::new(
+                    StorageMutationRepository {
+                        calls: 0,
+                        actor: StorageActor::User(owner),
+                        operation: operation.clone(),
+                        updated_at_ms: 123,
+                        failure,
+                    },
+                    immediate_policy(3),
+                )
+                .unwrap();
+                assert_eq!(
+                    repository
+                        .apply_storage_batch_nakama(
+                            StorageActor::User(owner),
+                            std::slice::from_ref(&operation),
+                            123,
+                            kind
+                        )
+                        .unwrap_err(),
+                    failure
+                );
                 assert_eq!(repository.inner.calls, 1);
                 let metrics = repository.operational_metrics();
                 assert_eq!(metrics.retry_attempts, 0);

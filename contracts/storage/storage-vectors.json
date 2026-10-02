@@ -342,7 +342,7 @@
           "actor": "user:01",
           "key": "profile/main/01",
           "value": "v2",
-          "expected": "版本😀",
+          "expected": "\u7248\u672c\ud83d\ude00",
           "read": 1,
           "write": 1
         }
@@ -561,7 +561,9 @@
       "crates/trnm-storage-core/src/projection.rs",
       "crates/trnm-storage-core/src/projection_tests.rs",
       "crates/trnm-storage-core/src/stored_domain.rs",
-      "crates/trnm-storage-core/src/stored_domain_tests.rs"
+      "crates/trnm-storage-core/src/stored_domain_tests.rs",
+      "crates/trnm-storage-core/src/nakama_sort.rs",
+      "crates/trnm-storage-core/src/nakama_batch_tests.rs"
     ],
     "test_functions": [
       "public_version_preserves_opaque_history_and_unicode_character_bounds",
@@ -595,5 +597,45 @@
     "storage_behavior_compatible": false,
     "database_durable": false,
     "production_ready": false
+  },
+  "nakama_homogeneous_batch_source_candidate": {
+    "source_files": [
+      "crates/trnm-storage-core/src/nakama_sort.rs",
+      "crates/trnm-storage-core/src/nakama_batch_tests.rs"
+    ],
+    "sort_source_lock": "contracts/storage/nakama-sort-source-lock-v1.json",
+    "license": "third_party/go-sort/LICENSE",
+    "sort_test_functions": [
+      "binary_thirteen_permutations_preserve_occurrences_and_key_order",
+      "insertion_boundary_keeps_occurrences_and_original_ordinals",
+      "oversized_input_rejects_before_comparison_or_permutation",
+      "source_predicted_thirteen_operations_change_last_duplicate"
+    ],
+    "batch_test_functions": [
+      "nakama_duplicate_client_delete_rolls_back_and_server_missing_is_explicit_noop",
+      "nakama_exact_condition_observes_the_preceding_same_key_insert",
+      "nakama_policy_is_homogeneous_and_internal_mixed_policy_remains_distinct",
+      "nakama_sorted_candidate_preserves_input_ack_ordinals_and_projected_witnesses",
+      "nakama_step_acl_occ_and_insert_only_failures_restore_the_whole_model",
+      "nakama_three_server_writes_bypass_step_acl_without_collapsing_acks",
+      "nakama_two_client_writes_keep_occurrence_receipts_and_last_step_state",
+      "thirteen_occurrences_follow_observed_go_order_without_reordering_acks"
+    ],
+    "max_operations": 100,
+    "owner_order": "canonical-user-id",
+    "receipt_order": "original-input-ordinal",
+    "typed_mixed_duplicate_policy": "reject",
+    "scope": "Pure identity/projection model and pinned Go 1.26.5 ordinal permutation; native SQL, timestamps, hooks and index effects require separate profile qualification.",
+    "open_boundaries": [
+      "Nakama write pgx.Batch drains later queued SQL before returning an earlier ACL rejection; this sequential source path may reject before that drain.",
+      "Runtime raw OwnerID representations, pointer aliases, native lock schedules, hooks, indexes and complete gateway/SDK differential remain open."
+    ],
+    "accepted": false,
+    "compatibility_credit": false,
+    "database_durable": false,
+    "native_lock_schedule_compatible": false,
+    "runtime_owner_representation_parity": false,
+    "hooks_and_index_compatible": false,
+    "full_nakama_replacement": false
   }
 }

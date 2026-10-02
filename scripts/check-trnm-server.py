@@ -78,6 +78,15 @@ REQUIRED_FILES = {
     ROOT / "crates/trnm-server/src/runtime/error.rs",
     ROOT / "crates/trnm-server/src/runtime/schema.rs",
     ROOT / "crates/trnm-storage-core/src/lib.rs",
+    ROOT / "crates/trnm-storage-core/src/nakama_sort.rs",
+    ROOT / "crates/trnm-storage-core/src/nakama_batch_tests.rs",
+    ROOT / "crates/trnm-server/src/runtime/app.rs",
+    ROOT / "crates/trnm-server/src/runtime/pool.rs",
+    ROOT / "crates/trnm-server/src/runtime/retry.rs",
+    ROOT / "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs",
+    ROOT / "contracts/storage/nakama-sort-source-lock-v1.json",
+    ROOT / "third_party/go-sort/LICENSE",
+    ROOT / "NOTICE",
     STORAGE_LIVE_HARNESS,
     LIVE_FAILURE_HELPER,
     PERSISTENCE_ROOT / "schema.rs",
@@ -106,7 +115,70 @@ SCHEMA_V3_CASE_FAMILIES = {
 }
 STORAGE_IMPORT_LOG = "storage-v4-import.log"
 STORAGE_IMPORT_SELECTOR = "storage_v4_source_export_custody_resume_finish_and_tamper_are_native"
+STORAGE_DUPLICATE_LOG = "storage-duplicate-batches.log"
+STORAGE_DUPLICATE_SELECTOR = "nakama_duplicate_batches_preserve_step_receipts_and_native_atomicity"
+STORAGE_DUPLICATE_MARKERS = (
+    (
+        "nakama_duplicate_batches_executed",
+        "",
+    ),
+    (
+        "nakama_duplicate_late_json_rejection",
+        " independent_probe_sqlstate=22P02 actual_batch_domain_code=InvalidArgument",
+    ),
+    (
+        "nakama_duplicate_success_full_tuple_executed",
+        " fields=15",
+    ),
+    (
+        "nakama_duplicate_go13_executed",
+        " occurrences=13 final_ordinals=a12_b0 ack_positions=original fields=15",
+    ),
+    (
+        "nakama_duplicate_imported_history_executed",
+        " source_rows=3 pages=3 witness_null=true full_tuple_fields=15 source_execution_class=native-source-ddl-fixture",
+    ),
+    (
+        "nakama_duplicate_occurrence_locks_executed",
+        " missing_delete_rejected_before_late_lock=true fields=15",
+    ),
+)
+STORAGE_HOMOGENEOUS_POLICY = {
+    "status": "source-candidate",
+    "maximum_occurrences": 100,
+    "sort_source_lock": "contracts/storage/nakama-sort-source-lock-v1.json",
+    "sort_profile": "go1.26.5-sort.Sort-canonical-owner-tuples",
+    "public_owner": "canonical-session-uuid",
+    "duplicate_key_policy": "preserve-every-write-or-delete-occurrence",
+    "write_ack_order": "original-input-ordinal",
+    "step_validation": "fresh-per-occurrence-acl-occ-native-current-row",
+    "atomicity": "whole-batch-commit-or-rollback",
+    "typed_mixed_duplicate_keys": "reject",
+    "batch_read_duplicate_keys": "reject",
+    "automatic_mutation_retry": False,
+    "runtime_raw_owner_representation_parity": False,
+    "hook_index_qualification": False,
+    "native_lock_schedule_qualified": False,
+    "accepted": False,
+    "compatibility_credit": False,
+    "production_ready": False,
+    "full_nakama_replacement": False,
+    "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged"
+}
+
 REQUIRED_TESTS = {
+    STORAGE_DUPLICATE_SELECTOR,
+    "nakama_two_client_writes_keep_occurrence_receipts_and_last_step_state",
+    "nakama_three_server_writes_bypass_step_acl_without_collapsing_acks",
+    "nakama_exact_condition_observes_the_preceding_same_key_insert",
+    "nakama_step_acl_occ_and_insert_only_failures_restore_the_whole_model",
+    "nakama_duplicate_client_delete_rolls_back_and_server_missing_is_explicit_noop",
+    "nakama_policy_is_homogeneous_and_internal_mixed_policy_remains_distinct",
+    "thirteen_occurrences_follow_observed_go_order_without_reordering_acks",
+    "duplicate_write_occurrences_return_independent_acks_in_original_positions",
+    "duplicate_client_delete_reports_combined_rejection_and_restores_original_model",
+    "duplicate_chained_exact_and_later_acl_failure_use_occurrence_state",
+    "nakama_homogeneous_storage_batches_are_not_implicitly_retried",
     STORAGE_IMPORT_SELECTOR,
     "migration_diagnostic_unknown_reasons_and_other_variants_do_not_leak_secrets",
     "migration_diagnostic_never_reconstructs_sqlstate_from_domain_reason",
@@ -418,6 +490,12 @@ def validate_storage_live_harness(source: str) -> None:
             STORAGE_IMPORT_LOG, "storage_v4_import_test_count",
             "storage_v4_import_live_executed", "storage_v4_import_live_skipped",
         ),
+        (
+            'cargo test -p trnm-persistence-pg --locked --test storage_duplicate_batches '
+            + STORAGE_DUPLICATE_SELECTOR,
+            STORAGE_DUPLICATE_LOG, "storage_duplicate_batches_test_count",
+            "nakama_duplicate_batches_executed", "nakama_duplicate_batches_skipped",
+        ),
     )
     previous_end = migration
     for cargo, logfile, counter, marker, skip in lanes:
@@ -439,6 +517,13 @@ def validate_storage_live_harness(source: str) -> None:
                 'TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" '
                 'TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" '
                 'TRNM_STORAGE_IMPORT_EVIDENCE_ROOT="$evidence_absolute/storage-v4-import-packets" '
+            )
+        if logfile == STORAGE_DUPLICATE_LOG:
+            environment += (
+                'TRNM_SCHEMA_UPGRADE_ADMIN_DATABASE_URL="$database_url" '
+                'TRNM_STORAGE_PINNED_UPSTREAM_DIRECTORY="$evidence_absolute/storage-source-upstream" '
+                'TRNM_STORAGE_TEST_PRODUCER_COMMIT="$candidate_sha" '
+                'TRNM_STORAGE_TEST_PRODUCER_TREE="$candidate_tree" '
             )
         start = once(
             environment + cargo + ' -- --exact --nocapture --test-threads=1 2>&1 | '
@@ -479,8 +564,16 @@ def validate_storage_live_harness(source: str) -> None:
                 'condition_sql=(accepted|rejected) payload_sql=(accepted|rejected) compatibility_credit=false$" '
                 '"$evidence/canonical-storage-app.log")" -eq 1'
             )
-            if not opaque < jsonb < native_inputs < reject_skip:
-                fail("storage JSONB v3 markers must bind actual cases and SQL profile results to the canonical fixture")
+            homogeneous = once(
+                'grep -Fxq "storage_homogeneous_app_executed profile=${profile} '
+                'write_occurrences=13 rollback_cases=3" "$evidence/canonical-storage-app.log"'
+            )
+            homogeneous_unique = once(
+                'test "$(grep -Ec \'^storage_homogeneous_app_executed \' '
+                '"$evidence/canonical-storage-app.log")" -eq 1'
+            )
+            if not opaque < jsonb < native_inputs < homogeneous < homogeneous_unique < reject_skip:
+                fail("storage JSONB and homogeneous App markers must bind actual cases to the canonical fixture")
         if logfile in ("storage-native-jsonb.log", "storage-v4-acl.log", STORAGE_IMPORT_LOG):
             unique_marker = once(
                 f'test "$(grep -Fxc "{marker} profile=${{profile}}" '
@@ -493,6 +586,24 @@ def validate_storage_live_harness(source: str) -> None:
                             '"$evidence/storage-v4-import.log")" -eq 1')
             if not exact < terminal < executed:
                 fail("storage import fixture must have one complete terminal result before its marker")
+        if logfile == STORAGE_DUPLICATE_LOG:
+            terminal = once('test "$(grep -Ec \'^test result:\' '
+                            '"$evidence/storage-duplicate-batches.log")" -eq 1')
+            if not exact < terminal < executed:
+                fail("storage duplicate fixture must have one successful terminal result")
+            previous_marker = terminal
+            for expected_marker, suffix in STORAGE_DUPLICATE_MARKERS:
+                marker_position = once(
+                    f'grep -Fxq "{expected_marker} profile=${{profile}}{suffix}" '
+                    f'"$evidence/{logfile}"'
+                )
+                unique_position = once(
+                    f'test "$(grep -Ec \'^{expected_marker} \' '
+                    f'"$evidence/{logfile}")" -eq 1'
+                )
+                if not previous_marker < marker_position < unique_position < reject_skip:
+                    fail("storage duplicate fixture requires six unique whole-line profile markers")
+                previous_marker = unique_position
         previous_end = end
     schema_start = once(
         'CARGO_TERM_COLOR=never TRNM_REQUIRE_LIVE_DATABASE=1 '
@@ -577,7 +688,7 @@ def validate_storage_live_harness(source: str) -> None:
     require_markers("storage v3 fixture summary", commands[summary[0]], (
         '"storage_jsonb_v3_projection":true',
         '"storage_native_jsonb":true', '"storage_v4_acl":true', '"schema_v3_extra_cases":41',
-        '"storage_v4_import":true',
+        '"storage_v4_import":true', '"storage_homogeneous_batches":true', '"storage_homogeneous_app":true',
         '"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6}',
         '"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3}',
         '"schema_version":${schema_version}', '"storage_writer_epoch":${storage_writer_epoch}',
@@ -1172,6 +1283,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
         "check_config", "fresh_migration", "nakama_client_list_projection", "storage_occ_precedence",
         "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
         "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
+        "storage_homogeneous_batches", "storage_homogeneous_app",
         "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
         "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
         "process_restart_exact_receipt_replay",
@@ -1265,9 +1377,13 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
         f"canonical_storage_api_live_executed profile={profile}",
         f"storage_opaque_conditions_live_executed profile={profile} write_cases=15 delete_cases=18 batch_cases=2",
         f"storage_jsonb_v3_live_executed profile={profile} history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
+        f"storage_homogeneous_app_executed profile={profile} write_occurrences=13 rollback_cases=3",
     ):
         if lines.count(marker) != 1:
             fail("canonical storage fixture has a missing or duplicate execution marker")
+    homogeneous_app = [line for line in lines if "storage_homogeneous_app_executed " in line]
+    if homogeneous_app != [f"storage_homogeneous_app_executed profile={profile} write_occurrences=13 rollback_cases=3"]:
+        fail("canonical homogeneous App marker must occur once for the packet profile")
     branch = rf"storage_jsonb_v3_native_inputs profile={profile} condition_sql=(accepted|rejected) payload_sql=(accepted|rejected) compatibility_credit=false"
     branches = [line for line in lines if line.startswith("storage_jsonb_v3_native_inputs ")]
     if len(branches) != 1 or re.fullmatch(branch, branches[0]) is None or any(
@@ -1316,6 +1432,11 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     import_markers = [line for line in import_lines if "storage_v4_import_live_executed " in line]
     if import_markers != [f"storage_v4_import_live_executed profile={profile}"]:
         fail("native storage v4 import fixture did not execute once for the packet profile")
+    duplicate_lines = execution_log(STORAGE_DUPLICATE_LOG, 1, "nakama_duplicate_batches_skipped")
+    for marker, suffix in STORAGE_DUPLICATE_MARKERS:
+        recorded = [line for line in duplicate_lines if marker + " " in line]
+        if recorded != [f"{marker} profile={profile}{suffix}"]:
+            fail("homogeneous storage fixture has a missing, duplicate or incorrect marker: " + marker)
     authority, entries = storage_import_source_entries(root)
     source_manifest = document("storage-v4-import-source.json")
     expected_source_manifest = {
@@ -1336,10 +1457,114 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     return {"status": "trnm-server-live-packet-validated", "profile": profile,
             "schema_version": 4, "storage_writer_epoch": 4, "authoritative_migrations_count": 4,
             "storage_jsonb_v3_cases": cases, "storage_native_jsonb": True, "storage_v4_acl": True,
-            "storage_v4_import": True,
+            "storage_v4_import": True, "storage_homogeneous_batches": True, "storage_homogeneous_app": True,
             "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_V3_CASE_FAMILIES.copy(),
             "compatibility_credit": False, "accepted": False,
             "production_ready": False}
+
+
+def validate_homogeneous_storage_contract(contract: dict[str, object], source_lock: dict[str, object],
+                                          license_data: bytes, notice: str, sorter: str) -> None:
+    """Closed bounded canonical subset and BSD custody, not compatibility evidence."""
+    policy = contract.get("homogeneous_mutation_batches")
+    if not isinstance(policy, dict) or policy != STORAGE_HOMOGENEOUS_POLICY or any(
+        type(policy.get(field)) is not type(value)
+        for field, value in STORAGE_HOMOGENEOUS_POLICY.items()
+    ):
+        fail("homogeneous storage policy must retain its exact canonical scope, bounds and no-credit flags")
+    commit = "c19862e5f8415b4f24b189d065ed739517c548ba"
+    expected_files = [
+        (
+            "VERSION", 35,
+            "11b4fb14680701f98ca60fd8464a836ca4374f17896a125f4510ab6ae8cecc9b",
+            "9b642ac23a6b1ef47713901720fb8d2b41139eda",
+        ),
+        (
+            "LICENSE", 1453,
+            "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+            "2a7cf70da6e498df9c11ab6a5eaa2ddd7af34da4",
+        ),
+        (
+            "src/sort/sort.go", 10503,
+            "100e49103d23dd6b8335a50b17ae6e9db2b056cb1217d964dcf58852c3c6f8a1",
+            "087e7d033dd2356beda5c38f4d42ea4029496baa",
+        ),
+        (
+            "src/sort/zsortinterface.go", 11485,
+            "8978a49cc4174b0c35a84a2ddf73175d41254eb340ebeda29f21d3e546088a3b",
+            "51fa5032e9912a8d7db6005dd1d11291b422a312",
+        ),
+    ]
+    expected_entries = [
+        {"path": path, "url": f"https://raw.githubusercontent.com/golang/go/{commit}/{path}",
+         "commit": commit, "size": size, "sha256": sha, "git_blob_sha1": blob, "downloaded": True}
+        for path, size, sha, blob in expected_files
+    ]
+    expected = {
+        "source_commit": commit, "files": expected_entries,
+        "schema": "trillionnium.nakama-storage-sort-source-lock.v1",
+        "purpose": "Modified bounded Rust ordinal sorter for canonical-owner homogeneous storage batches",
+        "runtime_owner_representation_parity": False, "nakama_native_differential_accepted": False,
+        "source_limits": [
+            "Canonical principal UUID ordering only; runtime raw owner representation remains open.",
+            "Maximum 100 occurrences; larger upstream batches remain outside this candidate bound.",
+            "Go stdlib observations and Rust execution do not constitute whole Nakama/SDK/native compatibility acceptance.",
+        ],
+        "modified_rust_path": "crates/trnm-storage-core/src/nakama_sort.rs",
+        "license_path": "third_party/go-sort/LICENSE",
+    }
+    if source_lock != expected or any(
+        type(source_lock.get(field)) is not bool
+        for field in ("runtime_owner_representation_parity", "nakama_native_differential_accepted")
+    ) or any(type(entry.get("size")) is not int or type(entry.get("downloaded")) is not bool
+             for entry in source_lock.get("files", [])):
+        fail("bounded Go sorter source lock differs from the pinned source or overclaims its scope")
+    if len(license_data) != 1453 or hashlib.sha256(license_data).hexdigest() != (
+        "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    ):
+        fail("Go sorter BSD license must retain the complete pinned original bytes")
+    require_markers("Go sorter source attribution", sorter, (
+        "// Copyright 2009 The Go Authors. All rights reserved.",
+        "// Copyright 2022 The Go Authors. All rights reserved.", "// Modified:",
+        commit, "src/sort/sort.go", "src/sort/zsortinterface.go", "third_party/go-sort/LICENSE",
+        "contracts/storage/nakama-sort-source-lock-v1.json", "if data.len() > 100",
+    ))
+    require_markers("Go sorter NOTICE", notice, (
+        "Copyright 2009 and 2022", "The Go Authors", commit,
+        "third_party/go-sort/LICENSE", "contracts/storage/nakama-sort-source-lock-v1.json",
+    ))
+
+
+def validate_homogeneous_storage_source(core: str, repository: str, wire: str,
+                                        pool: str, retry: str) -> None:
+    """Bind the occurrence seam without asserting upstream lock timing."""
+    require_markers("homogeneous storage core", core, (
+        "mod nakama_sort;", "mod nakama_batch_tests;", "const MAX_BATCH_OPERATIONS: usize = 100;",
+        "pub enum NakamaBatchKind", "pub fn plan_nakama_batch(",
+        '"mixed_nakama_storage_batch"', "nakama_sort::go1265_sort_ordinals",
+        "operations[left].key() < operations[right].key()", "pub fn apply_nakama_batch_projected<F>",
+        "for ordinal in order", "receipts[ordinal] = Some(receipt)",
+    ))
+    require_markers("homogeneous storage repository", repository, (
+        "pub fn apply_storage_batch_nakama_with_metadata(", "Some(kind)",
+        "plan_nakama_batch(operations, kind)?", "for ordinal in order", "if kind.is_none() {",
+        "lock_storage_access(&mut transaction, operation.key())?",
+        "load_for_update(&mut transaction, operation.key(), self.profile)?",
+        "receipts[ordinal] = Some(receipt)", "transaction.commit()",
+    ))
+    if "lock_nakama_storage_key(" in repository:
+        fail("homogeneous Nakama policy must not reintroduce the all-unique prelock pass")
+    require_markers("homogeneous storage wire", wire, (
+        "repository.apply_storage_batch_nakama(", "NakamaBatchKind::Write", "NakamaBatchKind::Delete",
+    ))
+    require_markers("homogeneous storage pool", pool, (
+        "fn apply_storage_batch_nakama(", "self.run(|repository|",
+        "repository.apply_storage_batch_nakama_with_metadata(",
+    ))
+    require_markers("homogeneous storage retry", retry, (
+        "fn apply_storage_batch_nakama(", "self.inner", "apply_storage_batch_nakama(actor, operations, updated_at_ms, kind)",
+        "fn nakama_homogeneous_storage_batches_are_not_implicitly_retried()",
+    ))
 
 
 def expected_persistence_dependencies() -> dict[str, object]:
@@ -1794,6 +2019,19 @@ def main(arguments: list[str] | None = None) -> int:
     storage_contract = json.loads(
         (ROOT / "contracts/storage/nakama-http-storage-v1.json").read_text(encoding="utf-8")
     )
+    validate_homogeneous_storage_contract(
+        storage_contract,
+        json.loads((ROOT / "contracts/storage/nakama-sort-source-lock-v1.json").read_text()),
+        (ROOT / "third_party/go-sort/LICENSE").read_bytes(), (ROOT / "NOTICE").read_text(),
+        sources[Path("crates/trnm-storage-core/src/nakama_sort.rs")],
+    )
+    validate_homogeneous_storage_source(
+        sources[Path("crates/trnm-storage-core/src/lib.rs")],
+        sources[Path("crates/trnm-persistence-pg/src/storage_parts/01_repository.rs")],
+        sources[Path("crates/trnm-server/src/runtime/storage_api.rs")],
+        sources[Path("crates/trnm-server/src/runtime/pool.rs")],
+        sources[Path("crates/trnm-server/src/runtime/retry.rs")],
+    )
     if storage_contract.get("composition") != "crates/trnm-server::trnm-server":
         fail("storage HTTP API must use the canonical process authority")
     expected_storage_routes = {
@@ -1823,6 +2061,12 @@ def main(arguments: list[str] | None = None) -> int:
         projection.get(field) is not False for field in ("accepted", "compatibility_credit", "gap_closed", "production_ready")
     ):
         fail("storage HTTP JSONB projection must retain current v4 ABI and no-credit claims")
+    homogeneous_status = status.get("storage_homogeneous_mutation_source_candidate", {})
+    if not isinstance(homogeneous_status, dict) or any(
+        homogeneous_status.get(field) != value or type(homogeneous_status.get(field)) is not type(value)
+        for field, value in STORAGE_HOMOGENEOUS_POLICY.items()
+    ) or homogeneous_status.get("gap_closed") is not False:
+        fail("homogeneous storage status must retain exact source scope and false acceptance")
     condition_state = status.get("storage_http_mutations", {}).get("condition_version")
     if condition_state != (
         "Original-string ExpectedVersion: write empty is blind, write star is insert-only, "

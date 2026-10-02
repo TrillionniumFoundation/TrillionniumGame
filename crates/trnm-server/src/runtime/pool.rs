@@ -4,7 +4,7 @@ use trnm_contracts::{Digest32, DomainError, SessionFamilyId, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, PgPool, RefreshRotationOutcome,
     RotateRefreshToken, SessionFamilyRecord, StorageActor, StorageBatchOperation,
-    StorageListPosition, StorageObjectKey, StoredStorageClientListPage,
+    StorageListPosition, StorageNakamaBatchKind, StorageObjectKey, StoredStorageClientListPage,
     StoredStorageMutationReceipt, StoredStorageObject,
 };
 use trnm_session_core::RevocationReason;
@@ -110,6 +110,23 @@ impl Repository for PooledRepository {
     ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
         self.run(|repository| {
             repository.apply_storage_batch_with_metadata(actor, operations, updated_at_ms)
+        })
+    }
+
+    fn apply_storage_batch_nakama(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+        kind: StorageNakamaBatchKind,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        self.run(|repository| {
+            repository.apply_storage_batch_nakama_with_metadata(
+                actor,
+                operations,
+                updated_at_ms,
+                kind,
+            )
         })
     }
 

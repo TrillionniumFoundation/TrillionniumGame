@@ -196,7 +196,9 @@
         "crates/trnm-storage-core/src/projection.rs",
         "crates/trnm-storage-core/src/projection_tests.rs",
         "crates/trnm-storage-core/src/stored_domain.rs",
-        "crates/trnm-storage-core/src/stored_domain_tests.rs"
+        "crates/trnm-storage-core/src/stored_domain_tests.rs",
+        "crates/trnm-storage-core/src/nakama_sort.rs",
+        "crates/trnm-storage-core/src/nakama_batch_tests.rs"
       ],
       "auxiliary_source_files": [
         "crates/trnm-storage-core/src/bin/trnm-storage-version.rs"
@@ -214,14 +216,17 @@
         "11 additional Rust projection regressions inventoried as source, without execution or compatibility credit",
         "pinned version vectors",
         "stored 0..128 Unicode collection/key domain and nonnegative raw SMALLINT ACL wrappers",
-        "distinct upstream batch read, three list, write and delete permission predicates with seven stored-domain source regressions"
+        "distinct upstream batch read, three list, write and delete permission predicates with seven stored-domain source regressions",
+        "bounded Go 1.26.5 canonical-owner ordinal permutation and source/modified BSD license inventory",
+        "homogeneous write/delete occurrence and original-receipt model with four sort and eight batch source regressions; strict typed mixed-batch duplicate policy remains separate"
       ],
       "missing": [
         "native JSONB renderer is outside this pure core; profile adapter and schema cutover need exact-head qualification",
         "official API and SQL integration acceptance, indexes and runtime hooks",
         "complete original cursor and concurrent-page differential",
         "wire/database differential",
-        "independent review"
+        "independent review",
+        "native write pgx.Batch drain timing, raw Runtime owner representation, hook/index effects and full homogeneous batch acceptance"
       ],
       "blocking_gaps": [
         "GAP-P1-STORAGE-001",

@@ -159,7 +159,11 @@
         "scripts/check-storage-core.py",
         "tests/control_plane/test_storage_integrity_contract.py",
         "crates/trnm-storage-core/src/stored_domain.rs",
-        "crates/trnm-storage-core/src/stored_domain_tests.rs"
+        "crates/trnm-storage-core/src/stored_domain_tests.rs",
+        "crates/trnm-storage-core/src/nakama_sort.rs",
+        "crates/trnm-storage-core/src/nakama_batch_tests.rs",
+        "contracts/storage/nakama-sort-source-lock-v1.json",
+        "third_party/go-sort/LICENSE"
       ],
       "status": "source-candidate",
       "required_next": [
@@ -167,7 +171,8 @@
         "complete native schema and profile-adapter cutover qualification without request-byte reconstruction",
         "separate PostgreSQL and CockroachDB live native projection, history, collision and rollback packets",
         "immutable Nakama wire/database and official SDK differential",
-        "independent storage/database/security acceptance"
+        "independent storage/database/security acceptance",
+        "homogeneous storage write batch-drain timing, raw Runtime owner representation and hook/index native differential"
       ],
       "accepted": false,
       "gap_closed": false,

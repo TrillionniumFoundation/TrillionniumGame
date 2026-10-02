@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -43,14 +44,34 @@ PROJECTION_TESTS = {
     "projection_seam_keeps_permission_and_create_only_occ_precedence",
 }
 STORED_DOMAIN_TESTS = {'stored_permission_wrappers_preserve_full_nonnegative_smallint_domain', 'blind_raw_acl_no_op_and_acl_change_preserve_or_replace_unknown_witness', 'stored_acl_predicates_keep_read_list_write_and_delete_distinct', 'historical_acl_batch_failure_preserves_values_versions_witnesses_and_all_rows', 'historical_raw_acl_write_delete_and_occ_precedence_are_distinct', 'historical_raw_acl_read_visibility_uses_authenticated_owner_and_exact_read_values', 'stored_nakama_identifiers_preserve_empty_unicode_control_and_owner_cells'}
+NAKAMA_SORT_TESTS = {
+    "source_predicted_thirteen_operations_change_last_duplicate",
+    "insertion_boundary_keeps_occurrences_and_original_ordinals",
+    "oversized_input_rejects_before_comparison_or_permutation",
+    "binary_thirteen_permutations_preserve_occurrences_and_key_order",
+}
+NAKAMA_BATCH_TESTS = {
+    "nakama_two_client_writes_keep_occurrence_receipts_and_last_step_state",
+    "nakama_three_server_writes_bypass_step_acl_without_collapsing_acks",
+    "nakama_exact_condition_observes_the_preceding_same_key_insert",
+    "nakama_step_acl_occ_and_insert_only_failures_restore_the_whole_model",
+    "nakama_duplicate_client_delete_rolls_back_and_server_missing_is_explicit_noop",
+    "nakama_sorted_candidate_preserves_input_ack_ordinals_and_projected_witnesses",
+    "nakama_policy_is_homogeneous_and_internal_mixed_policy_remains_distinct",
+    "thirteen_occurrences_follow_observed_go_order_without_reordering_acks",
+}
 SOURCE_FILES = (
     "crates/trnm-storage-core/src/lib.rs",
     "crates/trnm-storage-core/src/projection.rs",
     "crates/trnm-storage-core/src/projection_tests.rs",
     "crates/trnm-storage-core/src/stored_domain.rs",
     "crates/trnm-storage-core/src/stored_domain_tests.rs",
+    "crates/trnm-storage-core/src/nakama_sort.rs",
+    "crates/trnm-storage-core/src/nakama_batch_tests.rs",
 )
 AUXILIARY_SOURCE_FILES = ("crates/trnm-storage-core/src/bin/trnm-storage-version.rs",)
+SORT_LOCK_PATH = "contracts/storage/nakama-sort-source-lock-v1.json"
+SORT_LICENSE_PATH = "third_party/go-sort/LICENSE"
 REQUIRED_VECTOR_CASES = {
     "owner-create", "stale-batch-rollback", "delete-exact", "server-owned-denied",
     "create-only-existing-disabled-write-acl", "exact-stale-disabled-write-acl-permission-first",
@@ -158,6 +179,39 @@ def validate(root: Path = ROOT) -> dict:
     if "mod stored_domain;" not in source or "mod stored_domain_tests;" not in source:
         fail("stored Nakama domain implementation or tests are unwired")
 
+    sort_source = sources["crates/trnm-storage-core/src/nakama_sort.rs"]
+    batch_tests = sources["crates/trnm-storage-core/src/nakama_batch_tests.rs"]
+    sort_names = set(re.findall(r"#\[test\]\s*fn\s+([a-z0-9_]+)\s*\(\)\s*\{", sort_source))
+    batch_names = set(re.findall(r"#\[test\]\s*fn\s+([a-z0-9_]+)\s*\(\)\s*\{", batch_tests))
+    if sort_names != NAKAMA_SORT_TESTS or batch_names != NAKAMA_BATCH_TESTS:
+        fail("bounded Nakama homogeneous batch regression inventory drifted")
+    for marker in (
+        "mod nakama_sort;", "#[cfg(test)]\nmod nakama_batch_tests;",
+        "pub enum NakamaBatchKind {", "pub fn plan_nakama_batch(",
+        "operations.is_empty() || operations.len() > MAX_BATCH_OPERATIONS",
+        '"mixed_nakama_storage_batch"',
+        "let mut order: Vec<_> = (0..operations.len()).collect();",
+        "nakama_sort::go1265_sort_ordinals(&mut order, |left, right| {",
+        "operations[left].key() < operations[right].key()",
+        "let order = plan_nakama_batch(operations, kind)?;",
+        "let mut receipts = vec![None; operations.len()];",
+        "for ordinal in order {", "receipts[ordinal] = Some(receipt);",
+    ):
+        if marker not in source:
+            fail(f"missing homogeneous batch contract marker: {marker}")
+    bound = "if data.len() > 100 {\n        return Err(SortBoundError::TooManyOperations);\n    }"
+    if bound not in sort_source or sort_source.index(bound) > sort_source.index("let n = data.len();"):
+        fail("Go ordinal sort bound must reject before permutation or comparison")
+    lock = json.loads((root / SORT_LOCK_PATH).read_text())
+    if lock.get("source_commit") != "c19862e5f8415b4f24b189d065ed739517c548ba" or lock.get("modified_rust_path") != SOURCE_FILES[5] or lock.get("license_path") != SORT_LICENSE_PATH:
+        fail("bounded Go ordinal sorter source identity drifted")
+    for field in ("runtime_owner_representation_parity", "nakama_native_differential_accepted"):
+        if lock.get(field) is not False:
+            fail(f"Go sorter source lock overclaims {field}")
+    license_hash = "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    if hashlib.sha256((root / SORT_LICENSE_PATH).read_bytes()).hexdigest() != license_hash:
+        fail("modified Go sorter BSD license bytes drifted")
+
     vectors = json.loads((root / "contracts/storage/storage-vectors.json").read_text())
     if vectors.get("schema") != "trillionnium.storage-core-vectors.v2":
         fail("storage vector schema is not v2")
@@ -182,6 +236,18 @@ def validate(root: Path = ROOT) -> dict:
     for field in ("accepted", "compatibility_credit", "database_durable"):
         if projection_contract.get(field) is not False:
             fail(f"projection source claim {field} must remain false")
+    batch_contract = vectors.get("nakama_homogeneous_batch_source_candidate", {})
+    if batch_contract.get("source_files") != list(SOURCE_FILES[5:]) or batch_contract.get("sort_source_lock") != SORT_LOCK_PATH or batch_contract.get("license") != SORT_LICENSE_PATH:
+        fail("homogeneous batch source identities are not inventoried")
+    for field, expected in (("sort_test_functions", NAKAMA_SORT_TESTS), ("batch_test_functions", NAKAMA_BATCH_TESTS)):
+        observed = batch_contract.get(field, [])
+        if len(observed) != len(expected) or set(observed) != expected:
+            fail("homogeneous batch test functions are not fully inventoried")
+    if batch_contract.get("max_operations") != 100 or batch_contract.get("owner_order") != "canonical-user-id" or batch_contract.get("receipt_order") != "original-input-ordinal" or batch_contract.get("typed_mixed_duplicate_policy") != "reject":
+        fail("homogeneous batch source scope drifted")
+    for field in ("accepted", "compatibility_credit", "database_durable", "native_lock_schedule_compatible", "runtime_owner_representation_parity", "hooks_and_index_compatible", "full_nakama_replacement"):
+        if batch_contract.get(field) is not False:
+            fail(f"homogeneous batch source overclaims {field}")
     claims = vectors.get("claims", {})
     if claims.get("public_version_source_candidate") is not True:
         fail("public version source candidate is not recorded")
@@ -193,6 +259,8 @@ def validate(root: Path = ROOT) -> dict:
     for field in FALSE_CLAIMS:
         if status.get("claims", {}).get(field) is not False:
             fail(f"storage status overclaims {field}")
+    if status.get("nakama_homogeneous_batch_source_candidate") != batch_contract:
+        fail("storage status homogeneous batch source contract drifted")
     inventory = json.loads((root / "docs/status/IMPLEMENTATION_INVENTORY.json").read_text())
     components = [row for row in inventory.get("components", []) if row.get("id") == "COMP-STORAGE"]
     if len(components) != 1:
@@ -216,7 +284,9 @@ def validate(root: Path = ROOT) -> dict:
             fail(f"storage projection candidate overclaims {field}")
     return {
         "status": "storage-core-static-contract-passed",
-        "rust_tests": len(names) + len(projection_names) + len(stored_names),
+        "rust_tests": len(names) + len(projection_names) + len(stored_names) + len(sort_names) + len(batch_names),
+        "nakama_sort_tests": len(sort_names),
+        "nakama_batch_tests": len(batch_names),
         "stored_domain_tests": len(stored_names),
         "source_files": list(SOURCE_FILES),
         "auxiliary_source_files": list(AUXILIARY_SOURCE_FILES),

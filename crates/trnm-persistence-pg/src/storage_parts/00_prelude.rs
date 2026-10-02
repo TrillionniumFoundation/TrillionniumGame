@@ -5,9 +5,9 @@ use postgres::types::ToSql;
 use postgres::{IsolationLevel, Row, Transaction};
 use trnm_contracts::{DomainError, RetryClass, StableCode, UserId};
 use trnm_storage_core::{
-    Actor, BatchOperation, CollisionWitness, ContentVersion, DeleteOperation, IntegrityDigest,
-    MutationReceipt, PublicVersion, ReadPermission, StorageObject, StorageObjectKey, VersionCheck,
-    WriteOperation, WritePermission,
+    plan_nakama_batch, Actor, BatchOperation, CollisionWitness, ContentVersion, DeleteOperation,
+    IntegrityDigest, MutationReceipt, NakamaBatchKind, PublicVersion, ReadPermission,
+    StorageObject, StorageObjectKey, VersionCheck, WriteOperation, WritePermission,
 };
 
 use super::{
