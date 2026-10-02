@@ -24,7 +24,7 @@
     "superseded"
   ],
   "default_task_state": "planned",
-  "task_overrides": [{"id":"TG-W4-002","status":"in-progress","owner_role":"storage-data","source_candidate":{"contract":"contracts/storage/nakama-http-mutations-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A"],"accepted":false,"gap_closed":false},"evidence_ids":[],"limitations":["Only bounded HTTP write/delete wiring is a source candidate; complete read/write/delete work-package acceptance remains open."]}],
+  "task_overrides": [{"id":"TG-W4-002","status":"ready","owner_role":"storage-data","source_candidate":{"contract":"contracts/storage/nakama-http-mutations-v1.json","source":"crates/trnm-server/src/runtime/storage_api.rs","tests":"crates/trnm-server/src/runtime/storage_api_tests.rs","status":"source-candidate","parity_ids":["TG-D1-2940D4CEAACA4051","TG-D1-7A7BFBFD85579A6A"],"accepted":false,"gap_closed":false},"evidence_ids":[],"limitations":["Only bounded HTTP write/delete wiring is a source candidate; complete read/write/delete work-package acceptance remains open."]}],
   "workstreams": [
     {"id":"W0","status":"in-progress","blocking_gaps":["GAP-P0-CI-001","GAP-P0-GOV-001","GAP-P0-PLAN-001","GAP-P0-EVIDENCE-001","GAP-P0-SCOPE-001"]},
     {"id":"W1","status":"in-progress","blocking_gaps":["GAP-P0-DATA-001","GAP-P1-PG-001"]},
