@@ -28,7 +28,7 @@ Dependency direction is reviewed as part of package authority. This module must 
 
 The only production DDL authority is migrations/. PostgreSQL and CockroachDB are separate profiles with separate evidence and retry behavior.
 
-The shared `trnm-schema` runner consumes the locked, ordered 0001/0002/0003/0004 chain. The current ABI is schema 4/writer epoch 4 with twelve authoritative tables; original historical SQL bytes and prefix identities stay immutable.
+The shared `trnm-schema` runner consumes the locked, ordered 0001/0002/0003/0004 chain. The current ABI is schema 4/writer epoch 4 with twelve authoritative tables; original historical SQL bytes and prefix identities stay immutable. PostgreSQL 17.6 verification recognizes the exact fresh and pg_dump/pg_restore forms of two import CHECK constraints while retaining both raw catalog observations. The complete profile/table/name/descriptor, keys, validation state and all column properties remain checked; arbitrary expression formatting or changed predicates are rejected.
 Schema version 2 appends nullable storage `create_time`/`update_time` columns
 without defaults or historical backfill, plus chain identity and storage writer
 epoch metadata. Serve verification reads existing identity and catalog; it does

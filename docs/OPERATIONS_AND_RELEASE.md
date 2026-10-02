@@ -1,7 +1,7 @@
 # Operations and release
 
 Status: **authoritative current documentation**  
-Revision: 2026-10-02
+Revision: 2026-10-03
 
 ## 1. Operational status
 
@@ -263,7 +263,7 @@ Schema3 conversion requires the same independently inventoried and drained write
 
 ## Storage source transfer operations candidate
 
-Schema 4 adds `0004_storage_source_import_up.sql`, widens only the stored key/ACL domain and adds manifest-bound job/page journals. An existing v3 upgrade preserves its recorded publisher in `v3_apply_source_commit`, alongside genuine v2 history and the original foundation source/time. Fresh migration records the actual intermediate publications. Preserve the complete four-file profile lock and all twelve-table catalog/data snapshots; do not rewrite a historical publisher to the current verify binary. The v2/v3 decisions above and the original six schema-upgrade regressions plus 41 v3 family observations remain mandatory coverage. No older writer or destructive downgrade is authorized after epoch 4.
+Schema 4 adds `0004_storage_source_import_up.sql`, widens only the stored key/ACL domain and adds manifest-bound job/page journals. An existing v3 upgrade preserves its recorded publisher in `v3_apply_source_commit`, alongside genuine v2 history and the original foundation source/time. Fresh migration records the actual intermediate publications. Preserve the complete four-file profile lock and all twelve-table catalog/data snapshots; do not rewrite a historical publisher to the current verify binary. PostgreSQL 17.6 pg_dump/pg_restore changes the deparsed grouping of the jobs-count and pages-bound CHECK constraints. Read-only verification accepts exactly the two recorded complete descriptors for each named constraint and preserves their raw observations. Changed bounds, predicates, keys, validation state, profile or other catalog objects remain rejected; other PostgreSQL versions require separate qualification. The v2/v3 decisions above and the original six schema-upgrade regressions plus 41 v3 family observations remain mandatory coverage. No older writer or destructive downgrade is authorized after epoch 4.
 
 Use the existing `trnm-storage-export snapshot PACKET_DIRECTORY --candidate-plaintext` only with an isolated source-DDL fixture or an independently authorized custodian snapshot. Supply database URL/profile, page size, source execution class, explicit producer commit/tree/execution ID, actual exporter source-file SHA256, executing-binary SHA256 and the directory holding pinned initial SQL/core-storage/LICENSE. The exporter creates a new private directory; it never overwrites a prior packet. PostgreSQL exports one read-only repeatable-read snapshot. CockroachDB exports one read-only serializable transaction identified by its native clock, without claiming an AS OF/MVCC snapshot token. Exact native timestamp equality rejects precision loss. All private/global rows and lawful JSONB shapes are exported without an ACL filter or original-request MD5 reconstruction. Manifest/receipt completion follows successful native read-only commit and file/directory synchronization; failed packets remain incomplete.
 

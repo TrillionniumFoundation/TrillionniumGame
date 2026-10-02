@@ -1,5 +1,41 @@
 // Exact PostgreSQL17/CockroachDB26 native catalog observations for frozen0004.
 // Fixture OIDs/database names are not portable identities. No semantic normalization.
+// Two complete forms observed on the pinned PostgreSQL 17.6 engine: direct
+// frozen0004 DDL and its pg_dump/pg_restore roundtrip. Keep raw catalog bytes;
+// only these named, profile-bound tuples may use the recorded second form.
+// This is a finite serialization contract, not expression normalization or a
+// claim about other PostgreSQL versions.
+const POSTGRESQL17_IMPORT_CHECK_FORMS: [(&str, &str, &str, &str); 2] = [
+    (
+        "trnm_storage_import_jobs",
+        "@constraint:storage_import_jobs_counts",
+        r#"c|true|[10, 11, 12, 13]|None|Some(" ")|Some(" ")|None|None|CHECK ((((total_rows >= 0) AND (total_rows <= 10000)) AND ((total_pages >= 0) AND (total_pages <= 100)) AND ((next_page >= 0) AND (next_page <= total_pages)) AND ((committed_rows >= 0) AND (committed_rows <= total_rows)) AND (((total_rows = 0) AND (total_pages = 0)) OR ((total_pages > 0) AND (total_pages <= total_rows) AND (total_rows <= (100 * total_pages)))) AND ((committed_rows >= next_page) AND (committed_rows <= (100 * next_page)))))"#,
+        r#"c|true|[10, 11, 12, 13]|None|Some(" ")|Some(" ")|None|None|CHECK (((total_rows >= 0) AND (total_rows <= 10000) AND ((total_pages >= 0) AND (total_pages <= 100)) AND ((next_page >= 0) AND (next_page <= total_pages)) AND ((committed_rows >= 0) AND (committed_rows <= total_rows)) AND (((total_rows = 0) AND (total_pages = 0)) OR ((total_pages > 0) AND (total_pages <= total_rows) AND (total_rows <= (100 * total_pages)))) AND ((committed_rows >= next_page) AND (committed_rows <= (100 * next_page)))))"#,
+    ),
+    (
+        "trnm_storage_import_pages",
+        "@constraint:storage_import_pages_bounds",
+        r#"c|true|[2, 3, 4]|None|Some(" ")|Some(" ")|None|None|CHECK ((((page_index >= 0) AND (page_index <= 99)) AND ((first_ordinal >= 0) AND (first_ordinal <= 9999)) AND ((row_count >= 1) AND (row_count <= 100)) AND ((first_ordinal + row_count) <= 10000)))"#,
+        r#"c|true|[2, 3, 4]|None|Some(" ")|Some(" ")|None|None|CHECK (((page_index >= 0) AND (page_index <= 99) AND ((first_ordinal >= 0) AND (first_ordinal <= 9999)) AND ((row_count >= 1) AND (row_count <= 100)) AND ((first_ordinal + row_count) <= 10000)))"#,
+    ),
+];
+
+fn matches_import_constraint_serialization(
+    profile: DatabaseProfile,
+    expected: ColumnDescriptor,
+    actual_kind: &str,
+) -> bool {
+    profile == DatabaseProfile::PostgreSql
+        && POSTGRESQL17_IMPORT_CHECK_FORMS
+            .iter()
+            .any(|&(table, name, fresh, restored)| {
+                expected.table == table
+                    && expected.name == name
+                    && expected.kind == fresh
+                    && actual_kind == restored
+            })
+}
+
 fn import_catalog_objects(profile: DatabaseProfile, table: &str) -> Vec<ColumnDescriptor> {
     let mut result = Vec::new();
     match (profile, table) {

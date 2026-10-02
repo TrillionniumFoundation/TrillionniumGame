@@ -147,8 +147,13 @@ fn read_catalog(client: &mut impl GenericClient) -> Result<Catalog, DomainError>
     Ok(catalog)
 }
 
-fn matches_column(actual: &CatalogColumn, expected: ColumnDescriptor) -> bool {
-    actual.kind == expected.kind
+fn matches_column(
+    actual: &CatalogColumn,
+    expected: ColumnDescriptor,
+    profile: DatabaseProfile,
+) -> bool {
+    (actual.kind == expected.kind
+        || matches_import_constraint_serialization(profile, expected, &actual.kind))
         && actual.nullable == expected.nullable
         && actual.character_maximum_length == expected.character_maximum_length
         && if expected.default_zero {
@@ -257,7 +262,7 @@ fn catalog_prefix(catalog: &Catalog, profile: DatabaseProfile) -> Result<usize, 
             && expected.iter().all(|((table, name), column)| {
                 catalog
                     .get(&(table.to_string(), name.to_string()))
-                    .is_some_and(|actual| matches_column(actual, *column))
+                    .is_some_and(|actual| matches_column(actual, *column, profile))
             })
         {
             return Ok(prefix);
@@ -930,5 +935,199 @@ mod catalog_v3_tests {
             "@check:check_collection".to_owned()
         )));
         assert_eq!(catalog_prefix(&gap, profile).unwrap(), remove + 1);
+    }
+
+    #[test]
+    fn v4_postgresql_catalog_accepts_only_captured_fresh_and_restore_check_forms() {
+        let profile = DatabaseProfile::PostgreSql;
+        let complete = actions(profile).len();
+        for mask in 0..4 {
+            let mut catalog = snapshot(profile, complete);
+            for (index, &(table, name, fresh, restored)) in
+                POSTGRESQL17_IMPORT_CHECK_FORMS.iter().enumerate()
+            {
+                let key = (table.to_owned(), name.to_owned());
+                assert_eq!(catalog[&key].kind, fresh);
+                if mask & (1 << index) != 0 {
+                    catalog.get_mut(&key).unwrap().kind = restored.to_owned();
+                }
+            }
+            let raw_before = catalog
+                .iter()
+                .map(|(key, column)| (key.clone(), column.kind.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(catalog_prefix(&catalog, profile).unwrap(), complete);
+            let raw_after = catalog
+                .iter()
+                .map(|(key, column)| (key.clone(), column.kind.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(raw_before, raw_after);
+        }
+    }
+
+    #[test]
+    fn v4_postgresql_restore_forms_are_bound_to_profile_and_original_descriptor() {
+        for &(table, name, fresh, restored) in &POSTGRESQL17_IMPORT_CHECK_FORMS {
+            let expected = import_catalog_objects(DatabaseProfile::PostgreSql, table)
+                .into_iter()
+                .find(|column| column.name == name)
+                .unwrap();
+            assert_eq!(expected.kind, fresh);
+            assert!(matches_import_constraint_serialization(
+                DatabaseProfile::PostgreSql,
+                expected,
+                restored,
+            ));
+            for changed in [
+                ColumnDescriptor {
+                    table: "trnm_storage_objects",
+                    ..expected
+                },
+                ColumnDescriptor {
+                    name: "@constraint:other",
+                    ..expected
+                },
+                ColumnDescriptor {
+                    kind: "CHECK (false)",
+                    ..expected
+                },
+            ] {
+                assert!(!matches_import_constraint_serialization(
+                    DatabaseProfile::PostgreSql,
+                    changed,
+                    restored,
+                ));
+            }
+            assert!(!matches_import_constraint_serialization(
+                DatabaseProfile::CockroachDb,
+                expected,
+                restored,
+            ));
+            let mut wrong_profile = snapshot(
+                DatabaseProfile::CockroachDb,
+                actions(DatabaseProfile::CockroachDb).len(),
+            );
+            wrong_profile
+                .get_mut(&(table.to_owned(), name.to_owned()))
+                .unwrap()
+                .kind = restored.to_owned();
+            assert!(catalog_prefix(&wrong_profile, DatabaseProfile::CockroachDb).is_err());
+        }
+    }
+
+    #[test]
+    fn v4_postgresql_check_forms_reject_bounds_logic_and_native_field_drift() {
+        let profile = DatabaseProfile::PostgreSql;
+        for &(table, name, fresh, restored) in &POSTGRESQL17_IMPORT_CHECK_FORMS {
+            let (keys, reordered, removed) = if table == "trnm_storage_import_jobs" {
+                (
+                    "[10, 11, 12, 13]",
+                    "[11, 10, 12, 13]",
+                    " AND ((next_page >= 0) AND (next_page <= total_pages))",
+                )
+            } else {
+                (
+                    "[2, 3, 4]",
+                    "[3, 2, 4]",
+                    " AND ((row_count >= 1) AND (row_count <= 100))",
+                )
+            };
+            for captured in [fresh, restored] {
+                for (from, to) in [
+                    ("10000", "10001"),
+                    ("AND", "OR"),
+                    ("<=", ">="),
+                    (removed, ""),
+                    (keys, reordered),
+                    ("c|true|", "c|false|"),
+                    ("c|true|", "u|true|"),
+                    (
+                        "|None|Some(\" \")|Some(\" \")|None|None|CHECK",
+                        "|Some([1])|Some(\" \")|Some(\" \")|None|None|CHECK",
+                    ),
+                    ("|None|None|CHECK", "|Some(\"shadow\")|None|CHECK"),
+                ] {
+                    let changed = captured.replacen(from, to, 1);
+                    assert_ne!(changed, captured, "mutation did not change {name}");
+                    let mut bad = snapshot(profile, actions(profile).len());
+                    bad.get_mut(&(table.to_owned(), name.to_owned()))
+                        .unwrap()
+                        .kind = changed;
+                    assert!(
+                        catalog_prefix(&bad, profile).is_err(),
+                        "{name}: {from} -> {to}"
+                    );
+                }
+                // Extra whitespace or another grouping is not a third captured form.
+                for changed in [
+                    format!("{captured} "),
+                    format!(" {captured}"),
+                    format!("{})", captured.replacen("CHECK (", "CHECK ((", 1)),
+                ] {
+                    let mut bad = snapshot(profile, actions(profile).len());
+                    bad.get_mut(&(table.to_owned(), name.to_owned()))
+                        .unwrap()
+                        .kind = changed;
+                    assert!(catalog_prefix(&bad, profile).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn v4_postgresql_restore_forms_preserve_other_properties_and_catalog_keys() {
+        let profile = DatabaseProfile::PostgreSql;
+        let mut restored_catalog = snapshot(profile, actions(profile).len());
+        for &(table, name, _, restored) in &POSTGRESQL17_IMPORT_CHECK_FORMS {
+            restored_catalog
+                .get_mut(&(table.to_owned(), name.to_owned()))
+                .unwrap()
+                .kind = restored.to_owned();
+        }
+        for &(table, name, _, _) in &POSTGRESQL17_IMPORT_CHECK_FORMS {
+            let key = (table.to_owned(), name.to_owned());
+            let mut nullable = restored_catalog.clone();
+            nullable.get_mut(&key).unwrap().nullable = true;
+            let mut default = restored_catalog.clone();
+            default.get_mut(&key).unwrap().default = Some("0".to_owned());
+            let mut typmod = restored_catalog.clone();
+            typmod.get_mut(&key).unwrap().character_maximum_length = Some(32);
+            let mut renamed = restored_catalog.clone();
+            let value = renamed.remove(&key).unwrap();
+            renamed.insert(
+                (table.to_owned(), "@constraint:other".to_owned()),
+                value.clone(),
+            );
+            let mut wrong_table = restored_catalog.clone();
+            wrong_table.remove(&key);
+            wrong_table.insert(("trnm_storage_objects".to_owned(), name.to_owned()), value);
+            for bad in [nullable, default, typmod, renamed, wrong_table] {
+                assert!(catalog_prefix(&bad, profile).is_err());
+            }
+        }
+        let mut swapped = restored_catalog.clone();
+        let (jobs_table, jobs_name, _, jobs_kind) = POSTGRESQL17_IMPORT_CHECK_FORMS[0];
+        let (pages_table, pages_name, _, pages_kind) = POSTGRESQL17_IMPORT_CHECK_FORMS[1];
+        swapped
+            .get_mut(&(jobs_table.to_owned(), jobs_name.to_owned()))
+            .unwrap()
+            .kind = pages_kind.to_owned();
+        swapped
+            .get_mut(&(pages_table.to_owned(), pages_name.to_owned()))
+            .unwrap()
+            .kind = jobs_kind.to_owned();
+        assert!(catalog_prefix(&swapped, profile).is_err());
+        let mut foreign_schema = restored_catalog;
+        let foreign = foreign_schema
+            .get_mut(&(
+                "trnm_storage_import_pages".to_owned(),
+                "@constraint:storage_import_pages_job_fk".to_owned(),
+            ))
+            .unwrap();
+        assert!(foreign.kind.contains("Some(\"public\")"));
+        foreign.kind = foreign
+            .kind
+            .replacen("Some(\"public\")", "Some(\"shadow\")", 1);
+        assert!(catalog_prefix(&foreign_schema, profile).is_err());
     }
 }
