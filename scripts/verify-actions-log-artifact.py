@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -16,12 +17,19 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 EMITTER_PATH = ROOT / "scripts/emit-actions-log-artifact.py"
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024
+MAX_ARCHIVE_ENTRIES = 512
+MAX_RETAINED_BYTES = 32 * 1024 * 1024
+# Bound gzip expansion before tarfile can consume PAX/long-name headers. The
+# framing allowance covers bounded member headers, padding and end records;
+# regular file payloads still share the stricter MAX_RETAINED_BYTES budget.
+MAX_EXPANDED_TAR_BYTES = MAX_RETAINED_BYTES + (MAX_ARCHIVE_ENTRIES + 1) * tarfile.RECORDSIZE
 SHA_LINE = re.compile(r"^(?P<sha>[0-9a-f]{64})  (?P<path>\./[^\r\n]+)$")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 PROFILES = ("postgresql", "cockroachdb")
@@ -333,25 +341,51 @@ def archive_files(data: bytes) -> dict[str, bytes]:
         raise VerificationError(f"archive size is outside the bound: {len(data)} bytes")
     files: dict[str, bytes] = {}
     try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-            for member in archive.getmembers():
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
+            expanded = compressed.read(MAX_EXPANDED_TAR_BYTES + 1)
+        if len(expanded) > MAX_EXPANDED_TAR_BYTES:
+            raise VerificationError("archive exceeds the expanded tar bound")
+        entry_count = 0
+        retained_size = 0
+        root_directory_seen = False
+        with tarfile.open(fileobj=io.BytesIO(expanded), mode="r:") as archive:
+            for member in archive:
                 name = normalized_member_name(member.name)
-                if name is None or member.isdir():
+                # `tar -C root .` emits one structural root directory which is
+                # absent from the producer's rglob entry inventory.
+                if name is None and member.isdir() and not root_directory_seen:
+                    if member.size != 0:
+                        raise VerificationError("tar root directory has a payload")
+                    root_directory_seen = True
                     continue
+                entry_count += 1
+                if entry_count > MAX_ARCHIVE_ENTRIES:
+                    raise VerificationError("archive exceeds the entry budget")
+                if member.isdir():
+                    if member.size != 0:
+                        raise VerificationError("tar directory has a payload")
+                    continue
+                if name is None:
+                    raise VerificationError("tar root member must be a directory")
                 if not member.isfile():
                     raise VerificationError(
                         f"non-regular tar member is forbidden: {member.name!r}"
                     )
                 if name in files:
                     raise VerificationError(f"duplicate tar member: {name}")
+                if not 0 <= member.size <= MAX_ARCHIVE_BYTES:
+                    raise VerificationError(f"tar member exceeds the archive bound: {name}")
+                retained_size += member.size
+                if retained_size > MAX_RETAINED_BYTES:
+                    raise VerificationError("archive exceeds the expanded file byte budget")
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     raise VerificationError(f"cannot read tar member: {name}")
                 payload = extracted.read(MAX_ARCHIVE_BYTES + 1)
-                if len(payload) > MAX_ARCHIVE_BYTES:
-                    raise VerificationError(f"tar member exceeds the archive bound: {name}")
+                if len(payload) != member.size:
+                    raise VerificationError(f"tar member payload is truncated: {name}")
                 files[name] = payload
-    except (tarfile.TarError, OSError) as error:
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as error:
         raise VerificationError(f"invalid gzip tar archive: {error}") from error
     if not files:
         raise VerificationError("archive contains no regular files")
@@ -400,6 +434,34 @@ def require_env(values: dict[str, str], expected: dict[str, str], label: str) ->
             )
 
 
+def verify_migration_files(files: dict[str, bytes], ordered_files: list[dict[str, Any]]) -> None:
+    expected_paths = {entry["path"] for entry in ordered_files}
+    actual_paths = {name for name in files if name.startswith("migrations/")}
+    if actual_paths != expected_paths:
+        raise VerificationError(
+            "archived migration inventory differs from exact-head source: "
+            f"missing={sorted(expected_paths - actual_paths)} "
+            f"unlisted={sorted(actual_paths - expected_paths)}"
+        )
+    for entry in ordered_files:
+        name = entry["path"]
+        if git_blob_sha1(files[name]) != entry["git_blob_sha1"]:
+            raise VerificationError(f"archived migration blob differs from exact-head source: {name}")
+
+
+def producer_identity(profile: str, workflow_context: str = "outbox") -> dict[str, str]:
+    if profile not in PROFILES:
+        raise VerificationError(f"unsupported profile: {profile}")
+    if workflow_context == "outbox":
+        return {"workflow": WORKFLOW_NAME, "workflow_path": WORKFLOW_PATH,
+                "job_key": "live-profile", "job_name": f"live-profile ({profile})"}
+    if workflow_context == "prospective":
+        return {"workflow": "prospective-merge-gate",
+                "workflow_path": ".github/workflows/prospective-merge-gate.yml",
+                "job_key": "live-profiles", "job_name": f"prospective-live ({profile})"}
+    raise VerificationError("unsupported evidence producer context")
+
+
 def validate_archive(
     data: bytes,
     *,
@@ -410,11 +472,13 @@ def validate_archive(
     run_attempt: str,
     profile: str,
     binding: dict[str, Any],
+    workflow_context: str = "outbox",
 ) -> dict[str, object]:
     if profile not in PROFILES:
         raise VerificationError(f"unsupported profile: {profile}")
     files = archive_files(data)
     verify_file_manifest(files)
+    verify_migration_files(files, binding["ordered_files"])
     identity = parse_env(files.get("identity.env", b""), "identity.env")
     require_env(
         identity,
@@ -427,10 +491,7 @@ def validate_archive(
             "run_id": run_id,
             "run_attempt": run_attempt,
             "evidence_run_id": f"{run_id}-{run_attempt}-{profile}",
-            "workflow": WORKFLOW_NAME,
-            "workflow_path": WORKFLOW_PATH,
-            "job_key": "live-profile",
-            "job_name": f"live-profile ({profile})",
+            **producer_identity(profile, workflow_context),
             **{key: binding[key] for key in (
                 "migration_lock", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm"
             )},

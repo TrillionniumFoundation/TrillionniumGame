@@ -65,9 +65,64 @@ evidence="$evidence_root/$profile"
 rm -rf "$evidence"
 mkdir -p "$evidence"
 container="trnm-restore-${profile}-${TRNM_RUN_ID:-$$}"
+stage=initialize
+diagnostic_logs=()
+
+begin_stage() {
+  stage=$1
+  shift
+  diagnostic_logs=("$@")
+  printf 'backup/restore stage: profile=%s stage=%s\n' "$profile" "$stage"
+}
+
+restored_database_url() {
+  python3 - "$1" <<'PY_RESTORED_URL'
+import sys
+from urllib.parse import urlsplit, urlunsplit
+try:
+    source = urlsplit(sys.argv[1])
+    if source.scheme not in ('postgres', 'postgresql') or not source.netloc or source.path != '/trnm':
+        raise ValueError()
+except ValueError:
+    raise SystemExit('invalid backup source database URL') from None
+print(urlunsplit(source._replace(path='/trnm_restore')))
+PY_RESTORED_URL
+}
+
+report_failure() {
+  local status=$1
+  printf 'backup/restore failed: profile=%s stage=%s exit=%s\n' "$profile" "$stage" "$status" >&2
+  python3 - "${diagnostic_logs[@]}" <<'PY_FAILURE_LOGS'
+import re, sys
+from pathlib import Path
+for name in sys.argv[1:]:
+    path = Path(name)
+    if not path.is_file():
+        continue
+    with path.open('rb') as source:
+        source.seek(0, 2)
+        offset = max(0, source.tell() - 65536)
+        source.seek(offset)
+        data = source.read(65536)
+    if offset:
+        # A partial first line could begin inside a credential-bearing URL.
+        data = data.partition(b'\n')[2]
+    text = data.decode('utf-8', errors='replace')
+    # Discard the remainder of a URL-bearing line as userinfo can contain
+    # punctuation that is indistinguishable from surrounding log delimiters.
+    text = re.sub(r'(?i)\bpostgres(?:ql)?://[^\r\n]*', '<redacted-database-url>', text)
+    text = re.sub(r'''(?i)\b(password|postgres_password|pgpassword)(\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)''',
+                  r'\1\2<redacted>', text)
+    print(f'--- {path.name} (last 80 lines, at most 64 KiB) ---', file=sys.stderr)
+    print('\n'.join(text.splitlines()[-80:]), file=sys.stderr)
+PY_FAILURE_LOGS
+}
 
 cleanup() {
   status=$?
+  if (( status != 0 )); then
+    report_failure "$status" || true
+  fi
   docker logs "$container" > "$evidence/container.log" 2>&1 || true
   docker rm -f "$container" >/dev/null 2>&1 || true
   exit "$status"
@@ -101,9 +156,11 @@ orders=(
 
 seed_rust_contracts() {
   local database_url=$1
+  begin_stage seed-fault "$evidence/seed-fault.log"
   TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
     cargo test -p trnm-persistence-pg --test fault_matrix --locked -- --nocapture \
     2>&1 | tee "$evidence/seed-fault.log"
+  begin_stage seed-recovery "$evidence/seed-recovery.log"
   TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
     TRNM_RECOVERY_PHASE=seed \
     cargo test -p trnm-persistence-pg --test recovery --locked -- --nocapture \
@@ -113,14 +170,18 @@ seed_rust_contracts() {
 if [[ "$profile" == postgresql ]]; then
   port=${TRNM_POSTGRES_PORT:-55434}
   database_url="postgres://trnm:trnm-pass@127.0.0.1:${port}/trnm"
+  begin_stage pull-image "$evidence/image-pull.log"
   docker pull "$postgres_image" | tee "$evidence/image-pull.log"
+  begin_stage inspect-image "$evidence/image-inspect.json"
   prepare_pinned_image "$postgres_image"
+  begin_stage start-database "$evidence/container-id.txt"
   docker run -d --name "$container" -p "${port}:5432" \
     -e POSTGRES_USER=trnm \
     -e POSTGRES_PASSWORD=trnm-pass \
     -e POSTGRES_DB=trnm \
     "$postgres_image" > "$evidence/container-id.txt"
 
+  begin_stage database-ready
   ready=0
   for _ in $(seq 1 150); do
     ready_count=$(docker logs "$container" 2>&1 \
@@ -138,14 +199,18 @@ if [[ "$profile" == postgresql ]]; then
     exit 1
   }
 
+  begin_stage verify-image "$evidence/database-version.txt"
   verify_running_image
+  begin_stage migrate-schema "$evidence/migration.log"
   TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
     bash scripts/apply-authoritative-schema.sh migrate \
     > "$evidence/schema-identity.json" 2> "$evidence/migration.log"
+  begin_stage check-source-schema "$evidence/schema-identity-check.json"
   python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode fresh \
     > "$evidence/schema-identity-check.json"
   seed_rust_contracts "$database_url"
 
+  begin_stage seed-domain "$evidence/domain-seed.log"
   docker exec "$container" psql -v ON_ERROR_STOP=1 -U trnm -d trnm -c "
     INSERT INTO trnm_session_families VALUES
       (decode(repeat('a1',16),'hex'),decode(repeat('a2',16),'hex'),0,
@@ -177,25 +242,36 @@ if [[ "$profile" == postgresql ]]; then
     done
   }
 
+  begin_stage source-snapshot
   snapshot trnm "$evidence/source.csv"
+  begin_stage backup
   docker exec "$container" pg_dump -Fc --no-owner --no-privileges \
     -U trnm -d trnm > "$evidence/backup.dump"
   test -s "$evidence/backup.dump"
+  begin_stage create-restore-database
   docker exec "$container" createdb -U trnm trnm_restore
+  begin_stage restore "$evidence/restore.log"
   docker exec -i "$container" pg_restore --no-owner --no-privileges \
     -U trnm -d trnm_restore < "$evidence/backup.dump" \
     > "$evidence/restore.log" 2>&1
-  restored_url="${database_url/\/trnm/\/trnm_restore}"
+  begin_stage restored-database-url
+  restored_url=$(restored_database_url "$database_url")
+  begin_stage verify-restored-schema "$evidence/restored-schema-build.log"
   TRNM_DATABASE_URL="$restored_url" TRNM_DATABASE_PROFILE="$profile" \
     bash scripts/apply-authoritative-schema.sh verify \
     > "$evidence/restored-schema-identity.json" 2> "$evidence/restored-schema-build.log"
+  begin_stage check-restored-schema "$evidence/restored-schema-identity-check.json"
   python3 scripts/check-authoritative-schema-identity.py "$evidence/restored-schema-identity.json" "$profile" --mode verify \
     > "$evidence/restored-schema-identity-check.json"
+  begin_stage restored-snapshot
   snapshot trnm_restore "$evidence/restored.csv"
 else
   database_url='postgres://root@127.0.0.1:26257/trnm?sslmode=disable'
+  begin_stage pull-image "$evidence/image-pull.log"
   docker pull "$cockroach_image" | tee "$evidence/image-pull.log"
+  begin_stage inspect-image "$evidence/image-inspect.json"
   prepare_pinned_image "$cockroach_image"
+  begin_stage start-database "$evidence/container-id.txt"
   docker run -d --name "$container" --network host \
     "$cockroach_image" start-single-node --insecure \
     --store=/cockroach/cockroach-data \
@@ -204,6 +280,7 @@ else
     --http-addr=127.0.0.1:8080 \
     > "$evidence/container-id.txt"
 
+  begin_stage database-ready
   stable=0
   for _ in $(seq 1 150); do
     if docker exec "$container" /cockroach/cockroach sql --insecure \
@@ -220,16 +297,21 @@ else
     exit 1
   }
 
+  begin_stage create-source-database
   docker exec "$container" /cockroach/cockroach sql --insecure \
     --host=127.0.0.1:26257 --execute='CREATE DATABASE trnm' >/dev/null
+  begin_stage verify-image "$evidence/database-version.txt"
   verify_running_image
+  begin_stage migrate-schema "$evidence/migration.log"
   TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
     bash scripts/apply-authoritative-schema.sh migrate \
     > "$evidence/schema-identity.json" 2> "$evidence/migration.log"
+  begin_stage check-source-schema "$evidence/schema-identity-check.json"
   python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode fresh \
     > "$evidence/schema-identity-check.json"
   seed_rust_contracts "$database_url"
 
+  begin_stage seed-domain "$evidence/domain-seed.log"
   docker exec "$container" /cockroach/cockroach sql --insecure \
     --host=127.0.0.1:26257 --database=trnm --set=errexit=true --execute="
     INSERT INTO trnm_session_families VALUES
@@ -263,35 +345,46 @@ else
     done
   }
 
+  begin_stage source-snapshot
   snapshot trnm "$evidence/source.csv"
+  begin_stage backup "$evidence/backup.log"
   docker exec "$container" /cockroach/cockroach sql --insecure \
     --host=127.0.0.1:26257 --database=defaultdb --set=errexit=true \
     --execute="BACKUP DATABASE trnm INTO 'nodelocal://1/trnm-backup'" \
     > "$evidence/backup.log" 2>&1
+  begin_stage backup-manifest
   docker exec "$container" /cockroach/cockroach sql --insecure \
     --host=127.0.0.1:26257 --database=defaultdb --format=csv \
     --execute="SHOW BACKUP FROM LATEST IN 'nodelocal://1/trnm-backup'" \
     > "$evidence/backup-manifest.csv"
   test -s "$evidence/backup-manifest.csv"
+  begin_stage restore "$evidence/restore.log"
   docker exec "$container" /cockroach/cockroach sql --insecure \
     --host=127.0.0.1:26257 --database=defaultdb --set=errexit=true \
     --execute="RESTORE DATABASE trnm FROM LATEST IN 'nodelocal://1/trnm-backup' \
                WITH new_db_name='trnm_restore'" \
     > "$evidence/restore.log" 2>&1
-  restored_url="${database_url/\/trnm/\/trnm_restore}"
+  begin_stage restored-database-url
+  restored_url=$(restored_database_url "$database_url")
+  begin_stage verify-restored-schema "$evidence/restored-schema-build.log"
   TRNM_DATABASE_URL="$restored_url" TRNM_DATABASE_PROFILE="$profile" \
     bash scripts/apply-authoritative-schema.sh verify \
     > "$evidence/restored-schema-identity.json" 2> "$evidence/restored-schema-build.log"
+  begin_stage check-restored-schema "$evidence/restored-schema-identity-check.json"
   python3 scripts/check-authoritative-schema-identity.py "$evidence/restored-schema-identity.json" "$profile" --mode verify \
     > "$evidence/restored-schema-identity-check.json"
+  begin_stage restored-snapshot
   snapshot trnm_restore "$evidence/restored.csv"
 fi
 
+begin_stage validate-migration-chain "$evidence/migration-chain-validation.json"
 cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-lock.json"
 python3 scripts/check-migration-lock.py > "$evidence/migration-chain-validation.json"
 sha256sum "$evidence/source.csv" "$evidence/restored.csv" \
   > "$evidence/snapshot-sha256.txt"
+begin_stage compare-snapshots
 cmp "$evidence/source.csv" "$evidence/restored.csv"
+begin_stage seal-evidence
 docker inspect "$container" > "$evidence/container-inspect.json"
 cat > "$evidence/summary.json" <<EOF
 {"schema":"trillionnium.backup-restore.v1","profile":"$profile","backup_created":true,"empty_restore":true,"semantic_snapshot_equal":true,"production_pitr":false,"multi_node_restore":false}

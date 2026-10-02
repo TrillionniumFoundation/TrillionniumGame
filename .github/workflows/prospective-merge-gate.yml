@@ -312,6 +312,20 @@ jobs:
           test -s "$outbox/files.sha256"
           test -s "$outbox/crash-before-publish/result.env"
           test -s "$outbox/crash-after-publish/result.env"
+          python3 scripts/seal-outbox-final-attempt.py \
+            --root "$outbox" --profile "$PROFILE" \
+            --commit "$PROSPECTIVE_MERGE_SHA" --tree "$(git rev-parse HEAD^{tree})" \
+            --workflow-context prospective
+          outbox_archive="run/prospective-merge-outbox-${PROFILE}-${PROSPECTIVE_MERGE_SHA}.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$outbox_archive" -C "$outbox" .
+          python3 scripts/seal-outbox-final-attempt.py \
+            --root "$outbox" --profile "$PROFILE" \
+            --commit "$PROSPECTIVE_MERGE_SHA" --tree "$(git rev-parse HEAD^{tree})" \
+            --workflow-context prospective --archive "$outbox_archive"
+          python3 scripts/check-authoritative-schema-identity.py \
+            "$server/schema-identity.json" "$PROFILE" --mode verify
           EXPECTED_MERGE="$PROSPECTIVE_MERGE_SHA" PROFILE="$PROFILE" \
             python3 - <<'PY'
           import json
@@ -345,12 +359,14 @@ jobs:
               return result
 
           result = env_file(outbox / 'result.env')
-          assert result == {'status': 'passed', 'profile': profile, 'commit': expected}
+          assert result == {'status': 'passed', 'profile': profile, 'commit': expected, 'tree': summary['tree']}
           identity = env_file(outbox / 'identity.env')
           assert identity['repository'] == 'TrillionniumFoundation/TrillionniumGame'
           assert identity['commit'] == expected
           assert identity['profile'] == profile
-          assert len(identity['migration_blob_sha1']) == 40
+          schema = json.loads((outbox / 'schema-identity.json').read_text(encoding='utf-8'))
+          for field in ('schema_version', 'chain_digest', 'digest_algorithm', 'storage_writer_epoch'):
+              assert identity[field] == str(schema[field]), (field, identity[field])
           before = env_file(outbox / 'crash-before-publish/result.env')
           after = env_file(outbox / 'crash-after-publish/result.env')
           assert before['possible_lost_effect_declared'] == 'true'

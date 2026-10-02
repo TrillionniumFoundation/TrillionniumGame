@@ -24,7 +24,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "24ff147a2253697dc130a595c5828fc40265763c",
+      "git_blob_sha1": "5df9fb87051f79f109bdcd2e0e5fdf8dbfd8c80b",
       "minimum_successful_execution_jobs": 2,
       "name": "cockroach-serialization-retry",
       "path": ".github/workflows/cockroach-serialization-retry.yml",
@@ -35,7 +35,6 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "aab319bb1f8c334155e0271d3918d661026accb86869c2c20af5d0a0aef56d5f",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -482,7 +481,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "e92ea5bfeab870d488ff965e823ae041d31b37bd",
+      "git_blob_sha1": "16e71e00bbc8c5de122859e766792e805a0088c3",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-final-attempt-reaper",
       "path": ".github/workflows/outbox-final-attempt-reaper.yml",
@@ -497,8 +496,19 @@
       "name": "grpc-health-source",
       "path": ".github/workflows/grpc-health-source.yml",
       "workflow_id": 346245276
+    },
+    {
+      "allowed_events": [
+        "pull_request"
+      ],
+      "git_blob_sha1": "36279bb121b3f13488c93f152208929b4c0c5f2f",
+      "minimum_successful_execution_jobs": 1,
+      "name": "prospective-merge-gate",
+      "path": ".github/workflows/prospective-merge-gate.yml",
+      "workflow_id": 347178559
     }
   ],
   "repository": "TrillionniumFoundation/TrillionniumGame",
-  "schema": "trnm_required_workflow_overlay_v1"
+  "schema": "trnm_required_workflow_overlay_v1",
+  "overlay_sha256": "65ff4bb31f5b6668d9d76e04b2e8aa87bf572b987fae984ff8bbce8cbddf9701"
 }

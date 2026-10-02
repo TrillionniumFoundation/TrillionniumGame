@@ -128,6 +128,7 @@ jobs:
         env:
           TRNM_REQUIRE_LIVE_CRDB_RETRY: '1'
           TRNM_TEST_COCKROACH_URL: postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable
+          TRNM_SCHEMA_SOURCE_COMMIT: ${{ env.CANDIDATE_SHA }}
         run: |
           set -euo pipefail
           cargo test -p trnm-persistence-pg --features diagnostic-compat-server --locked --bin trnm-pg-compat-server \
