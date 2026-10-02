@@ -225,6 +225,10 @@ The last command requires `TRNM_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and
 live harness runs this canonical Rust application fixture for each database
 profile and rejects zero tests, optional skips and missing execution markers.
 It uses dedicated fixture rows and verifies persisted effects and revocation.
+Independent SQL sentinels verify that a blind unchanged value/ACL preserves
+legacy update time while an exact-version write still refreshes it. Repository
+regressions also cover ACL changes, authorization/OCC rejection and rollback.
+These assertions do not prove the missing upstream public timestamp fields.
 This exercises the HTTP application and repository together; TCP ingress,
 pooled deadlines, SDK and immutable Nakama differential remain separate checks.
 

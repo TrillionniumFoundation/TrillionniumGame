@@ -78,6 +78,7 @@ REQUIRED_TESTS = {
     "jitter_remains_inside_half_to_full_backoff",
     "authority_takeover_fences_stale_generation",
     "storage_occ_acl_and_batch_rollback_are_transactional",
+    "blind_storage_no_op_preserves_timestamp_after_acl_occ_and_integrity_checks",
     "create_and_rotation_validation_fail_closed",
     "persisted_revocation_reason_mapping_is_exact",
     "generic_session_failure_does_not_disclose_identity_state",

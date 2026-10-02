@@ -120,7 +120,7 @@
     "http_body": "ServerConfig max_request_bytes"
   },
   "durability": "Build success only after the atomic repository call returns committed receipts; do not retry storage mutations through the generic command supervisor.",
-  "migration_impact": "No DDL or migration digest change in this tranche. Existing created-time and no-op-update schema gaps remain open.",
+  "migration_impact": "No DDL or migration digest change in this tranche. Blind no-op handling preserves the existing legacy updated_at_ms; upstream database timestamp precision and historical created-time gaps remain open.",
   "rollback": "Revert this route/codec/bridge tranche together; existing persisted storage remains readable by the prior repository. Removing routes is not an accepted production cutover/rollback.",
   "limitations": [
     "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
@@ -128,12 +128,12 @@
     "List route, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
     "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
     "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
-    "The current database always updates updated_at_ms for a successful blind same-value write; upstream may preserve update_time.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
     "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
     "Strict trailing-JSON rejection and malformed protobuf-JSON decoder error wording differ from the single-Decode upstream gateway and need immutable-oracle qualification.",
     "Batch read uses bounded per-key statements in one readonly transaction, while upstream chooses a single query shape. Duplicate multiplicity, returned ordering and concurrency behavior require immutable differential.",
-    "Quoted integer trailing-token forms such as permissionRead:\"1 true\" are rejected; the pinned decoder can consume the first number token. Exact malformed decoder parity remains open."
+    "Quoted integer trailing-token forms such as permissionRead:\"1 true\" are rejected; the pinned decoder can consume the first number token. Exact malformed decoder parity remains open.",
+    "Blind no-op selection is implemented, but legacy updated_at_ms is an explicit caller time rather than the pinned upstream database create_time/update_time contract."
   ],
   "claims": {
     "compatibility_credit": false,
@@ -152,5 +152,6 @@
     "execution_required": "Require TRNM_REQUIRE_LIVE_DATABASE=1, exact test result count of one and matching success marker; zero/missing/optional-skip results fail closed.",
     "scope": "Canonical Rust HTTP application + actual repository SQL. TCP, pool/deadline, SDK and immutable oracle are separate obligations.",
     "accepted_evidence": false
-  }
+  },
+  "mutation_repository": "Authorization, OCC and stored integrity checks precede no-op selection. Blind writes with unchanged value and ACLs preserve the persisted update time; exact-version writes and value/ACL changes update it. Atomic batch commit still precedes success."
 }

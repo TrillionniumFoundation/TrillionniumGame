@@ -74,7 +74,8 @@
     "Python structural regression and finite interleaving model distinguish lifecycle locking from physical backend eviction without granting runtime credit",
     "Nakama-shaped POST read and PUT write/delete adapters with bounded JSON decoding, principal-bound ACL and default permissions",
     "storage-specific gateway errors, atomic committed acknowledgements and no generic storage mutation retry",
-    "canonical Rust application + database fixture with required exact execution marker in both live profile lanes"
+    "canonical Rust application + database fixture with required exact execution marker in both live profile lanes",
+    "blind writes with identical content and ACL preserve legacy update time after authorization and integrity checks; exact-version writes still update"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this source synchronization",
@@ -101,9 +102,9 @@
     "List route, original gob cursor, owner-list ordering and visibility, search/index and Runtime before/after hooks remain unfinished.",
     "The existing repository rejects duplicate keys, more than 100 operations, collection/key over 128 UTF-8 bytes and dot/control identifiers. These candidate restrictions differ from upstream.",
     "Invalid/uppercase opaque OCC versions and exact gateway decoder details still require pinned differential; error bodies and headers are not globally qualified.",
-    "The current database always updates updated_at_ms for a successful blind same-value write; upstream may preserve update_time.",
     "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
-    "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance."
+    "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
+    "Blind no-op selection is a source candidate; upstream database timestamp origin/precision, historical creation times and exact oracle acceptance remain open."
   ],
   "gap_ids": [
     "GAP-P0-SERVER-001",
@@ -143,7 +144,8 @@
     "nonempty_cancellation_live_tests_source_candidate": true,
     "storage_http_mutation_source_candidate": true,
     "storage_http_read_source_candidate": true,
-    "canonical_storage_database_fixture_source_candidate": true
+    "canonical_storage_database_fixture_source_candidate": true,
+    "storage_blind_noop_source_candidate": true
   },
   "dependency_contract_source_candidate": {
     "policy_source": "scripts/check-rust-foundation.py::EXPECTED_DEPENDENCIES",

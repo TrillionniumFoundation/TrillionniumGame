@@ -51,6 +51,20 @@ fn apply_write(
                 "storage_public_version_collision_or_integrity_mismatch",
             ));
         }
+        // A blind write of identical content and ACLs preserves update time.
+        // Exact-version writes still issue UPDATE, including identical content.
+        // Authorization, OCC and integrity checks precede this no-op receipt.
+        if operation.expected == VersionCheck::Any
+            && existing.version == version
+            && existing.read_permission == operation.read_permission
+            && existing.write_permission == operation.write_permission
+        {
+            return Ok(MutationReceipt {
+                key: operation.key.clone(),
+                previous_version: Some(existing.version),
+                current_version: Some(existing.version),
+            });
+        }
     }
     let integrity = integrity_digest.get();
     let read_permission = operation.read_permission as i16;

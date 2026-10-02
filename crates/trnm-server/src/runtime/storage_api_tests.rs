@@ -1074,6 +1074,53 @@ fn canonical_storage_api_live_database() {
             persisted_storage_value(&mut control, "sword", LIVE_OTHER),
             None
         );
+        // An independent SQL sentinel makes the no-op assertion deterministic
+        // without relying on wall-clock resolution or sleeping between calls.
+        assert_eq!(
+            control
+                .execute(
+                    "UPDATE trnm_storage_objects SET updated_at_ms = 7 \
+                     WHERE collection = $1 AND object_key = 'sword' AND user_id = $2",
+                    &[&LIVE_COLLECTION, &LIVE_USER.as_bytes().as_slice()],
+                )
+                .unwrap(),
+            1
+        );
+        let mut repeated: serde_json::Value = serde_json::from_str(&write_body).unwrap();
+        repeated["objects"][0]["version"] = serde_json::json!("");
+        let blind = app.handle(&request(
+            "/v2/storage",
+            Some(&credential),
+            &repeated.to_string(),
+        ));
+        assert_eq!(blind.status, 200);
+        assert_eq!(json(&blind)["acks"][0]["version"], version);
+        let unchanged: i64 = control
+            .query_one(
+                "SELECT updated_at_ms FROM trnm_storage_objects \
+                 WHERE collection = $1 AND object_key = 'sword' AND user_id = $2",
+                &[&LIVE_COLLECTION, &LIVE_USER.as_bytes().as_slice()],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(unchanged, 7);
+        repeated["objects"][0]["version"] = serde_json::json!(version);
+        let exact = app.handle(&request(
+            "/v2/storage",
+            Some(&credential),
+            &repeated.to_string(),
+        ));
+        assert_eq!(exact.status, 200);
+        assert_eq!(json(&exact)["acks"][0]["version"], version);
+        let refreshed: i64 = control
+            .query_one(
+                "SELECT updated_at_ms FROM trnm_storage_objects \
+                 WHERE collection = $1 AND object_key = 'sword' AND user_id = $2",
+                &[&LIVE_COLLECTION, &LIVE_USER.as_bytes().as_slice()],
+            )
+            .unwrap()
+            .get(0);
+        assert!(refreshed > unchanged);
 
         let read_body = serde_json::json!({"object_ids":[
             {"collection":LIVE_COLLECTION,"key":"sword","user_id":LIVE_USER_UUID},

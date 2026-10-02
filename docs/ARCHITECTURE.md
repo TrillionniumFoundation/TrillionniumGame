@@ -194,7 +194,10 @@ success marker prevents optional no-database skips from becoming live results.
 identities, request/response boundaries and residual differences. The routes
 use candidate session credentials; write acknowledgements and read objects omit upstream
 timestamps because the authoritative schema does not retain `create_time`.
-Timestamp, no-op update, bounds, list/cursor, read query shape/order/multiplicity, hooks, index,
+Blind writes with identical value and ACLs preserve the stored legacy update time
+after authorization, OCC and integrity checks. Exact-version writes still update
+it. This does not supply the missing upstream database timestamp contract.
+Timestamp origin/precision, bounds, list/cursor, read query shape/order/multiplicity, hooks, index,
 ambiguous-commit reconciliation and official token differences remain blockers.
 This wiring does not grant a storage or repository-wide compatibility claim.
 
