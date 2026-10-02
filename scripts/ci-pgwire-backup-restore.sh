@@ -9,6 +9,12 @@ esac
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
+candidate_head=$(git rev-parse --verify HEAD)
+candidate_tree=$(git rev-parse --verify 'HEAD^{tree}')
+if [[ "${CANDIDATE_SHA:-$candidate_head}" != "$candidate_head" ]]; then
+  echo 'backup candidate HEAD does not match the requested source' >&2
+  exit 1
+fi
 
 for command in docker cargo python3 sha256sum cmp; do
   command -v "$command" >/dev/null || {
@@ -123,11 +129,120 @@ cleanup() {
   if (( status != 0 )); then
     report_failure "$status" || true
   fi
-  docker logs "$container" > "$evidence/container.log" 2>&1 || true
+  if [[ ! -f "$evidence/container.log" ]]; then
+    docker logs "$container" > "$evidence/container.log" 2>&1 || true
+  fi
   docker rm -f "$container" >/dev/null 2>&1 || true
   exit "$status"
 }
 trap cleanup EXIT INT TERM
+
+seal_backup_evidence() {
+  python3 - "$root" "$evidence" "$profile" "$candidate_head" "$candidate_tree" <<'PY_BACKUP_SEAL'
+import hashlib, importlib.util, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+
+source, retained = Path(sys.argv[1]), Path(sys.argv[2])
+profile, commit, tree = sys.argv[3:]
+
+def require(condition, reason):
+    if not condition:
+        raise SystemExit(reason)
+
+def load(name, relative):
+    spec = importlib.util.spec_from_file_location(name, source / relative)
+    require(spec is not None and spec.loader is not None, 'backup source checker unavailable')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+migrations = load('backup_migrations', 'scripts/check-migration-lock.py')
+schemas = load('backup_schemas', 'scripts/check-authoritative-schema-identity.py')
+sealer = load('backup_shared_sealer', 'scripts/seal-outbox-final-attempt.py')
+sealer.retained_files(retained)
+git = lambda *args: subprocess.check_output(['git', '-C', str(source), *args], text=True).strip()
+require(git('rev-parse', '--verify', 'HEAD') == commit and git('rev-parse', '--verify', 'HEAD^{tree}') == tree,
+        'backup source identity changed during execution')
+require(os.environ.get('CANDIDATE_SHA', commit) == commit, 'backup candidate commit mismatch')
+require(re.fullmatch('[0-9a-f]{40}', commit) and re.fullmatch('[0-9a-f]{40}', tree), 'invalid backup source identity')
+repository = os.environ.get('CANDIDATE_REPOSITORY', '')
+workflow_repository = os.environ.get('GITHUB_REPOSITORY', '')
+for value in (repository, workflow_repository):
+    require(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', value), 'backup repository context is missing or invalid')
+run = os.environ.get('GITHUB_RUN_ID', '')
+attempt = os.environ.get('GITHUB_RUN_ATTEMPT', '')
+require(re.fullmatch(r'[1-9][0-9]{0,18}', run) and re.fullmatch(r'[1-9][0-9]{0,18}', attempt),
+        'backup run context is missing or invalid')
+workflow = '.github/workflows/database-backup-restore.yml'
+workflow_ref = os.environ.get('GITHUB_WORKFLOW_REF', '')
+workflow_sha = os.environ.get('GITHUB_WORKFLOW_SHA', '')
+require(workflow_ref.startswith(workflow_repository + '/' + workflow + '@') and len(workflow_ref) <= 1024
+        and '\n' not in workflow_ref and '\r' not in workflow_ref, 'backup workflow context is missing or invalid')
+require(re.fullmatch('[0-9a-f]{40}', workflow_sha), 'backup workflow commit context is missing or invalid')
+require(os.environ.get('GITHUB_JOB') == 'restore', 'backup job context is missing or invalid')
+
+validation = migrations.validate(source)
+lock = migrations.load_lock(source)
+lock_bytes = (source / 'migrations/MIGRATION_CHAIN.lock.json').read_bytes()
+require(migrations.git_blob_sha1(lock_bytes) == git('rev-parse', 'HEAD:migrations/MIGRATION_CHAIN.lock.json'),
+        'backup migration lock differs from candidate commit')
+require((retained / 'migration-lock.json').read_bytes() == lock_bytes, 'retained backup migration lock differs')
+require(schemas.decode_identity_document((retained / 'migration-chain-validation.json').read_bytes()) == validation,
+        'retained backup chain validation differs')
+chains, version, table_count = schemas.validated_source()
+fresh = schemas.decode_identity_document((retained / 'schema-identity.json').read_bytes())
+restored = schemas.decode_identity_document((retained / 'restored-schema-identity.json').read_bytes())
+schemas.validate_identity(fresh, profile=profile, chains=chains, schema_version=version,
+                          table_count=table_count, mode='fresh', source_commit=commit)
+schemas.validate_identity(restored, profile=profile, chains=chains, schema_version=version,
+                          table_count=table_count, mode='verify')
+for field in ('source_commit', 'upgrade_source_commit'):
+    require(restored[field] == fresh[field], 'restored backup schema provenance differs')
+check = {'schema': 'trillionnium.authoritative-schema-identity-check.v1', 'profile': profile,
+         'schema_version': version, 'chain_digest': fresh['chain_digest'],
+         'identity_verified': True, 'compatibility_credit': False}
+for name in ('schema-identity-check.json', 'restored-schema-identity-check.json'):
+    require(schemas.decode_identity_document((retained / name).read_bytes()) == check,
+            'retained backup schema check differs')
+
+ordered = lock['profiles'][profile]['ordered_files']
+for item in ordered:
+    path = item['path']
+    require(not (source / path).is_symlink(), 'backup migration source symlink is forbidden')
+    require(item['git_blob_sha1'] == git('rev-parse', 'HEAD:' + path), 'backup migration differs from candidate commit')
+    destination = retained / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source / path, destination)
+sql_files = {path.relative_to(retained).as_posix(): path.read_bytes()
+             for path in sealer.retained_files(retained) if path.relative_to(retained).as_posix().startswith('migrations/')}
+sealer.VERIFIER.verify_migration_files(sql_files, ordered)
+identity = {
+    'schema': 'trillionnium.backup-restore-identity.v1', 'repository': repository,
+    'commit': commit, 'tree': tree, 'profile': profile, 'run_id': run, 'run_attempt': attempt,
+    'workflow_repository': workflow_repository, 'workflow': workflow, 'workflow_ref': workflow_ref,
+    'workflow_sha': workflow_sha, 'job': 'restore', 'job_name': 'backup-restore-' + profile,
+    'job_identity_kind': 'workflow_job_key_and_matrix_profile',
+    'schema_version': fresh['schema_version'], 'storage_writer_epoch': fresh['storage_writer_epoch'],
+    'chain_digest': fresh['chain_digest'], 'digest_algorithm': fresh['digest_algorithm'],
+    'source_commit': fresh['source_commit'], 'upgrade_source_commit': fresh['upgrade_source_commit'],
+    'compatibility_credit': False, 'accepted_evidence': False, 'production_ready': False,
+}
+(retained / 'identity.json').write_text(json.dumps(identity, sort_keys=True, separators=(',', ':')) + '\n')
+manifest = retained / 'SHA256SUMS'
+manifest.unlink(missing_ok=True)
+files = []
+for path in sealer.retained_files(retained):
+    relative = path.relative_to(retained).as_posix()
+    require('\n' not in relative and '\r' not in relative and '\\' not in relative,
+            'backup evidence path cannot be checksummed safely')
+    files.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{relative}')
+require(files, 'backup evidence inventory is empty')
+document = '\n'.join(sorted(files, key=lambda line: line[66:])) + '\n'
+manifest.write_text(document)
+sealer.retained_files(retained)
+PY_BACKUP_SEAL
+  (cd "$evidence" && sha256sum --check --strict SHA256SUMS)
+}
 
 tables=(
   trnm_schema_metadata
@@ -202,11 +317,11 @@ if [[ "$profile" == postgresql ]]; then
   begin_stage verify-image "$evidence/database-version.txt"
   verify_running_image
   begin_stage migrate-schema "$evidence/migration.log"
-  TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
+  TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" TRNM_SCHEMA_SOURCE_COMMIT="$candidate_head" \
     bash scripts/apply-authoritative-schema.sh migrate \
     > "$evidence/schema-identity.json" 2> "$evidence/migration.log"
   begin_stage check-source-schema "$evidence/schema-identity-check.json"
-  python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode fresh \
+  python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode fresh --source-commit "$candidate_head" \
     > "$evidence/schema-identity-check.json"
   seed_rust_contracts "$database_url"
 
@@ -303,11 +418,11 @@ else
   begin_stage verify-image "$evidence/database-version.txt"
   verify_running_image
   begin_stage migrate-schema "$evidence/migration.log"
-  TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
+  TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" TRNM_SCHEMA_SOURCE_COMMIT="$candidate_head" \
     bash scripts/apply-authoritative-schema.sh migrate \
     > "$evidence/schema-identity.json" 2> "$evidence/migration.log"
   begin_stage check-source-schema "$evidence/schema-identity-check.json"
-  python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode fresh \
+  python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode fresh --source-commit "$candidate_head" \
     > "$evidence/schema-identity-check.json"
   seed_rust_contracts "$database_url"
 
@@ -380,16 +495,15 @@ fi
 begin_stage validate-migration-chain "$evidence/migration-chain-validation.json"
 cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-lock.json"
 python3 scripts/check-migration-lock.py > "$evidence/migration-chain-validation.json"
-sha256sum "$evidence/source.csv" "$evidence/restored.csv" \
-  > "$evidence/snapshot-sha256.txt"
+(cd "$evidence" && sha256sum source.csv restored.csv > snapshot-sha256.txt)
 begin_stage compare-snapshots
 cmp "$evidence/source.csv" "$evidence/restored.csv"
 begin_stage seal-evidence
 docker inspect "$container" > "$evidence/container-inspect.json"
+docker logs "$container" > "$evidence/container.log" 2>&1
 cat > "$evidence/summary.json" <<EOF
 {"schema":"trillionnium.backup-restore.v1","profile":"$profile","backup_created":true,"empty_restore":true,"semantic_snapshot_equal":true,"production_pitr":false,"multi_node_restore":false}
 EOF
-find "$evidence" -type f ! -name SHA256SUMS -print0 \
-  | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
+seal_backup_evidence
 printf 'backup/restore contract passed: profile=%s evidence=%s\n' \
   "$profile" "$evidence"
