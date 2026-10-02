@@ -10,10 +10,10 @@
     "workflow_id": 345272210
   },
   "base_aggregate_blob_sha1": "88349d66f38ade67019faba2902f109e75e51f3d",
-  "base_manifest_blob_sha1": "1808d9c67c25917e8ff94ed4416b3920cf65c92e",
+  "base_manifest_blob_sha1": "b1c69f73fe1b44f320067ed5dafea70e4c78af01",
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "event": "pull_request",
-  "overlay_sha256": "392069c3817c256d107dcab466cba97365c0be11b849c3e2902eb11ba587dc83",
+  "overlay_sha256": "c4fe004e9db4550fe34b92d57011e53afbc74b8565a39c1840c53f5b9918ad0b",
   "repository": "TrillionniumFoundation/TrillionniumGame",
   "schema": "trnm_required_aggregate_overlay_v1"
 }

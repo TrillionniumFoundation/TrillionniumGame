@@ -70,6 +70,9 @@ automatically retried by the generic command supervisor. The source contract is
 `contracts/storage/nakama-http-storage-v1.json`. Official tokens, acknowledgement
 timestamps, list/cursors, exact read query/order/multiplicity, hooks/index, ambiguous-commit reconciliation and
 exact database/oracle evidence remain open.
+The database live harness includes a canonical Rust application fixture for
+these routes, with required database configuration and a checked execution
+marker. This does not establish TCP, SDK or immutable-oracle equivalence.
 
 ## Operations
 

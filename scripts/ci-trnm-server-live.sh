@@ -146,6 +146,28 @@ fi
 "$binary" migrate > "$evidence/migrate.log" 2>&1
 grep -qx 'trnm-server migration completed' "$evidence/migrate.log"
 
+# This lane executes the canonical App against the migrated database. The
+# existing diagnostic process phases below retain their separate scope.
+CARGO_TERM_COLOR=never \
+TRNM_REQUIRE_LIVE_DATABASE=1 \
+TRNM_DATABASE_URL="$database_url" \
+TRNM_DATABASE_PROFILE="$profile" \
+  cargo test -p trnm-server --locked --lib \
+    runtime::storage_api_tests::canonical_storage_api_live_database \
+    -- --exact --nocapture --test-threads=1 2>&1 | tee "$evidence/canonical-storage-app.log"
+canonical_storage_test_count=$(
+  sed -nE 's/^test result: ok[.] ([0-9]+) passed; 0 failed; 0 ignored;.*/\1/p' \
+    "$evidence/canonical-storage-app.log"
+)
+[[ "$canonical_storage_test_count" =~ ^[0-9]+$ ]]
+test "$canonical_storage_test_count" -eq 1
+grep -Fxq "canonical_storage_api_live_executed profile=${profile}" \
+  "$evidence/canonical-storage-app.log"
+if grep -Fq 'canonical_storage_api_live_skipped' "$evidence/canonical-storage-app.log"; then
+  echo 'canonical storage App database lane skipped instead of executing' >&2
+  exit 1
+fi
+
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \

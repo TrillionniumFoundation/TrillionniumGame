@@ -186,6 +186,9 @@ Reads use one bounded readonly serializable transaction under the pool deadline.
 They omit missing and ACL-hidden rows before decoding, and fail the whole batch
 on SQL or integrity errors. Requested owners include server/global objects;
 returned objects must pass requested-key, ACL, UTF-8 and digest checks.
+The live database harness also executes a canonical Rust application fixture,
+separately from its retained diagnostic process. A required profile-specific
+success marker prevents optional no-database skips from becoming live results.
 
 `contracts/storage/nakama-http-storage-v1.json` records pinned source
 identities, request/response boundaries and residual differences. The routes

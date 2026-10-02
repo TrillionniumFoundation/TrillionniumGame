@@ -73,7 +73,8 @@
     "deadline workflow covers split pool parts on pull requests and main pushes and rejects zero matching live tests",
     "Python structural regression and finite interleaving model distinguish lifecycle locking from physical backend eviction without granting runtime credit",
     "Nakama-shaped POST read and PUT write/delete adapters with bounded JSON decoding, principal-bound ACL and default permissions",
-    "storage-specific gateway errors, atomic committed acknowledgements and no generic storage mutation retry"
+    "storage-specific gateway errors, atomic committed acknowledgements and no generic storage mutation retry",
+    "canonical Rust application + database fixture with required exact execution marker in both live profile lanes"
   ],
   "not_implemented_or_verified": [
     "final exact-head Rust formatting, compile, tests and strict Clippy after this source synchronization",
@@ -141,7 +142,8 @@
     "cancelled_backend_retirement_source_candidate": true,
     "nonempty_cancellation_live_tests_source_candidate": true,
     "storage_http_mutation_source_candidate": true,
-    "storage_http_read_source_candidate": true
+    "storage_http_read_source_candidate": true,
+    "canonical_storage_database_fixture_source_candidate": true
   },
   "dependency_contract_source_candidate": {
     "policy_source": "scripts/check-rust-foundation.py::EXPECTED_DEPENDENCIES",

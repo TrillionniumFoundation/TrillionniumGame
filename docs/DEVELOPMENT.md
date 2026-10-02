@@ -206,6 +206,7 @@ retry-wrapper regressions:
 ```bash
 cargo test -p trnm-server --locked storage_api
 cargo test -p trnm-server --locked storage_write_and_delete_are_never_automatically_retried
+cargo test -p trnm-server --lib --locked runtime::storage_api_tests::canonical_storage_api_live_database -- --exact --nocapture
 ```
 
 They exercise original value bytes, default/zero permissions, duplicate known
@@ -218,6 +219,14 @@ feedback; live database and immutable-oracle evidence remain separate. Read
 `DIV-STORAGE-HTTP-*` records before changing these endpoints. This tranche does
 not change DDL. Reverting routes, codec and repository bridge together preserves
 stored rows but does not authorize a production rollback.
+
+The last command requires `TRNM_DATABASE_URL`, `TRNM_DATABASE_PROFILE` and
+`TRNM_REQUIRE_LIVE_DATABASE=1` to prove actual database execution. The existing
+live harness runs this canonical Rust application fixture for each database
+profile and rejects zero tests, optional skips and missing execution markers.
+It uses dedicated fixture rows and verifies persisted effects and revocation.
+This exercises the HTTP application and repository together; TCP ingress,
+pooled deadlines, SDK and immutable Nakama differential remain separate checks.
 
 [`roadmap/ENGINEERING_EXIT_CONTRACTS.json`](roadmap/ENGINEERING_EXIT_CONTRACTS.json) supplies concrete implementation steps, checks and external obligations for every registered gap, plus the full eleven domain work packages. It is subordinate engineering detail, not an alternate queue or a reduced proof obligation. `NEXT_MILESTONE.json` and the approved architecture overlay still control dependency readiness. No advisory priority can bypass their acceptance conditions. The read-only inventory rejects a missing gap or omitted work package.
 

@@ -31,11 +31,11 @@
       "workflow_id": 350047412
     }
   ],
-  "base_manifest_blob_sha1": "1808d9c67c25917e8ff94ed4416b3920cf65c92e",
+  "base_manifest_blob_sha1": "b1c69f73fe1b44f320067ed5dafea70e4c78af01",
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "da4f28aa8bf33fbfe4617f8464cc4cc557a3c55cdf6252c00d36aca61674e9ee",
+  "overlay_sha256": "24292721c6154625f7232229ae226f2bee52fcfac089cf1d181c648fc6be4b35",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -322,7 +322,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "3f29b5ce392c1cfe69085e844c1059540f0c84a8",
+      "git_blob_sha1": "8f4661edda6425c9ccfd6d044053c7062d55b13c",
       "minimum_successful_execution_jobs": 1,
       "name": "trnm-server-live",
       "path": ".github/workflows/trnm-server-live.yml",

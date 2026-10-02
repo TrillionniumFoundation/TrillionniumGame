@@ -33,6 +33,13 @@
       "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
       "path": "apigrpc/apigrpc.proto",
       "blob": "1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c"
+    },
+    {
+      "repository": "gofrs/uuid",
+      "commit": "153266a4d7e6f54fc25f27023491f359ca18c560",
+      "path": "codec.go",
+      "blob": "080059592f4114e341f7ff2b39c56ae44883d6a2",
+      "purpose": "Independently implemented text formats from the dependency pinned by Nakama go.mod at v5.4.0."
     }
   ],
   "task_ids": [
@@ -134,5 +141,16 @@
     "gap_closed": false,
     "production_ready": false
   },
-  "read_repository": "One bounded readonly serializable batch under the pooled database deadline. Missing/ACL-hidden rows are omitted before decoding; data-integrity or SQL errors fail the batch. No generic retry."
+  "read_repository": "One bounded readonly serializable batch under the pooled database deadline. Missing/ACL-hidden rows are omitted before decoding; data-integrity or SQL errors fail the batch. No generic retry.",
+  "validation_source": {
+    "canonical_application_test": "crates/trnm-server/src/runtime/storage_api_tests.rs::canonical_storage_api_live_database",
+    "harness": "scripts/ci-trnm-server-live.sh",
+    "profiles": [
+      "postgresql",
+      "cockroachdb"
+    ],
+    "execution_required": "Require TRNM_REQUIRE_LIVE_DATABASE=1, exact test result count of one and matching success marker; zero/missing/optional-skip results fail closed.",
+    "scope": "Canonical Rust HTTP application + actual repository SQL. TCP, pool/deadline, SDK and immutable oracle are separate obligations.",
+    "accepted_evidence": false
+  }
 }

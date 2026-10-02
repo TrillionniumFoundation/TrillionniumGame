@@ -52,6 +52,7 @@ REQUIRED_FILES = {
     ROOT / "crates/trnm-server/src/runtime/storage_api_tests.rs",
 }
 REQUIRED_TESTS = {
+    "canonical_storage_api_live_database",
     "fixed_hex_round_trip_is_lowercase_and_exact_width",
     "duplicate_nested_escaped_and_noncanonical_numbers_fail_closed",
     "default_candidate_config_is_loopback_bounded_and_redacted",
