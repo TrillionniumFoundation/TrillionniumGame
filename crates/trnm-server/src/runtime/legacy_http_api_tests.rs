@@ -765,3 +765,49 @@ fn registered_options_extensions_reject_before_unknown_and_null_handling() {
         logout_body(raw.as_bytes(), limits()).unwrap();
     }
 }
+
+#[test]
+fn custom_account_body_query_authentication_and_debug_do_not_cross_boundaries() {
+    let r=decode_custom_http_request(&key(),Some(&authorization(b"")),br#"{"id":"secret-custom","vars":{"k":"v"},"username":"body","create":true,"account":{"id":"override"}}"#,"create=false&username=query",limits()).unwrap();
+    let i = r.auth_input();
+    assert_eq!(i.account_id, Some("secret-custom"));
+    assert_eq!(i.username, "query");
+    assert_eq!(i.create, Some(false));
+    assert_eq!(i.variables.unwrap().get("k").map(String::as_str), Some("v"));
+    assert!(!format!("{r:?}").contains("secret-custom"));
+    let e = decode_custom_http_request(&key(), None, b"invalidJSON", "create=%GG", limits())
+        .unwrap_err();
+    assert_eq!((e.status(), e.message()), (401, "Server key required"));
+    let r = decode_custom_http_request(&key(), Some(&authorization(b"")), b" \n", "", limits())
+        .unwrap();
+    assert_eq!(r.auth_input().account_id, Some(""));
+    assert_eq!(r.auth_input().create, None);
+}
+#[test]
+fn custom_closed_route_and_gateway_messages_keep_exact_source_classes() {
+    assert_eq!(
+        legacy_auth_http_route("POST", "/v2/account/authenticate/custom?create=false"),
+        Some(LegacyAuthHttpRoute::AuthenticateCustom)
+    );
+    for (method, target) in [
+        ("GET", "/v2/account/authenticate/custom"),
+        ("POST", "/v2/account/authenticate/custom/"),
+        ("POST", "/v2/account/authenticate/customx"),
+        ("POST", "/v2/account/authenticate/email"),
+    ] {
+        assert_eq!(legacy_auth_http_route(method, target), None);
+    }
+    let input = LegacyCustomAuthError::Unconfirmed(LegacyAuthError::CustomInput(
+        super::super::legacy_auth::CustomInputError::IdRequired,
+    ));
+    let e = legacy_custom_gateway_error(&input);
+    assert_eq!((e.status(), e.message()), (400, "Custom ID is required."));
+    let creation = LegacyCustomAuthError::Unconfirmed(LegacyAuthError::CustomRepository(
+        LegacyRepositoryError::Internal,
+    ));
+    let e = legacy_custom_gateway_error(&creation);
+    assert_eq!(
+        (e.status(), e.message()),
+        (500, "Error finding or creating user account.")
+    );
+}

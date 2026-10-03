@@ -242,3 +242,33 @@ fn pooled_late_false_creation_retains_unconfirmed_cleanup() {
         matches!(error,LegacyRepositoryError::Lease(ref record) if matches!(record.completion,LegacyLeaseCompletion::UnconfirmedCleanup { committed_cleanup_failure } if committed_cleanup_failure==map_cleanup(diagnostic)))
     );
 }
+
+#[test]
+fn custom_one_lease_keeps_late_confirmed_autocommit_and_lookup_failure_facts() {
+    let user = NakamaLegacyUser {
+        id: UserId::new([7; 16]),
+        stored_username: "stored".to_owned(),
+        disable_unix_seconds: Some(0),
+    };
+    let error = resolve_custom_lease(deadline_lease(Some(Ok(AuthenticateCustomOutcome {
+        user,
+        created: true,
+    }))))
+    .unwrap_err();
+    let LegacyRepositoryError::Lease(detail) = error else {
+        panic!("lease facts");
+    };
+    assert!(matches!(
+        detail.completion,
+        LegacyLeaseCompletion::ConfirmedCreation {
+            committed_cleanup_failure: None
+        }
+    ));
+    assert_eq!(detail.cancellation, LegacyLeaseCancellation::Deadline);
+    let error = map_native_error(NakamaAccountError::CustomLookupFailed(failure()));
+    assert!(matches!(
+        error,
+        LegacyRepositoryError::CustomLookupFailed(_)
+    ));
+    assert_eq!(error.code(), StableCode::Internal);
+}

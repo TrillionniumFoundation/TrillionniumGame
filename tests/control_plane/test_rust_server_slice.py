@@ -138,9 +138,10 @@ class RustServerSliceContractTests(unittest.TestCase):
         document = (ROOT / "docs/DEVELOPMENT.md").read_text()
         module.check_documented_interface(interface, document)
         self.assertIn("TRNM_SERVER_SCHEMA_TARGET", interface["environment_names"])
-        # Schema configuration does not invent routes. These three endpoints
+        # Schema configuration does not invent routes. These four endpoints
         # are present only through the actual closed Legacy dispatcher source.
         self.assertEqual({route for route in interface["routes"] if route[1].startswith("/v2/account/") or route[1] == "/v2/session/logout"}, {
+            ("POST", "/v2/account/authenticate/custom"),
             ("POST", "/v2/account/authenticate/device"),
             ("POST", "/v2/account/session/refresh"),
             ("POST", "/v2/session/logout"),

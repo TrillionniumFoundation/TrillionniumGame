@@ -1518,3 +1518,82 @@ fn boxed_lease_clone_preserves_confirmed_creation_cleanup_and_unknown_facts() {
     );
     assert!(!device.retry_permitted() && !device.compensation_permitted());
 }
+
+#[test]
+fn custom_validation_precedence_bytes_and_generator_are_source_bound() {
+    for (id, username, expected) in [
+        (None, b"".as_slice(), CustomInputError::IdRequired),
+        (Some(b"".as_slice()), b"", CustomInputError::IdRequired),
+        (
+            Some(b"a b".as_slice()),
+            b"[]",
+            CustomInputError::IdInvalidCharacters,
+        ),
+        (
+            Some(b"12345".as_slice()),
+            b"[]",
+            CustomInputError::IdInvalidLength,
+        ),
+        (
+            Some(b"123456".as_slice()),
+            b"[]",
+            CustomInputError::UsernameInvalidCharacters,
+        ),
+    ] {
+        assert_eq!(
+            validate_custom_input(id, username, None, || panic!("invalid input generator")),
+            Err(expected)
+        );
+    }
+    for n in [6, 128] {
+        let id = vec![b'x'; n];
+        let v = validate_custom_input(Some(&id), b"a b", Some(false), || {
+            panic!("supplied username generator")
+        })
+        .unwrap();
+        assert_eq!(v.custom_id, id);
+        assert!(!v.create);
+    }
+    for n in [5, 129] {
+        let id = vec![b'x'; n];
+        assert_eq!(
+            validate_custom_input(Some(&id), b"safe", None, || panic!()),
+            Err(CustomInputError::IdInvalidLength)
+        );
+    }
+    let mut calls = 0;
+    let v = validate_custom_input(Some(b"123456"), b"", None, || {
+        calls += 1;
+        GeneratedUsername::new(*b"AbCdEfGhIj").unwrap()
+    })
+    .unwrap();
+    assert_eq!(calls, 1);
+    assert!(v.create);
+    assert_eq!(v.username.as_bytes(), b"AbCdEfGhIj");
+    let unicode = "界界";
+    assert_eq!(unicode.len(), 6);
+    assert!(validate_custom_input(Some(unicode.as_bytes()), b"safe", None, || panic!()).is_ok());
+}
+#[test]
+fn custom_lookup_vs_creation_error_messages_and_codes_are_distinct() {
+    let native = LegacyNativeAccountFailure {
+        code: trnm_contracts::StableCode::Internal,
+        phase: Some("custom_lookup"),
+        last_failure: None,
+        cleanup_failure: None,
+        attempts: Some(0),
+        exhausted: Some(false),
+        unknown_commit: Some(false),
+    };
+    let lookup = custom_repository_failure(LegacyRepositoryError::CustomLookupFailed(native));
+    assert_eq!(lookup.to_string(), "Error finding user account.");
+    assert_eq!(lookup.code(), trnm_contracts::StableCode::Internal);
+    assert!(!lookup.creation_commit_confirmed());
+    let insert = custom_repository_failure(LegacyRepositoryError::NativeFailure(native));
+    assert_eq!(
+        insert.to_string(),
+        "Error finding or creating user account."
+    );
+    assert!(!insert.retry_permitted());
+    assert!(!insert.compensation_permitted());
+}

@@ -84,6 +84,8 @@ pub enum NakamaAccountIdGenerationError {
 pub enum AccountPhase {
     Input,
     DeviceLookup,
+    CustomLookup,
+    CustomInsert,
     UserLookup,
     Begin,
     Savepoint,
@@ -145,6 +147,8 @@ pub enum NakamaAccountError {
     SchemaNotReady(DomainError),
     NotFound,
     Banned,
+    /// Custom lookup errors retain the upstream finding-vs-creating distinction.
+    CustomLookupFailed(AccountFailure),
     UsernameAlreadyExists(AccountFailure),
     Internal(AccountFailure),
 }
@@ -157,7 +161,7 @@ impl NakamaAccountError {
             Self::NotFound => StableCode::NotFound,
             Self::Banned => StableCode::PermissionDenied,
             Self::UsernameAlreadyExists(_) => StableCode::AlreadyExists,
-            Self::Internal(_) => StableCode::Internal,
+            Self::Internal(_) | Self::CustomLookupFailed(_) => StableCode::Internal,
         }
     }
     #[must_use]
@@ -167,7 +171,7 @@ impl NakamaAccountError {
             Self::NotFound => "nakama_user_not_found",
             Self::Banned => "nakama_user_banned",
             Self::UsernameAlreadyExists(_) => "nakama_username_already_exists",
-            Self::Internal(error) => error.last_failure.reason,
+            Self::Internal(error) | Self::CustomLookupFailed(error) => error.last_failure.reason,
         }
     }
     fn unknown_commit(self) -> bool {
@@ -515,4 +519,152 @@ fn database_uuid(id: UserId) -> String {
         value.push(char::from(HEX[usize::from(byte & 15)]));
     }
     value
+}
+
+/// Source Custom is a single autocommit users INSERT, never Device's TX loop.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct AuthenticateCustom<'a> {
+    custom_id: &'a str,
+    username: &'a str,
+    create: bool,
+}
+impl fmt::Debug for AuthenticateCustom<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthenticateCustom")
+            .field("custom_id", &"<redacted>")
+            .field("username", &"<redacted>")
+            .field("create", &self.create)
+            .finish()
+    }
+}
+impl<'a> AuthenticateCustom<'a> {
+    /// Structural bounds only; source API predicates are owned by the service.
+    pub fn new(
+        custom_id: &'a str,
+        username: &'a str,
+        create: bool,
+    ) -> Result<Self, NakamaAccountError> {
+        if custom_id.len() > MAX_INPUT_BYTES || username.len() > MAX_INPUT_BYTES {
+            return Err(internal(
+                AccountPhase::Input,
+                AccountSqlFailure::local("nakama_custom_input_invalid"),
+            ));
+        }
+        Ok(Self {
+            custom_id,
+            username,
+            create,
+        })
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticateCustomOutcome {
+    pub user: NakamaLegacyUser,
+    pub created: bool,
+}
+trait CustomDatabase {
+    fn require_custom_ready(&mut self) -> Result<(), DomainError>;
+    fn find_custom(
+        &mut self,
+        custom_id: &str,
+    ) -> Result<Option<NakamaLegacyUser>, AccountSqlFailure>;
+    /// An observed retired/cancelled lease cannot start a new write.
+    fn check_custom_write_allowed(&mut self) -> Result<(), AccountSqlFailure>;
+    /// Success is only an observed completed autocommit, never a pending write.
+    fn insert_custom(
+        &mut self,
+        request: AuthenticateCustom<'_>,
+        id: UserId,
+    ) -> Result<u64, AccountSqlFailure>;
+}
+fn custom_failure(
+    phase: AccountPhase,
+    last_failure: AccountSqlFailure,
+    attempted: bool,
+    unknown_commit: bool,
+) -> AccountFailure {
+    AccountFailure {
+        phase,
+        last_failure,
+        cleanup_failure: None,
+        attempts: u8::from(attempted),
+        exhausted: false,
+        unknown_commit,
+    }
+}
+fn authenticate_custom_with_id_source(
+    database: &mut impl CustomDatabase,
+    request: AuthenticateCustom<'_>,
+    new_user_id: impl FnOnce() -> Result<UserId, NakamaAccountIdGenerationError>,
+) -> Result<AuthenticateCustomOutcome, NakamaAccountError> {
+    database
+        .require_custom_ready()
+        .map_err(NakamaAccountError::SchemaNotReady)?;
+    let existing = database.find_custom(request.custom_id).map_err(|error| {
+        NakamaAccountError::CustomLookupFailed(custom_failure(
+            AccountPhase::CustomLookup,
+            error,
+            false,
+            false,
+        ))
+    })?;
+    if let Some(user) = existing {
+        if user
+            .disable_unix_seconds
+            .is_some_and(|seconds| seconds != 0)
+        {
+            return Err(NakamaAccountError::Banned);
+        }
+        return Ok(AuthenticateCustomOutcome {
+            user,
+            created: false,
+        });
+    }
+    if !request.create {
+        return Err(NakamaAccountError::NotFound);
+    }
+    let id = new_user_id().map_err(|_| {
+        internal(
+            AccountPhase::Input,
+            AccountSqlFailure::local("new_custom_user_uuid_generation_failed"),
+        )
+    })?;
+    if id.is_zero() || id.as_bytes()[6] >> 4 != 4 || id.as_bytes()[8] >> 6 != 2 {
+        return Err(internal(
+            AccountPhase::Input,
+            AccountSqlFailure::local("new_custom_user_uuid_invalid"),
+        ));
+    }
+    database
+        .check_custom_write_allowed()
+        .map_err(|error| internal(AccountPhase::Input, error))?;
+    let count = database.insert_custom(request, id).map_err(|error| {
+        // An unobserved autocommit completion is never replayed. SQLSTATE and
+        // the exact source username-message classification remain separate.
+        let unknown = error.sqlstate.is_none()
+            || error.sqlstate == Some(*b"40003")
+            || error.sqlstate.is_some_and(|code| code[..2] == *b"08");
+        let failure = custom_failure(AccountPhase::CustomInsert, error, true, unknown);
+        if error.sqlstate == Some(*b"23505") && error.username_collision {
+            NakamaAccountError::UsernameAlreadyExists(failure)
+        } else {
+            NakamaAccountError::Internal(failure)
+        }
+    })?;
+    if count != 1 {
+        return Err(NakamaAccountError::Internal(custom_failure(
+            AccountPhase::CustomInsert,
+            AccountSqlFailure::local("custom_insert_rows_affected_unexpected"),
+            true,
+            count > 0,
+        )));
+    }
+    Ok(AuthenticateCustomOutcome {
+        user: NakamaLegacyUser {
+            id,
+            stored_username: request.username.to_owned(),
+            disable_unix_seconds: Some(0),
+        },
+        created: true,
+    })
 }

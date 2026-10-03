@@ -20,7 +20,8 @@ use super::error::InputError;
 use super::http::{Request, Response};
 use super::json::Object;
 use super::legacy_auth::{
-    LegacyDeviceAccount, LegacyDeviceRepositoryInput, LegacyRepositoryError, LegacyStoredUser,
+    LegacyCustomAccount, LegacyCustomRepositoryInput, LegacyDeviceAccount,
+    LegacyDeviceRepositoryInput, LegacyRepositoryError, LegacyStoredUser,
 };
 use super::legacy_http_api::legacy_auth_http_route;
 use super::session_api::SessionError;
@@ -170,12 +171,28 @@ pub trait Repository: std::fmt::Debug {
         Err(LegacyRepositoryError::Unimplemented)
     }
 
+    fn authenticate_legacy_custom(
+        &mut self,
+        _input: LegacyCustomRepositoryInput<'_>,
+    ) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+        Err(LegacyRepositoryError::Unimplemented)
+    }
+
     fn operational_metrics(&self) -> RepositoryOperationalMetrics {
         RepositoryOperationalMetrics::default()
     }
 }
 
 impl Repository for PgRepository {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: LegacyCustomRepositoryInput<'_>,
+    ) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+        super::legacy_auth::LegacyCustomRepository::authenticate_legacy_custom(
+            &mut super::legacy_repository::PgLegacyAuthRepository::new(self),
+            input,
+        )
+    }
     fn read_legacy_user(
         &mut self,
         user: UserId,

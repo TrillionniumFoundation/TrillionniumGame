@@ -5,7 +5,8 @@ use super::super::auth_runtime::AuthAuthorityRuntime;
 use super::super::config::AuthAuthorityConfig;
 use super::super::http::{Request, Response};
 use super::super::legacy_auth::{
-    LegacyDeviceAccount, LegacyDeviceRepositoryInput, LegacyRepositoryError, LegacyStoredUser,
+    LegacyCustomAccount, LegacyCustomRepositoryInput, LegacyDeviceAccount,
+    LegacyDeviceRepositoryInput, LegacyRepositoryError, LegacyStoredUser,
 };
 use super::super::legacy_config::LegacyServerAuthConfig;
 use super::{App, Repository, SharedAppMetrics, SharedDrain};
@@ -20,6 +21,7 @@ const ADMIN: &str = "test_operator_secret_not_a_player";
 #[derive(Clone, Debug, Default)]
 struct Counts {
     device: usize,
+    custom: usize,
     user: usize,
     durable: usize,
     storage: usize,
@@ -29,6 +31,18 @@ struct Fake {
     counts: Arc<Mutex<Counts>>,
 }
 impl Repository for Fake {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: LegacyCustomRepositoryInput<'_>,
+    ) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+        self.counts.lock().unwrap().custom += 1;
+        assert_eq!(input.custom_id, "validcustom123");
+        Ok(LegacyCustomAccount {
+            user_id: UserId::new([7; 16]),
+            stored_username: "StoredCustom".to_owned(),
+            created: input.create,
+        })
+    }
     fn read_storage_objects(
         &mut self,
         actor: trnm_persistence_pg::StorageActor,
@@ -347,4 +361,65 @@ fn selected_legacy_drain_rejects_before_native_and_blacklist_mutation() {
     assert_eq!(initial, service.blacklist_stats().unwrap());
     let c = counts.lock().unwrap();
     assert_eq!((c.device, c.user, c.durable), (0, 0, 0));
+}
+
+#[test]
+fn custom_selected_app_uses_stored_username_vars_and_created_after_typed_outcome() {
+    // Root Cargo only: legacy() starts the real owned sweeper.
+    for create in [false, true] {
+        let fake = Fake::default();
+        let counts = fake.counts.clone();
+        let mut app = app(fake, legacy(), SharedDrain::default());
+        let response = app.handle(&req(
+            &format!("/v2/account/authenticate/custom?create={create}&username=Requested"),
+            Some(&basic()),
+            br#"{"id":"validcustom123","vars":{"realm":"one"}}"#,
+        ));
+        assert_eq!(response.status, 200);
+        let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(
+            body.get("created")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            create
+        );
+        let token = body["token"].as_str().unwrap();
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(token.split('.').nth(1).unwrap())
+            .unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(claims["usn"], "StoredCustom");
+        assert_eq!(claims["vrs"]["realm"], "one");
+        let c = counts.lock().unwrap();
+        assert_eq!(c.custom, 1);
+        assert_eq!(c.device, 0);
+        assert_eq!(c.durable, 0);
+    }
+}
+#[test]
+fn custom_app_wrong_authority_and_drain_skip_all_account_effects() {
+    let fake = Fake::default();
+    let counts = fake.counts.clone();
+    let mut server = app(fake, AuthAuthorityRuntime::Disabled, SharedDrain::default());
+    let response = server.handle(&req(
+        "/v2/account/authenticate/custom",
+        Some(&basic()),
+        b"invalid",
+    ));
+    assert_eq!(response.status, 501);
+    assert_eq!(counts.lock().unwrap().custom, 0);
+    let fake = Fake::default();
+    let counts = fake.counts.clone();
+    let drain = SharedDrain::default();
+    drain.begin();
+    let mut server = app(fake, AuthAuthorityRuntime::Disabled, drain);
+    let response = server.handle(&req(
+        "/v2/account/authenticate/custom?create=false",
+        None,
+        b"invalid",
+    ));
+    assert_eq!(response.status, 503);
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["code"], 14);
+    assert_eq!(counts.lock().unwrap().custom, 0);
 }

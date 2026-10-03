@@ -126,6 +126,7 @@
     "shared_legacy_service_per_process": true,
     "shared_legacy_cache_scope": "same-process workers; no restart or multi-node qualification",
     "legacy_http_routes_source": [
+      "POST /v2/account/authenticate/custom",
       "POST /v2/account/authenticate/device",
       "POST /v2/account/session/refresh",
       "POST /v2/session/logout"
@@ -166,16 +167,72 @@
       "crates/trnm-server/src/runtime/mod.rs": "ecc3cd9ad3b378b5467de23cd80a82d9b83f9d44b0634fbfcf27821a787e23d1",
       "crates/trnm-server/src/runtime/schema.rs": "47254715b43146cc09e6fb5dbe62580d9e2a9b2c9e82b08a6f468ba3f6201982",
       "crates/trnm-server/src/runtime/server.rs": "9039e31cfb9463996415d9c20be42037f99510b602bcb2b7c48f53cdc70f71fe",
-      "crates/trnm-server/src/runtime/app.rs": "b61cab480976911f0391c2ef3f49ac95b338d68a0ef0d525f649d3e1c9c3cef9",
+      "crates/trnm-server/src/runtime/app.rs": "26f8982f837670174ad8fadad0a27f2b61315a4701f55e628b21dfef57175229",
       "crates/trnm-server/src/runtime/http.rs": "3955079824e12afffcfa9853b7084c973b1d2f4b8858a030379104e5b0696f64",
-      "crates/trnm-server/src/runtime/pool.rs": "fdc7c1dc0fa3586e2ca7b5bf909b2ac1213f3bc35a823db24de8517828ecac87",
+      "crates/trnm-server/src/runtime/pool.rs": "c7058fe9c77228bc2551fd6c02c2f2bd5132f9706d45fbdf40d5b3969be67ba0",
       "crates/trnm-server/src/runtime/retry.rs": "e395e31ff7ef88b6c3612c507b25556e1088377668ad6076fe181b9348c42987",
       "crates/trnm-server/src/runtime/session_api.rs": "6797009fa6af9cf21614386fcef57ab4d87e037fba372023598382a77c166bbc",
       "crates/trnm-server/src/runtime/grpc.rs": "9c505f70d22adfc40631f820c751d0ba4adb7a977fee59a4b029a98ee24f3d92",
-      "crates/trnm-server/src/runtime/auth_runtime.rs": "28628bd813d05a66ee04006484da4c2544fae85a046c2a107048f69872ef6e5e",
-      "crates/trnm-server/src/runtime/auth_app_tests.rs": "7c80332f27df3adeab147158040364cdb26774e9aa9c8a94bf6ef57cea9868f2",
-      "crates/trnm-server/src/runtime/legacy_http_api.rs": "b00cfce161ae8c30d6d773089e846b5b09ec8714959d7a97cd861453a8fc50b5"
+      "crates/trnm-server/src/runtime/auth_runtime.rs": "4363223b9be6f40f9794e3799a02a0a0e18c1211efc32c42c2945c4fc681260a",
+      "crates/trnm-server/src/runtime/auth_app_tests.rs": "0ad24d4b58670e24975e8b22ec03116e38f0c1e0314ff6ddc463676f0746574f",
+      "crates/trnm-server/src/runtime/legacy_http_api.rs": "542d4c32e810d5fbd88413d181b24ed8c8942e09933d275be8eab0486e67bc48"
     },
     "Legacy_transport_drain_uses_numeric_gateway_envelope_source": true
+  },
+  "nakama_legacy_custom_auth_source_candidate": {
+    "status": "source-candidate-custom-autocommit-accounts5-gated",
+    "route": "POST /v2/account/authenticate/custom",
+    "default_runtime_schema_version": 4,
+    "default_storage_writer_epoch": 4,
+    "AccountsV5_gate": false,
+    "one_selected_service_cache_issuer": true,
+    "one_native_lease": true,
+    "source_single_autocommit": true,
+    "Device_transaction_retry_used": false,
+    "identity_race_fallback": false,
+    "username_unique_code": 6,
+    "custom_unique_code": 13,
+    "lookup_error_message": "Error finding user account.",
+    "create_error_message": "Error finding or creating user account.",
+    "retired_lease_prewrite_check": true,
+    "cancellation_dispatch_race_closed": false,
+    "late_confirmed_allows_token": false,
+    "unknown_completion_proves_no_effect": false,
+    "caller_replay": false,
+    "caller_compensation": false,
+    "Email_implemented": false,
+    "source_sha256": {
+      "crates/trnm-persistence-pg/src/lib.rs": "d604caf57010b71d6d3cebb58455f6a616519412dca2997807bfbc9bea851e96",
+      "crates/trnm-persistence-pg/src/nakama_account.rs": "7e045e8b45e3aa35009be6b47f04e4962ba10c4f8ef4b85f7a5c82337e48b430",
+      "crates/trnm-persistence-pg/src/nakama_account/native.rs": "9d1f794d3960963e457f936dac1d03bdbab5428a4fe892e68d4e5d4ce5016cf3",
+      "crates/trnm-persistence-pg/src/nakama_account/tests.rs": "1277429231aa78c0418a2e793c1edc11dae0a18c0257d08ce9f2132c29a2744a",
+      "crates/trnm-persistence-pg/src/pool_parts/base.rs": "1bc565243740e4b639cd69ea49f4ee8974299b2cc101bd6d3054eeae7783ec6c",
+      "crates/trnm-server/src/runtime/app.rs": "26f8982f837670174ad8fadad0a27f2b61315a4701f55e628b21dfef57175229",
+      "crates/trnm-server/src/runtime/auth_app_tests.rs": "0ad24d4b58670e24975e8b22ec03116e38f0c1e0314ff6ddc463676f0746574f",
+      "crates/trnm-server/src/runtime/auth_runtime.rs": "4363223b9be6f40f9794e3799a02a0a0e18c1211efc32c42c2945c4fc681260a",
+      "crates/trnm-server/src/runtime/legacy_auth.rs": "20830ff85bbb0d608a525cd2a99dcb1645188a1af57dd9a695f60f24e2596fb1",
+      "crates/trnm-server/src/runtime/legacy_auth_tests.rs": "cb091a288f1f7613d93980de3be2cb90ae44ce7e0d100260717cfb83fc9ad558",
+      "crates/trnm-server/src/runtime/legacy_device_predicates.rs": "a236efab95250544085c1a1f8cbb137e9da0e4313d639ef1f8a15ba6036d30d3",
+      "crates/trnm-server/src/runtime/legacy_http_api.rs": "542d4c32e810d5fbd88413d181b24ed8c8942e09933d275be8eab0486e67bc48",
+      "crates/trnm-server/src/runtime/legacy_http_api_tests.rs": "6eb6e4dcd247d92bf7fc4ccc7a64ad8574660744891457fbc6e511894d85dc99",
+      "crates/trnm-server/src/runtime/legacy_repository.rs": "df8ac88d58aa19b57cf28fe341669a49355d1c348be279c81cd70d2d3995e141",
+      "crates/trnm-server/src/runtime/legacy_repository_tests.rs": "80190ebec55afe9d91b8f4f0f246ee6c4d653c71c529aa34b9709c98905b1c81",
+      "crates/trnm-server/src/runtime/pool.rs": "c7058fe9c77228bc2551fd6c02c2f2bd5132f9706d45fbdf40d5b3969be67ba0"
+    },
+    "upstream": {
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "api_authenticate_sha256": "89c0659aa6994c353e9d9dc32ccc412cbdb5dfc04537a1c93fa026dd32a06995",
+      "core_authenticate_sha256": "1995cf76a7e2f35185e5a9eef161da2cb5851be7a8bdeddb2609c1a0b7b4dc96",
+      "gateway_sha256": "590d0d37be149e158fe514e64ecef06955e5baa5b2b64c7cb4d5bb2b0e1c670d"
+    },
+    "claims": {
+      "native_qualified": false,
+      "HTTP_qualified": false,
+      "paired_oracle": false,
+      "accepted": false,
+      "production_ready": false,
+      "compatibility_credit": false,
+      "full_replacement": false
+    }
   }
 }

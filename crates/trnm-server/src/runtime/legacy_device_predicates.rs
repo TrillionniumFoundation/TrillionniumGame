@@ -271,3 +271,68 @@ mod tests {
         );
     }
 }
+
+/// Custom shares the pinned POSIX classes/username policy, with its own ID
+/// bounds and messages. Source: Nakama d4d92f93 api_authenticate.go, Apache-2.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomInputError {
+    IdRequired,
+    IdInvalidCharacters,
+    IdInvalidLength,
+    UsernameInvalidCharacters,
+    UsernameInvalidLength,
+}
+impl CustomInputError {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::IdRequired => "Custom ID is required.",
+            Self::IdInvalidCharacters => {
+                "Custom ID invalid, no spaces or control characters allowed."
+            }
+            Self::IdInvalidLength => "Custom ID invalid, must be 6-128 bytes.",
+            Self::UsernameInvalidCharacters => {
+                "Username invalid, no spaces or control characters allowed."
+            }
+            Self::UsernameInvalidLength => "Username invalid, must be 1-128 bytes.",
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidatedCustomInput<'a> {
+    pub custom_id: &'a [u8],
+    pub username: ResolvedUsername<'a>,
+    pub create: bool,
+}
+/// Pure validation only. No caller may obtain a principal or durable outcome.
+pub fn validate_custom_input<'a>(
+    account_id: Option<&'a [u8]>,
+    username: &'a [u8],
+    create: Option<bool>,
+    generate: impl FnOnce() -> GeneratedUsername,
+) -> Result<ValidatedCustomInput<'a>, CustomInputError> {
+    let id = account_id
+        .filter(|id| !id.is_empty())
+        .ok_or(CustomInputError::IdRequired)?;
+    if device_id_has_invalid_characters(id) {
+        return Err(CustomInputError::IdInvalidCharacters);
+    }
+    if !(6..=128).contains(&id.len()) {
+        return Err(CustomInputError::IdInvalidLength);
+    }
+    let username = if username.is_empty() {
+        ResolvedUsername::Generated(generate())
+    } else {
+        if username_has_invalid_characters(username) {
+            return Err(CustomInputError::UsernameInvalidCharacters);
+        }
+        if username.len() > 128 {
+            return Err(CustomInputError::UsernameInvalidLength);
+        }
+        ResolvedUsername::Requested(username)
+    };
+    Ok(ValidatedCustomInput {
+        custom_id: id,
+        username,
+        create: create.unwrap_or(true),
+    })
+}

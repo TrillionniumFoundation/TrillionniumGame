@@ -101,6 +101,11 @@ impl ClientHandle {
         }
     }
 
+    pub(crate) fn is_retired(&self) -> bool {
+        self.retirement_flag()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    }
+
     pub(crate) fn retire(&self) {
         if let Some(retired) = self.retirement_flag() {
             retired.store(true, Ordering::Release);

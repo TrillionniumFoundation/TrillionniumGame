@@ -370,7 +370,7 @@ class SelectedLegacyInterfaceTest(unittest.TestCase):
         wire = (ROOT / 'crates/trnm-server/src/runtime/legacy_http_api.rs').read_text()
         interface = MODULE.source_interface(config, app, list_integrated=True, legacy_http_source=wire)
         MODULE.check_documented_interface(interface, (ROOT / 'docs/DEVELOPMENT.md').read_text())
-        self.assertEqual(len(interface['routes']), 17)
+        self.assertEqual(len(interface['routes']), 18)
 
     def test_legacy_unused_recognizer_wrong_method_query_unknown_or_duplicate_path_rejects(self):
         config = (ROOT / 'crates/trnm-server/src/runtime/config.rs').read_text()
@@ -624,3 +624,13 @@ class FiniteRustAttributeRepairTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CustomRouteInventoryTests(unittest.TestCase):
+    def test_custom_closed_route_missing_or_email_substitution_rejects(self):
+        config=(ROOT/'crates/trnm-server/src/runtime/config.rs').read_text()
+        app=(ROOT/'crates/trnm-server/src/runtime/app.rs').read_text()
+        wire=(ROOT/'crates/trnm-server/src/runtime/legacy_http_api.rs').read_text()
+        for altered in (wire.replace('/v2/account/authenticate/custom','/v2/account/authenticate/email',1), wire.replace('/v2/account/authenticate/custom','/v2/account/authenticate/device',1)):
+            with self.assertRaises(MODULE.ValidationError):
+                MODULE.source_interface(config,app,list_integrated=True,legacy_http_source=altered)

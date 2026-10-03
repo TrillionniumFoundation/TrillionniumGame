@@ -702,3 +702,242 @@ fn deferred_uuid_invalid_version_or_variant_never_begins_transaction() {
         assert_eq!(db.state.borrow().count(Step::Begin), 0);
     }
 }
+
+// Pure Custom seam tests deliberately do not qualify SQL/catalog/HTTP.
+struct CustomMock {
+    ready: Result<(), DomainError>,
+    found: Result<Option<NakamaLegacyUser>, AccountSqlFailure>,
+    inserted: Result<u64, AccountSqlFailure>,
+    write_allowed: bool,
+    calls: Vec<&'static str>,
+}
+impl CustomMock {
+    fn missing() -> Self {
+        Self {
+            ready: Ok(()),
+            found: Ok(None),
+            inserted: Ok(1),
+            write_allowed: true,
+            calls: Vec::new(),
+        }
+    }
+}
+impl CustomDatabase for CustomMock {
+    fn require_custom_ready(&mut self) -> Result<(), DomainError> {
+        self.calls.push("ready");
+        self.ready
+    }
+    fn find_custom(&mut self, _: &str) -> Result<Option<NakamaLegacyUser>, AccountSqlFailure> {
+        self.calls.push("find");
+        self.found.clone()
+    }
+    fn check_custom_write_allowed(&mut self) -> Result<(), AccountSqlFailure> {
+        if self.write_allowed {
+            Ok(())
+        } else {
+            Err(AccountSqlFailure::local("custom_write_lease_retired"))
+        }
+    }
+    fn insert_custom(
+        &mut self,
+        _: AuthenticateCustom<'_>,
+        _: UserId,
+    ) -> Result<u64, AccountSqlFailure> {
+        self.calls.push("insert");
+        self.inserted
+    }
+}
+fn custom_request(create: bool) -> AuthenticateCustom<'static> {
+    AuthenticateCustom::new("custom123", "Requested", create).unwrap()
+}
+#[test]
+fn custom_closed_guard_skips_lookup_uuid_and_autocommit() {
+    let mut db = CustomMock::missing();
+    db.ready = Err(DomainError::new(
+        StableCode::Unavailable,
+        "schema5_native_catalog_capture_pending",
+        trnm_contracts::RetryClass::Never,
+    ));
+    assert!(matches!(
+        authenticate_custom_with_id_source(&mut db, custom_request(true), || panic!(
+            "guard must skip UUID"
+        )),
+        Err(NakamaAccountError::SchemaNotReady(_))
+    ));
+    assert_eq!(db.calls, ["ready"]);
+}
+#[test]
+fn custom_existing_returns_stored_name_and_never_generates_or_inserts() {
+    for create in [false, true] {
+        let mut db = CustomMock::missing();
+        db.found = Ok(Some(NakamaLegacyUser {
+            id: id(),
+            stored_username: "界".repeat(90),
+            disable_unix_seconds: Some(0),
+        }));
+        let outcome = authenticate_custom_with_id_source(&mut db, custom_request(create), || {
+            panic!("existing must skip UUID")
+        })
+        .unwrap();
+        assert!(!outcome.created);
+        assert_eq!(outcome.user.stored_username, "界".repeat(90));
+        assert_eq!(db.calls, ["ready", "find"]);
+    }
+}
+#[test]
+fn custom_banned_checks_nonzero_unix_floor_before_uuid_or_create() {
+    for seconds in [-1, 1] {
+        let mut db = CustomMock::missing();
+        db.found = Ok(Some(NakamaLegacyUser {
+            id: id(),
+            stored_username: "old".into(),
+            disable_unix_seconds: Some(seconds),
+        }));
+        assert_eq!(
+            authenticate_custom_with_id_source(&mut db, custom_request(true), || panic!(
+                "banned UUID"
+            )),
+            Err(NakamaAccountError::Banned)
+        );
+        assert_eq!(db.calls, ["ready", "find"]);
+    }
+}
+#[test]
+fn custom_missing_false_does_not_generate_or_insert() {
+    let mut db = CustomMock::missing();
+    assert_eq!(
+        authenticate_custom_with_id_source(&mut db, custom_request(false), || panic!(
+            "createfalse UUID"
+        )),
+        Err(NakamaAccountError::NotFound)
+    );
+    assert_eq!(db.calls, ["ready", "find"]);
+}
+#[test]
+fn custom_lookup_error_keeps_typed_finding_phase_and_original_sqlstate() {
+    let mut db = CustomMock::missing();
+    db.found = Err(failure(b"08006"));
+    let error = authenticate_custom_with_id_source(&mut db, custom_request(true), || {
+        panic!("lookup error UUID")
+    })
+    .unwrap_err();
+    let NakamaAccountError::CustomLookupFailed(detail) = error else {
+        panic!("lookup distinction");
+    };
+    assert_eq!(detail.phase, AccountPhase::CustomLookup);
+    assert_eq!(detail.last_failure.sqlstate, Some(*b"08006"));
+    assert_eq!(detail.attempts, 0);
+    assert!(!detail.unknown_commit);
+    assert_eq!(db.calls, ["ready", "find"]);
+}
+#[test]
+fn custom_create_generates_once_then_one_autocommit_and_returns_created() {
+    let mut db = CustomMock::missing();
+    let mut generated = 0;
+    let outcome = authenticate_custom_with_id_source(&mut db, custom_request(true), || {
+        generated += 1;
+        Ok(id())
+    })
+    .unwrap();
+    assert_eq!(generated, 1);
+    assert!(outcome.created);
+    assert_eq!(outcome.user.id, id());
+    assert_eq!(outcome.user.stored_username, "Requested");
+    assert_eq!(db.calls, ["ready", "find", "insert"]);
+}
+#[test]
+fn custom_uuid_failure_or_invalid_v4_never_inserts() {
+    let mut db = CustomMock::missing();
+    assert!(
+        authenticate_custom_with_id_source(&mut db, custom_request(true), || Err(
+            NakamaAccountIdGenerationError::Unavailable
+        ))
+        .is_err()
+    );
+    assert_eq!(db.calls, ["ready", "find"]);
+    let mut db = CustomMock::missing();
+    assert!(
+        authenticate_custom_with_id_source(&mut db, custom_request(true), || Ok(UserId::new(
+            [0; 16]
+        )))
+        .is_err()
+    );
+    assert_eq!(db.calls, ["ready", "find"]);
+}
+#[test]
+fn custom_identity_race_internal_username_23505_conflict_and_no_retry() {
+    for (state, username, expected) in [
+        (b"23505", false, StableCode::Internal),
+        (b"23505", true, StableCode::AlreadyExists),
+        (b"40001", true, StableCode::Internal),
+    ] {
+        let mut db = CustomMock::missing();
+        db.inserted = Err(AccountSqlFailure {
+            username_collision: username,
+            ..failure(state)
+        });
+        let error = authenticate_custom_with_id_source(&mut db, custom_request(true), || Ok(id()))
+            .unwrap_err();
+        let detail = detailed(error);
+        assert_eq!(error.code(), expected);
+        assert_eq!(detail.phase, AccountPhase::CustomInsert);
+        assert_eq!(detail.last_failure.sqlstate, Some(*state));
+        assert_eq!(detail.attempts, 1);
+        assert!(!detail.exhausted);
+        assert_eq!(db.calls, ["ready", "find", "insert"]);
+    }
+}
+#[test]
+fn custom_unknown_autocommit_is_preserved_without_winner_lookup_or_retry() {
+    for state in [None, Some(*b"40003"), Some(*b"08006")] {
+        let mut db = CustomMock::missing();
+        db.inserted = Err(AccountSqlFailure {
+            sqlstate: state,
+            ..AccountSqlFailure::local("synthetic_autocommit_failure")
+        });
+        let detail = detailed(
+            authenticate_custom_with_id_source(&mut db, custom_request(true), || Ok(id()))
+                .unwrap_err(),
+        );
+        assert!(detail.unknown_commit);
+        assert_eq!(detail.attempts, 1);
+        assert_eq!(db.calls, ["ready", "find", "insert"]);
+    }
+}
+#[test]
+fn custom_only_one_affected_row_can_ack_creation() {
+    for count in [0, 2] {
+        let mut db = CustomMock::missing();
+        db.inserted = Ok(count);
+        let detail = detailed(
+            authenticate_custom_with_id_source(&mut db, custom_request(true), || Ok(id()))
+                .unwrap_err(),
+        );
+        assert_eq!(detail.phase, AccountPhase::CustomInsert);
+        assert_eq!(
+            detail.last_failure.reason,
+            "custom_insert_rows_affected_unexpected"
+        );
+        assert_eq!(detail.unknown_commit, count > 0);
+        assert_eq!(db.calls, ["ready", "find", "insert"]);
+    }
+    let debug = format!(
+        "{:?}",
+        AuthenticateCustom::new("secret-id", "secret-name", true).unwrap()
+    );
+    assert!(!debug.contains("secret-id") && !debug.contains("secret-name"));
+}
+
+#[test]
+fn custom_observed_retired_lease_skips_write_without_claiming_unknown_commit() {
+    let mut db = CustomMock::missing();
+    db.write_allowed = false;
+    let detail = detailed(
+        authenticate_custom_with_id_source(&mut db, custom_request(true), || Ok(id())).unwrap_err(),
+    );
+    assert_eq!(detail.phase, AccountPhase::Input);
+    assert_eq!(detail.attempts, 0);
+    assert!(!detail.unknown_commit);
+    assert_eq!(detail.last_failure.reason, "custom_write_lease_retired");
+    assert_eq!(db.calls, ["ready", "find"]);
+}

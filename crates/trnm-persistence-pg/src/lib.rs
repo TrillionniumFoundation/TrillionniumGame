@@ -16,9 +16,9 @@ pub use auth::{
 };
 pub use authority::AuthorityLease;
 pub use nakama_account::{
-    AccountFailure, AccountPhase, AccountSqlFailure, AuthenticateDevice, AuthenticateDeviceOutcome,
-    NakamaAccountError, NakamaAccountIdGenerationError, NakamaLegacyUser,
-    NAKAMA_DEVICE_MAX_ATTEMPTS,
+    AccountFailure, AccountPhase, AccountSqlFailure, AuthenticateCustom, AuthenticateCustomOutcome,
+    AuthenticateDevice, AuthenticateDeviceOutcome, NakamaAccountError,
+    NakamaAccountIdGenerationError, NakamaLegacyUser, NAKAMA_DEVICE_MAX_ATTEMPTS,
 };
 pub use outbox::{OutboxClaimBatch, OutboxLease, OutboxRetryOutcome};
 pub use pool::{

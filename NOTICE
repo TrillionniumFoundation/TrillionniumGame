@@ -72,3 +72,13 @@ Copyright The Nakama Authors & Contributors, Apache License 2.0. Complete-file
 identity verification and the derived-region records are separate scopes.
 No Go authentication implementation is compiled into the target, and these
 source candidates grant no HTTP/native/production/acceptance compatibility.
+
+The independent Rust AuthenticateCustom source candidate derives its validation,
+lookup/autocommit ordering and public rejection strings from pinned Nakama
+server/api_authenticate.go (blob 1f938603160ef1dc7f6546926de5481622139dd2),
+server/core_authenticate.go (blob 5ec2f5c00ef875d11fc79865a30059d1147ac7e1),
+apigrpc/apigrpc.proto and apigrpc/apigrpc.pb.gw.go, with AccountCustom/Session
+definitions from nakama-common api/api.proto. The Nakama Authors & Contributors
+retain their Apache-2.0 copyright. No upstream Go implementation or bcrypt
+primitive is compiled into this Custom adapter. Its source status grants no
+native, HTTP, cryptographic, compatibility or production acceptance.

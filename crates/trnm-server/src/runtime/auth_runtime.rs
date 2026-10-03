@@ -8,7 +8,8 @@ use super::config::AuthAuthorityConfig;
 use super::error::ServerError;
 use super::http::{Request, Response};
 use super::legacy_auth::{
-    LegacyAccessPrincipal, LegacyAuthError, LegacyAuthService, LegacyDeviceAccount,
+    LegacyAccessPrincipal, LegacyAuthError, LegacyAuthService, LegacyCustomAccount,
+    LegacyCustomRepository, LegacyCustomRepositoryInput, LegacyDeviceAccount,
     LegacyDeviceRepository, LegacyDeviceRepositoryInput, LegacyRepositoryError, LegacyStoredUser,
     LegacyUserRepository,
 };
@@ -162,6 +163,27 @@ impl AuthAuthorityRuntime {
                 }
                 encoded
             }
+            LegacyAuthHttpRoute::AuthenticateCustom => {
+                let query = request
+                    .target
+                    .split_once('?')
+                    .map_or("", |(_, query)| query);
+                let input = wire::decode_custom_http_request(
+                    server_key,
+                    request.header("authorization"),
+                    &request.body,
+                    query,
+                    limits,
+                )?;
+                let session = service
+                    .authenticate_custom(&mut repository, input.auth_input())
+                    .map_err(|e| wire::legacy_custom_gateway_error(&e))?;
+                let encoded = wire::encode_legacy_session(&session, limits);
+                if encoded.is_err() && session.created {
+                    eprintln!("trnm-server legacy Custom response encoding failed after committed creation");
+                }
+                encoded
+            }
             LegacyAuthHttpRoute::Refresh => {
                 let input = wire::decode_refresh_http_request(
                     server_key,
@@ -214,5 +236,14 @@ impl<R: Repository> LegacyDeviceRepository for AccountBridge<'_, R> {
         input: LegacyDeviceRepositoryInput<'_>,
     ) -> Result<LegacyDeviceAccount, LegacyRepositoryError> {
         self.0.authenticate_legacy_device(input)
+    }
+}
+
+impl<R: Repository> LegacyCustomRepository for AccountBridge<'_, R> {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: LegacyCustomRepositoryInput<'_>,
+    ) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+        self.0.authenticate_legacy_custom(input)
     }
 }

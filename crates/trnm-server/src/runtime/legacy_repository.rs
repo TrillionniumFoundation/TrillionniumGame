@@ -1,7 +1,8 @@
 //! Concrete local bridge to native account transactions. No HTTP route is admitted
 //! by constructing this adapter; the native AccountsV5 gate remains authoritative.
 use super::legacy_auth::{
-    generate_account_id, LegacyCommittedCleanupFailure, LegacyDeviceAccount,
+    generate_account_id, LegacyCommittedCleanupFailure, LegacyCustomAccount,
+    LegacyCustomRepository, LegacyCustomRepositoryInput, LegacyDeviceAccount,
     LegacyDeviceRepository, LegacyDeviceRepositoryInput, LegacyLeaseCancellation,
     LegacyLeaseCompletion, LegacyLeaseFailure, LegacyNativeAccountFailure, LegacyRepositoryError,
     LegacyStoredUser, LegacyUserRepository,
@@ -9,9 +10,10 @@ use super::legacy_auth::{
 use core::fmt;
 use trnm_contracts::UserId;
 use trnm_persistence_pg::{
-    AccountPhase, AccountSqlFailure, AuthenticateDevice, AuthenticateDeviceOutcome,
-    NakamaAccountError, NakamaAccountIdGenerationError, NakamaLegacyUser,
-    PgAccountLeaseCancellation, PgAccountLeaseOutcome, PgRepository,
+    AccountPhase, AccountSqlFailure, AuthenticateCustom, AuthenticateCustomOutcome,
+    AuthenticateDevice, AuthenticateDeviceOutcome, NakamaAccountError,
+    NakamaAccountIdGenerationError, NakamaLegacyUser, PgAccountLeaseCancellation,
+    PgAccountLeaseOutcome, PgRepository,
 };
 
 /// Borrow one actual native repository/lease. The adapter has no transaction retry
@@ -99,6 +101,8 @@ fn phase_name(phase: AccountPhase) -> &'static str {
     match phase {
         AccountPhase::Input => "input",
         AccountPhase::DeviceLookup => "device_lookup",
+        AccountPhase::CustomLookup => "custom_lookup",
+        AccountPhase::CustomInsert => "custom_insert",
         AccountPhase::UserLookup => "user_lookup",
         AccountPhase::Begin => "begin",
         AccountPhase::Savepoint => "savepoint",
@@ -112,6 +116,7 @@ fn phase_name(phase: AccountPhase) -> &'static str {
 fn map_native_failure(error: NakamaAccountError) -> LegacyNativeAccountFailure {
     let failure = match error {
         NakamaAccountError::Internal(failure)
+        | NakamaAccountError::CustomLookupFailed(failure)
         | NakamaAccountError::UsernameAlreadyExists(failure) => Some(failure),
         _ => None,
     };
@@ -213,6 +218,11 @@ pub(super) fn map_native_error(error: NakamaAccountError) -> LegacyRepositoryErr
     match error {
         NakamaAccountError::SchemaNotReady(_) => LegacyRepositoryError::Unavailable,
         NakamaAccountError::NotFound => LegacyRepositoryError::UserNotFound,
+        NakamaAccountError::CustomLookupFailed(failure) => {
+            LegacyRepositoryError::CustomLookupFailed(map_native_failure(
+                NakamaAccountError::CustomLookupFailed(failure),
+            ))
+        }
         NakamaAccountError::Banned => LegacyRepositoryError::UserBanned,
         NakamaAccountError::UsernameAlreadyExists(_) => LegacyRepositoryError::UsernameAlreadyInUse,
         NakamaAccountError::Internal(failure) => LegacyRepositoryError::NativeFailure(
@@ -240,3 +250,49 @@ fn map_device_outcome(outcome: AuthenticateDeviceOutcome) -> LegacyDeviceAccount
 #[cfg(test)]
 #[path = "legacy_repository_tests.rs"]
 mod tests;
+
+impl LegacyCustomRepository for PgLegacyAuthRepository<'_> {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: LegacyCustomRepositoryInput<'_>,
+    ) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+        let request = match AuthenticateCustom::new(
+            input.custom_id,
+            input.requested_username,
+            input.create,
+        ) {
+            Ok(r) => r,
+            Err(e) => return self.capture(Err(e)),
+        };
+        let result = self
+            .repository
+            .authenticate_nakama_custom_with_id_source(request, || {
+                generate_account_id().map_err(|_| NakamaAccountIdGenerationError::Unavailable)
+            });
+        self.capture(result).map(map_custom_outcome)
+    }
+}
+pub(super) fn resolve_custom_lease(
+    lease: PgAccountLeaseOutcome<AuthenticateCustomOutcome>,
+) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+    resolve_lease(
+        lease,
+        |v| {
+            if v.created {
+                LegacyLeaseCompletion::ConfirmedCreation {
+                    committed_cleanup_failure: None,
+                }
+            } else {
+                LegacyLeaseCompletion::CustomExisting
+            }
+        },
+        map_custom_outcome,
+    )
+}
+fn map_custom_outcome(outcome: AuthenticateCustomOutcome) -> LegacyCustomAccount {
+    LegacyCustomAccount {
+        user_id: outcome.user.id,
+        stored_username: outcome.user.stored_username,
+        created: outcome.created,
+    }
+}

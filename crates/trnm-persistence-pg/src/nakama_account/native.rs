@@ -1,7 +1,8 @@
 use super::{
-    authenticate_device, authenticate_device_with_id_source, checked_stored_user, database_uuid,
-    decode_database_uuid, read_user, AccountSqlFailure, AuthenticateDevice,
-    AuthenticateDeviceOutcome, DeviceDatabase, DeviceTransaction, NakamaAccountError,
+    authenticate_custom_with_id_source, authenticate_device, authenticate_device_with_id_source,
+    checked_stored_user, database_uuid, decode_database_uuid, read_user, AccountSqlFailure,
+    AuthenticateCustom, AuthenticateCustomOutcome, AuthenticateDevice, AuthenticateDeviceOutcome,
+    CustomDatabase, DeviceDatabase, DeviceTransaction, NakamaAccountError,
     NakamaAccountIdGenerationError, NakamaLegacyUser,
 };
 use crate::{AuthoritativeSchemaTarget, PgRepository};
@@ -218,5 +219,102 @@ mod sql_tests {
         assert!(!INSERT_USER.contains("ON CONFLICT"));
         assert!(!INSERT_DEVICE.contains("ON CONFLICT"));
         assert!(!READ_USER.contains("UPDATE"));
+    }
+}
+
+const FIND_CUSTOM: &str = "SELECT id::TEXT, username, FLOOR(EXTRACT(EPOCH FROM disable_time))::BIGINT FROM public.users WHERE custom_id=$1";
+const INSERT_CUSTOM: &str = "INSERT INTO public.users (id,username,custom_id,create_time,update_time) VALUES ($1::TEXT::UUID,$2,$3,now(),now())";
+impl PgRepository {
+    /// One observed autocommit, with no replay on identity races or ambiguity.
+    pub fn authenticate_nakama_custom_with_id_source(
+        &mut self,
+        request: AuthenticateCustom<'_>,
+        new_user_id: impl FnOnce() -> Result<UserId, NakamaAccountIdGenerationError>,
+    ) -> Result<AuthenticateCustomOutcome, NakamaAccountError> {
+        let result = authenticate_custom_with_id_source(
+            &mut NativeDatabase { repository: self },
+            request,
+            new_user_id,
+        );
+        if result.as_ref().is_err_and(|error| error.unknown_commit()) {
+            self.client.retire();
+        }
+        result
+    }
+}
+impl CustomDatabase for NativeDatabase<'_> {
+    fn require_custom_ready(&mut self) -> Result<(), DomainError> {
+        self.repository
+            .verify_authoritative_schema_target(AuthoritativeSchemaTarget::NakamaAccountsV5)
+            .map(|_| ())
+    }
+    fn find_custom(
+        &mut self,
+        custom_id: &str,
+    ) -> Result<Option<NakamaLegacyUser>, AccountSqlFailure> {
+        self.repository
+            .client
+            .query_opt(FIND_CUSTOM, &[&custom_id])
+            .map_err(custom_sql_failure)?
+            .map(|row| {
+                let text: String = row.try_get(0).map_err(custom_sql_failure)?;
+                checked_stored_user(
+                    decode_database_uuid(&text)?,
+                    row.try_get(1).map_err(custom_sql_failure)?,
+                    row.try_get(2).map_err(custom_sql_failure)?,
+                )
+            })
+            .transpose()
+    }
+    fn check_custom_write_allowed(&mut self) -> Result<(), AccountSqlFailure> {
+        if self.repository.client.is_retired() {
+            Err(AccountSqlFailure::local("custom_write_lease_retired"))
+        } else {
+            Ok(())
+        }
+    }
+    fn insert_custom(
+        &mut self,
+        request: AuthenticateCustom<'_>,
+        id: UserId,
+    ) -> Result<u64, AccountSqlFailure> {
+        let id_text = database_uuid(id);
+        self.repository
+            .client
+            .execute(
+                INSERT_CUSTOM,
+                &[&id_text, &request.username, &request.custom_id],
+            )
+            .map_err(custom_sql_failure)
+    }
+}
+fn custom_sql_failure(error: postgres::Error) -> AccountSqlFailure {
+    // Unlike Device, Custom source tests users_username_key first without a
+    // user_device_pkey exclusion. Do not alter the existing Device projector.
+    AccountSqlFailure {
+        sqlstate: error
+            .code()
+            .and_then(|code| code.code().as_bytes().try_into().ok()),
+        username_collision: error.as_db_error().is_some_and(|db| {
+            db.code().code() == "23505" && db.message().contains("users_username_key")
+        }),
+        transaction_closed: false,
+        reason: "nakama_native_custom_database_failure",
+    }
+}
+
+#[cfg(test)]
+mod custom_sql_tests {
+    use super::*;
+    #[test]
+    fn custom_native_sql_is_one_plain_users_insert_and_one_lookup() {
+        assert!(FIND_CUSTOM.contains("WHERE custom_id=$1"));
+        assert!(FIND_CUSTOM.contains("FLOOR(EXTRACT(EPOCH FROM disable_time))::BIGINT"));
+        assert!(INSERT_CUSTOM.starts_with(
+            "INSERT INTO public.users (id,username,custom_id,create_time,update_time) VALUES"
+        ));
+        for forbidden in ["ON CONFLICT", "SELECT", "user_device", "UPDATE"] {
+            assert!(!INSERT_CUSTOM.contains(forbidden));
+        }
     }
 }

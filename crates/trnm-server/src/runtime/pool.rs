@@ -120,7 +120,48 @@ impl super::legacy_auth::LegacyDeviceRepository for PooledRepository {
     }
 }
 
+impl super::legacy_auth::LegacyCustomRepository for PooledRepository {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: super::legacy_auth::LegacyCustomRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyCustomAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        self.last_legacy_native_failure = None;
+        let request = trnm_persistence_pg::AuthenticateCustom::new(
+            input.custom_id,
+            input.requested_username,
+            input.create,
+        )
+        .map_err(|error| {
+            self.last_legacy_native_failure = Some(error);
+            super::legacy_repository::map_native_error(error)
+        })?;
+        let lease = self
+            .pool
+            .run_account_with_deadline(self.operation_budget, |repository| {
+                repository.authenticate_nakama_custom_with_id_source(request, || {
+                    super::legacy_auth::generate_account_id().map_err(|_| {
+                        trnm_persistence_pg::NakamaAccountIdGenerationError::Unavailable
+                    })
+                })
+            });
+        self.last_legacy_native_failure = lease
+            .observed
+            .as_ref()
+            .and_then(|r| r.as_ref().err())
+            .copied();
+        super::legacy_repository::resolve_custom_lease(lease)
+    }
+}
+
 impl Repository for PooledRepository {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: super::legacy_auth::LegacyCustomRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyCustomAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        super::legacy_auth::LegacyCustomRepository::authenticate_legacy_custom(self, input)
+    }
     fn read_legacy_user(
         &mut self,
         user: UserId,

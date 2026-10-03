@@ -23,10 +23,10 @@ use trnm_token_jwt_adapter::{
     NakamaLegacyVerifyLimits,
 };
 
-use super::legacy_device_predicates::validate_device_input;
+use super::legacy_device_predicates::{validate_custom_input, validate_device_input};
 pub use super::legacy_device_predicates::{
-    DeviceInputError, GeneratedUsername, InvalidGeneratedUsername, RawStoredDeviceRecord,
-    ResolvedUsername, ValidatedDeviceInput,
+    CustomInputError, DeviceInputError, GeneratedUsername, InvalidGeneratedUsername,
+    RawStoredDeviceRecord, ResolvedUsername, ValidatedCustomInput, ValidatedDeviceInput,
 };
 use super::legacy_uuid::{parse_uuid, uuid_string};
 
@@ -116,6 +116,7 @@ pub enum LegacyLeaseCompletion {
     NotObserved,
     UserRead,
     DeviceExisting,
+    CustomExisting,
     UnconfirmedCleanup {
         committed_cleanup_failure: LegacyCommittedCleanupFailure,
     },
@@ -130,6 +131,7 @@ impl fmt::Debug for LegacyLeaseCompletion {
             Self::NotObserved => "NotObserved",
             Self::UserRead => "UserRead",
             Self::DeviceExisting => "DeviceExisting",
+            Self::CustomExisting => "CustomExisting",
             Self::UnconfirmedCleanup { .. } => "UnconfirmedCleanup",
             Self::ConfirmedCreation { .. } => "ConfirmedCreation",
             Self::NativeFailure(_) => "NativeFailure",
@@ -173,6 +175,7 @@ pub enum LegacyRepositoryError {
     UserBanned,
     UsernameAlreadyInUse,
     NativeFailure(LegacyNativeAccountFailure),
+    CustomLookupFailed(LegacyNativeAccountFailure),
     Lease(Box<LegacyLeaseFailure>),
 }
 
@@ -189,7 +192,7 @@ impl LegacyRepositoryError {
             Self::UserNotFound => StableCode::NotFound,
             Self::UserBanned => StableCode::PermissionDenied,
             Self::UsernameAlreadyInUse => StableCode::AlreadyExists,
-            Self::NativeFailure(error) => error.code,
+            Self::NativeFailure(error) | Self::CustomLookupFailed(error) => error.code,
             Self::Lease(error) => error.boundary_error.code(),
         }
     }
@@ -308,6 +311,9 @@ pub enum LegacyAuthError {
     Repository(LegacyRepositoryError),
     DeviceRepository(LegacyRepositoryError),
     DeviceInput(DeviceInputError),
+    CustomInput(CustomInputError),
+    CustomRepository(LegacyRepositoryError),
+    CustomLookupRepository(LegacyRepositoryError),
 }
 impl fmt::Display for LegacyAuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -323,6 +329,9 @@ impl fmt::Display for LegacyAuthError {
             Self::DeviceRepository(_) => "Error finding or creating user account.",
             Self::Repository(_) => "Error finding user account.",
             Self::DeviceInput(e) => e.message(),
+            Self::CustomInput(e) => e.message(),
+            Self::CustomRepository(_) => "Error finding or creating user account.",
+            Self::CustomLookupRepository(_) => "Error finding user account.",
             Self::InvalidConfiguration => "Invalid legacy authentication configuration.",
             Self::ClockUnavailable | Self::ClockRange => "Legacy authentication clock unavailable.",
             Self::RandomUnavailable => "Legacy authentication randomness unavailable.",
@@ -523,6 +532,7 @@ fn device_failure_code(cause: &LegacyAuthError) -> trnm_contracts::StableCode {
     use trnm_contracts::StableCode;
     match cause {
         LegacyAuthError::DeviceInput(_)
+        | LegacyAuthError::CustomInput(_)
         | LegacyAuthError::InvalidConfiguration
         | LegacyAuthError::RefreshTokenRequired
         | LegacyAuthError::SessionLogoutTokenInvalid
@@ -535,9 +545,10 @@ fn device_failure_code(cause: &LegacyAuthError) -> trnm_contracts::StableCode {
             StableCode::PermissionDenied
         }
         LegacyAuthError::UsernameAlreadyInUse => StableCode::AlreadyExists,
-        LegacyAuthError::Repository(error) | LegacyAuthError::DeviceRepository(error) => {
-            error.code()
-        }
+        LegacyAuthError::Repository(error)
+        | LegacyAuthError::DeviceRepository(error)
+        | LegacyAuthError::CustomRepository(error)
+        | LegacyAuthError::CustomLookupRepository(error) => error.code(),
         LegacyAuthError::Cache(NakamaLegacyBlacklistError::InvalidLimits) => StableCode::Internal,
         LegacyAuthError::Cache(_) => StableCode::ResourceExhausted,
         LegacyAuthError::ClockUnavailable
@@ -1158,3 +1169,127 @@ fn generate_username() -> Result<GeneratedUsername, LegacyAuthError> {
 #[cfg(test)]
 #[path = "legacy_auth_tests.rs"]
 mod tests;
+
+/// Custom has its own typed repository boundary. Its completed autocommit
+/// account alone can enter the existing private session issuance path.
+pub trait LegacyCustomRepository {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: LegacyCustomRepositoryInput<'_>,
+    ) -> Result<LegacyCustomAccount, LegacyRepositoryError>;
+}
+#[derive(Clone, Copy)]
+pub struct LegacyCustomRepositoryInput<'a> {
+    pub custom_id: &'a str,
+    pub requested_username: &'a str,
+    pub create: bool,
+}
+impl fmt::Debug for LegacyCustomRepositoryInput<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LegacyCustomRepositoryInput")
+            .field("custom_id", &"<redacted>")
+            .field("username", &"<redacted>")
+            .field("create", &self.create)
+            .finish()
+    }
+}
+pub struct LegacyCustomAccount {
+    pub user_id: UserId,
+    pub stored_username: String,
+    pub created: bool,
+}
+impl fmt::Debug for LegacyCustomAccount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LegacyCustomAccount")
+            .field("user_id", &"<redacted>")
+            .field("username", &"<redacted>")
+            .field("created", &self.created)
+            .finish()
+    }
+}
+#[derive(Clone, Copy)]
+pub struct LegacyCustomAuthInput<'a> {
+    pub account_id: Option<&'a str>,
+    pub username: &'a str,
+    pub create: Option<bool>,
+    pub variables: Option<&'a BTreeMap<String, String>>,
+}
+impl fmt::Debug for LegacyCustomAuthInput<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LegacyCustomAuthInput")
+            .field("account_id", &"<redacted>")
+            .field("username", &"<redacted>")
+            .field("create", &self.create)
+            .field("variables", &self.variables.map(BTreeMap::len))
+            .finish()
+    }
+}
+/// Same typed postcommit/session wrapper; this alias does not route a Custom
+/// mutation through Device's repository or retry loop.
+pub type LegacyCustomAuthError = LegacyDeviceAuthError;
+impl LegacyAuthService {
+    pub fn authenticate_custom<R: LegacyCustomRepository>(
+        &self,
+        repository: &mut R,
+        input: LegacyCustomAuthInput<'_>,
+    ) -> Result<LegacySession, LegacyCustomAuthError> {
+        let id = input.account_id.map(str::as_bytes);
+        let generated = if input.username.is_empty() {
+            validate_custom_input(id, b"source-precheck", input.create, || unreachable!())
+                .map_err(LegacyAuthError::CustomInput)?;
+            Some(generate_username()?)
+        } else {
+            None
+        };
+        let validated = validate_custom_input(id, input.username.as_bytes(), input.create, || {
+            generated.expect("empty username generated after Custom ID validation")
+        })
+        .map_err(LegacyAuthError::CustomInput)?;
+        let name = std::str::from_utf8(validated.username.as_bytes())
+            .map_err(|_| LegacyAuthError::CustomRepository(LegacyRepositoryError::DataLoss))?;
+        let account = repository
+            .authenticate_legacy_custom(LegacyCustomRepositoryInput {
+                custom_id: input.account_id.expect("validated present Custom ID"),
+                requested_username: name,
+                create: validated.create,
+            })
+            .map_err(custom_repository_failure)?;
+        // This conversion shares only the private post-account issuer/cache.
+        // Autocommit Custom has no CR Device RELEASE cleanup diagnostic.
+        self.finish_device_account(
+            LegacyDeviceAccount {
+                user_id: account.user_id,
+                stored_username: account.stored_username,
+                created: account.created,
+                committed_cleanup_failure: None,
+            },
+            input.variables,
+            utc_seconds,
+            random_uuid_v4,
+        )
+    }
+}
+fn custom_repository_failure(error: LegacyRepositoryError) -> LegacyCustomAuthError {
+    let completion = match &error {
+        LegacyRepositoryError::Lease(f) => Some(f.completion),
+        _ => None,
+    };
+    let cause = match error {
+        LegacyRepositoryError::UserNotFound => LegacyAuthError::UserAccountNotFound,
+        LegacyRepositoryError::UserBanned => LegacyAuthError::UserAccountBanned,
+        LegacyRepositoryError::UsernameAlreadyInUse => LegacyAuthError::UsernameAlreadyInUse,
+        error @ LegacyRepositoryError::CustomLookupFailed(_) => {
+            LegacyAuthError::CustomLookupRepository(error)
+        }
+        other => LegacyAuthError::CustomRepository(other),
+    };
+    match completion {
+        Some(LegacyLeaseCompletion::ConfirmedCreation {
+            committed_cleanup_failure,
+        }) => LegacyDeviceAuthError::CommittedCreation(LegacyDevicePostCommitFailure {
+            cause,
+            committed_cleanup_failure,
+        }),
+        _ => LegacyDeviceAuthError::Unconfirmed(cause),
+    }
+}

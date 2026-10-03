@@ -638,9 +638,9 @@ def source_interface(config: str, app: str, *, list_integrated: bool = False,
                 and "target.split_once('?').map_or(target, |(path, _)| path)" in legacy_region,
                 "legacy route recognition must retain POST and query binding")
         legacy_routes = re.findall(r'"(/[^"\s]+)" => Some\(LegacyAuthHttpRoute::[A-Za-z]+\)', legacy_region)
-        require(len(legacy_routes) == 3 and set(legacy_routes) == {
-            "/v2/account/authenticate/device", "/v2/account/session/refresh", "/v2/session/logout"},
-            "legacy route source must be the closed three-path set")
+        require(len(legacy_routes) == 4 and set(legacy_routes) == {
+            "/v2/account/authenticate/custom", "/v2/account/authenticate/device", "/v2/account/session/refresh", "/v2/session/logout"},
+            "legacy route source must be the closed four-path set")
         guarded = [body for pattern, body in arms if _rust_pattern_values(pattern) == [
             "(", "S:POST", ",", "target", ")", "if", "legacy_auth_http_route", "(",
             "S:POST", ",", "target", ")", ".", "is_some", "(", ")"]]

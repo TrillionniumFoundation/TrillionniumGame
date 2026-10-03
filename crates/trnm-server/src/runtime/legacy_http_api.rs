@@ -2,7 +2,7 @@
 //! Studied Nakama d4d92f93 apigrpc.proto/apigrpc.pb.gw.go, api.go,
 //! api_authenticate.go/api_session.go and the vendored gateway/protojson decoders.
 //! Nakama source: Apache-2.0, The Nakama Authors & Contributors. This independent
-//! Rust App source connects three routes; AccountsV5 capture remains false.
+//! Rust App source connects four routes; AccountsV5 capture remains false.
 //! Actual HTTP execution and parity qualification remain ungranted.
 //! Authentication precedes business parsing (AGENTS rule 11); the upstream
 //! gateway instead decodes before its security interceptor. That difference is
@@ -20,17 +20,19 @@ use serde_json::value::RawValue;
 use trnm_contracts::StableCode;
 
 use super::legacy_auth::{
-    LegacyAccessPrincipal, LegacyAuthError, LegacyAuthService, LegacyDeviceAuthError,
-    LegacyDeviceAuthInput, LegacyRepositoryError, LegacySession,
+    LegacyAccessPrincipal, LegacyAuthError, LegacyAuthService, LegacyCustomAuthError,
+    LegacyCustomAuthInput, LegacyDeviceAuthError, LegacyDeviceAuthInput, LegacyRepositoryError,
+    LegacySession,
 };
 
-/// App source connects the selected authority, typed pool and three routes.
+/// App source connects the selected authority, typed pool and four routes.
 /// The AccountsV5 gate remains false; actual HTTP qualification is not granted.
 pub const LEGACY_HTTP_ROUTES_QUALIFIED: bool = false;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LegacyAuthHttpRoute {
     AuthenticateDevice,
+    AuthenticateCustom,
     Refresh,
     Logout,
 }
@@ -43,6 +45,7 @@ pub fn legacy_auth_http_route(method: &str, target: &str) -> Option<LegacyAuthHt
     }
     match target.split_once('?').map_or(target, |(path, _)| path) {
         "/v2/account/authenticate/device" => Some(LegacyAuthHttpRoute::AuthenticateDevice),
+        "/v2/account/authenticate/custom" => Some(LegacyAuthHttpRoute::AuthenticateCustom),
         "/v2/account/session/refresh" => Some(LegacyAuthHttpRoute::Refresh),
         "/v2/session/logout" => Some(LegacyAuthHttpRoute::Logout),
         _ => None,
@@ -379,7 +382,7 @@ fn parse_message(body: &[u8], limits: LegacyHttpLimits) -> Result<RawObject, Leg
         return Err(resource_error());
     }
     let Some(start) = body.iter().position(|b| !json_whitespace(*b)) else {
-        // NewDecoder's io.EOF is explicitly ignored by all three generated handlers.
+        // NewDecoder's io.EOF is explicitly ignored by all four selected generated handlers.
         return Ok(RawObject::default());
     };
     if body[start] != b'{' {
@@ -390,7 +393,7 @@ fn parse_message(body: &[u8], limits: LegacyHttpLimits) -> Result<RawObject, Leg
     let object: RawObject = serde_json::from_slice(&body[start..end]).map_err(|_| body_error())?;
     // Pinned protojson resolves [extension] before DiscardUnknown or null.
     // Both blank-imported generated registries bind these seven names to
-    // descriptor options, never to AccountDevice/SessionRefresh/SessionLogout.
+    // descriptor options, never to AccountCustom/AccountDevice/SessionRefresh/SessionLogout.
     // This check belongs to message members; vars map keys remain arbitrary.
     if object
         .0
@@ -747,6 +750,16 @@ pub fn legacy_gateway_error(error: &LegacyAuthError) -> LegacyGatewayError {
         E::UserAccountBanned => (StableCode::PermissionDenied, "User account banned."),
         E::UsernameAlreadyInUse => (StableCode::AlreadyExists, "Username is already in use."),
         E::DeviceInput(error) => (StableCode::InvalidArgument, error.message()),
+        E::CustomInput(error) => (StableCode::InvalidArgument, error.message()),
+        E::CustomRepository(error) => (
+            error.code(),
+            if matches!(error, LegacyRepositoryError::Unimplemented) {
+                "Legacy authentication unavailable."
+            } else {
+                "Error finding or creating user account."
+            },
+        ),
+        E::CustomLookupRepository(error) => (error.code(), "Error finding user account."),
         E::Repository(error) | E::DeviceRepository(error) => {
             let message = match error {
                 LegacyRepositoryError::UserNotFound => "User account not found.",
@@ -839,3 +852,59 @@ const fn internal_error() -> LegacyGatewayError {
 #[cfg(test)]
 #[path = "legacy_http_api_tests.rs"]
 mod tests;
+
+pub struct LegacyCustomHttpRequest {
+    id: String,
+    username: String,
+    create: Option<bool>,
+    variables: Option<BTreeMap<String, String>>,
+}
+impl LegacyCustomHttpRequest {
+    #[must_use]
+    pub fn auth_input(&self) -> LegacyCustomAuthInput<'_> {
+        LegacyCustomAuthInput {
+            account_id: Some(&self.id),
+            username: &self.username,
+            create: self.create,
+            variables: self.variables.as_ref(),
+        }
+    }
+}
+impl fmt::Debug for LegacyCustomHttpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LegacyCustomHttpRequest")
+            .field("id", &"<redacted>")
+            .field("username", &"<redacted>")
+            .field("create", &self.create)
+            .field("vars_entries", &self.variables.as_ref().map(BTreeMap::len))
+            .finish()
+    }
+}
+/// Pinned generated Custom gateway body is AccountCustom; its create/username
+/// query is structurally identical to Device. Accountnil/emptyid both have the
+/// same Custom error, so EOF's absence distinction is retained as emptyid here.
+pub fn decode_custom_http_request(
+    key: &LegacyHttpServerKey,
+    authorization: Option<&str>,
+    body: &[u8],
+    query: &str,
+    limits: LegacyHttpLimits,
+) -> Result<LegacyCustomHttpRequest, LegacyGatewayError> {
+    require_basic_server_key(key, authorization, limits)?;
+    let object = parse_message(body, limits)?;
+    let id = scalar(object.field(&["id"])?)?;
+    let variables = variables(object.field(&["vars"])?, limits)?;
+    let (create, username) = device_query(query, limits)?;
+    Ok(LegacyCustomHttpRequest {
+        id,
+        username,
+        create,
+        variables,
+    })
+}
+#[must_use]
+pub fn legacy_custom_gateway_error(error: &LegacyCustomAuthError) -> LegacyGatewayError {
+    let mut public = legacy_gateway_error(error.cause());
+    public.code = error.code();
+    public
+}
