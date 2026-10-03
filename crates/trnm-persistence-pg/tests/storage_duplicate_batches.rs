@@ -1541,7 +1541,8 @@ mod write_tail_drain {
     const CAUSAL_BUDGET: Duration = Duration::from_secs(4);
     const SETTLING_BUDGET: Duration = Duration::from_secs(6);
     const BAD_JSON: &[u8] = b"{invalid-json";
-    const ACCESS_SQL: &str = "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects WHERE collection = $1 AND object_key = $2 AND user_id = $3 FOR UPDATE";
+    const ACCESS_SQL: &str = "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects WHERE collection=$1 AND object_key=$2 AND user_id=$3 AND $4::JSONB IS NOT NULL FOR UPDATE";
+    const EXACT_ACCESS_SQL: &str = "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects WHERE collection=$1 AND object_key=$2 AND user_id=$3 AND $4::JSONB IS NOT NULL AND public_version::TEXT=$5::TEXT AND ($6::BOOL OR write_permission=1) FOR UPDATE";
 
     #[derive(Clone, Copy)]
     enum Case {
@@ -1718,6 +1719,7 @@ mod write_tail_drain {
         observer: &mut Client,
         application: &str,
         holder: &Holder,
+        expected_source_sql: &str,
     ) -> Option<WaitProof> {
         match holder {
             Holder::PostgreSql { pid, .. } => {
@@ -1736,7 +1738,7 @@ mod write_tail_drain {
                 let blocked_by: Vec<i32> = row.get(3);
                 if row.get::<_, Option<String>>(2).as_deref() != Some("Lock")
                     || !blocked_by.contains(pid)
-                    || query != ACCESS_SQL
+                    || query != expected_source_sql
                 {
                     return None;
                 }
@@ -1773,7 +1775,31 @@ mod write_tail_drain {
                     assert!(row.get::<_, bool>(6));
                 }
                 let query: String = rows[0].get(2);
-                assert!(query.contains("trnm_storage_objects") && query.contains("FOR UPDATE"));
+                // CR exposes native parameter-substituted query text rather
+                // than this wire literal. Keep its actual bytes/digest; the
+                // worker transaction and exact held-key join grant lock proof.
+                // Require the new JSONB input guard, never the old skinny SQL.
+                assert!(
+                    query.contains("trnm_storage_objects")
+                        && query.contains("::JSONB")
+                        && query.contains("IS NOT NULL")
+                        && query.contains("FOR UPDATE")
+                );
+                if expected_source_sql == EXACT_ACCESS_SQL {
+                    assert!(
+                        query.contains("public_version")
+                            && query.contains("write_permission")
+                            && query.contains(" OR ")
+                    );
+                }
+                println!(
+                    "{}",
+                    serde_json::json!({"schema":"local.storage-native-jsonb-lock-query.v1",
+                    "profile":"cockroachdb","actual_native_query":query,"actual_native_query_sha256":query_digest(&query),
+                    "expected_wire_query_sha256":query_digest(expected_source_sql),
+                    "query_match_scope":"native-worker-transaction-exact-held-key-and-jsonb-guard",
+                    "wire_literal_equality":false,"accepted":false,"compatibility_credit":false})
+                );
                 // phase is read from the real view but does not grant wait credit.
                 let phase: String = rows[0].get(3);
                 assert!(phase.len() <= 128);
@@ -1787,15 +1813,15 @@ mod write_tail_drain {
             }
         }
     }
-    fn log_outcome(profile: DatabaseProfile, case: Case, outcome: &Outcome, late: bool) {
+    fn log_outcome(profile: DatabaseProfile, case: &str, outcome: &Outcome, late: bool) {
         match &outcome.batch {
             Err(error) => println!(
                 "nakama_write_tail_drain_actual_result profile={} case={} actual_batch_domain_code={:?} actual_batch_reason={} actual_batch_retry={:?} actual_batch_sqlstate=null late={late}",
-                profile.metadata_value(), case.name(), error.code(), error.reason(), error.retry()
+                profile.metadata_value(), case, error.code(), error.reason(), error.retry()
             ),
             Ok(receipts) => eprintln!(
                 "nakama_write_tail_drain_unexpected_receipts profile={} case={} receipt_count={} late={late}",
-                profile.metadata_value(), case.name(), receipts.len()
+                profile.metadata_value(), case, receipts.len()
             ),
         }
     }
@@ -1803,6 +1829,7 @@ mod write_tail_drain {
         observer: &mut Client,
         application: &str,
         holder: &Holder,
+        expected_source_sql: &str,
         receive: &Receiver<Outcome>,
         outcome: &mut Option<Outcome>,
         started: Instant,
@@ -1812,7 +1839,7 @@ mod write_tail_drain {
                 started.elapsed() < CAUSAL_BUDGET,
                 "actual held-row wait was not observed within causal budget"
             );
-            if let Some(proof) = observe_wait(observer, application, holder) {
+            if let Some(proof) = observe_wait(observer, application, holder, expected_source_sql) {
                 assert!(
                     started.elapsed() < CAUSAL_BUDGET,
                     "native wait observation completed after causal budget"
@@ -1834,7 +1861,7 @@ mod write_tail_drain {
     fn release(
         transaction: &mut Option<Transaction<'_>>,
         profile: DatabaseProfile,
-        case: Case,
+        case: &str,
         role: &str,
     ) -> bool {
         let Some(transaction) = transaction.take() else {
@@ -1845,7 +1872,7 @@ mod write_tail_drain {
             Err(error) => {
                 eprintln!(
                     "nakama_write_tail_drain_secondary_rollback_failed profile={} case={} role={role} sqlstate={} primary_trace_preserved=true",
-                    profile.metadata_value(), case.name(), sqlstate(&error)
+                    profile.metadata_value(), case, sqlstate(&error)
                 );
                 false
             }
@@ -1857,7 +1884,7 @@ mod write_tail_drain {
         outcome: &mut Option<Outcome>,
         started: Instant,
         profile: DatabaseProfile,
-        case: Case,
+        case: &str,
     ) -> Option<std::thread::Result<()>> {
         if outcome.is_none() {
             match receive.recv_timeout(SETTLING_BUDGET.saturating_sub(started.elapsed())) {
@@ -1867,7 +1894,7 @@ mod write_tail_drain {
                 }
                 Err(_) => eprintln!(
                     "nakama_write_tail_drain_late_result_unavailable profile={} case={} original_result_preserved=true",
-                    profile.metadata_value(), case.name()
+                    profile.metadata_value(), case
                 ),
             }
         }
@@ -1884,7 +1911,7 @@ mod write_tail_drain {
         } else {
             eprintln!(
                 "nakama_write_tail_drain_worker_unsettled profile={} case={} cleanup_budget_seconds=6 outer_process_group_deadline_required=true original_result_preserved=true",
-                profile.metadata_value(), case.name()
+                profile.metadata_value(), case
             );
             None
         }
@@ -1901,7 +1928,8 @@ mod write_tail_drain {
         };
         let prelude = key("0-prelude");
         let rejected = key("a-rejected");
-        let bad = key("b-invalid");
+        let progress = key("b-valid-progress");
+        let bad = key("c-invalid");
         let probe = key("y-readable");
         let later = key("z-held");
         let mut control = bounded_control(url);
@@ -1914,7 +1942,7 @@ mod write_tail_drain {
         let seeds = [
             write(&prelude, A, VersionCheck::Any, WritePermission::OWNER),
             write(&rejected, A, VersionCheck::Any, rejected_acl),
-            write(&bad, A, VersionCheck::Any, WritePermission::OWNER),
+            write(&progress, A, VersionCheck::Any, WritePermission::OWNER),
             write(&probe, A, VersionCheck::Any, WritePermission::OWNER),
             write(&later, A, VersionCheck::Any, WritePermission::OWNER),
         ];
@@ -1927,7 +1955,7 @@ mod write_tail_drain {
             )
             .unwrap();
         assert_eq!(seeds_receipts.len(), seeds.len());
-        for (index, seeded_key) in [&prelude, &rejected, &bad, &probe, &later]
+        for (index, seeded_key) in [&prelude, &rejected, &progress, &probe, &later]
             .into_iter()
             .enumerate()
         {
@@ -1998,6 +2026,16 @@ mod write_tail_drain {
             write(&prelude, C, VersionCheck::Any, WritePermission::OWNER),
         ];
         if matches!(case, Case::AclNativeStops) {
+            // Supersedes the earlier held-malformed-b fixture: native Bind now
+            // rejects malformed input before that b lock can ever be reached.
+            // A valid held b proves the first ACL was selected before an
+            // independent malformed new c stops the tail while z stays held.
+            operations.push(write(
+                &progress,
+                B,
+                VersionCheck::Any,
+                WritePermission::OWNER,
+            ));
             operations.push(write(
                 &bad,
                 BAD_JSON,
@@ -2022,8 +2060,8 @@ mod write_tail_drain {
             None
         };
         let b_holder = b.as_mut().map(|transaction| {
-            hold(transaction, &bad);
-            capture_holder(transaction, &mut control, profile, &bad)
+            hold(transaction, &progress);
+            capture_holder(transaction, &mut control, profile, &progress)
         });
         if let Some(holder) = &b_holder {
             match (holder, &z_holder) {
@@ -2078,6 +2116,7 @@ mod write_tail_drain {
                     &mut control,
                     &worker_application,
                     holder,
+                    ACCESS_SQL,
                     &receive,
                     &mut outcome,
                     started,
@@ -2087,16 +2126,16 @@ mod write_tail_drain {
                     profile.metadata_value(), case.name(), proof.worker, proof.blocker, proof.query_sha256
                 );
                 if matches!(case, Case::AclNativeStops) {
-                    rollback_ok &= release(&mut b, profile, case, "b");
+                    rollback_ok &= release(&mut b, profile, case.name(), "b");
                 } else {
-                    rollback_ok &= release(&mut z, profile, case, "z");
+                    rollback_ok &= release(&mut z, profile, case.name(), "z");
                 }
                 assert!(rollback_ok, "tail causal lock release failed");
             }
             let actual = receive
                 .recv_timeout(CAUSAL_BUDGET.saturating_sub(started.elapsed()))
                 .expect("tail actual result was unavailable within original causal budget");
-            log_outcome(profile, case, &actual, false);
+            log_outcome(profile, case.name(), &actual, false);
             outcome = Some(actual);
             let actual = outcome.as_ref().unwrap();
             assert!(actual.completed_at.duration_since(started) < CAUSAL_BUDGET);
@@ -2117,8 +2156,8 @@ mod write_tail_drain {
             );
         }));
         let settling_started = Instant::now();
-        rollback_ok &= release(&mut b, profile, case, "b-cleanup");
-        rollback_ok &= release(&mut z, profile, case, "z-cleanup");
+        rollback_ok &= release(&mut b, profile, case.name(), "b-cleanup");
+        rollback_ok &= release(&mut z, profile, case.name(), "z-cleanup");
         // SQL rollback/observation is bounded by its own five-second control
         // timeout. These synchronous calls are not hard-interrupted by the
         // four-second causal or six-second settling clock; the outer runner
@@ -2129,7 +2168,7 @@ mod write_tail_drain {
             &mut outcome,
             settling_started,
             profile,
-            case,
+            case.name(),
         );
         let state_check = if rollback_ok && joined.as_ref().is_some_and(Result::is_ok) {
             Some(catch_unwind(AssertUnwindSafe(|| {
@@ -2147,7 +2186,7 @@ mod write_tail_drain {
                 eprintln!("nakama_write_tail_drain_secondary_snapshot_failure profile={} case={} primary_panic_preserved=true", profile.metadata_value(), case.name());
             }
             if let Some(actual) = &outcome {
-                log_outcome(profile, case, actual, true);
+                log_outcome(profile, case.name(), actual, true);
             }
             if joined.as_ref().is_some_and(Result::is_err) {
                 eprintln!("nakama_write_tail_drain_secondary_worker_panic profile={} case={} primary_panic_preserved=true", profile.metadata_value(), case.name());
@@ -2181,5 +2220,810 @@ mod write_tail_drain {
             exercise_case(url, profile, collection, case);
         }
         println!("nakama_write_tail_drain_executed profile={} held_wait_cases=2 early_reject_cases=3 fields=15", profile.metadata_value());
+        native_exact_input::exercise(url, profile, collection);
+    }
+
+    // Future-production-candidate-only native input/Exact predicate matrix.
+    // Real native observations are retained per profile; no pgx pipeline,
+    // read-committed or upstream error-code equivalence follows from this test.
+    mod native_exact_input {
+        use super::*;
+        use bytes::BytesMut;
+        use postgres::types::{to_sql_checked, Format, IsNull, ToSql, Type};
+        use std::{error::Error, fmt, io};
+
+        const NUL_TOKEN: &str = "literal\0condition";
+        const ESCAPED_NUL: &[u8] = br#"{"nul":"\u0000"}"#;
+        const LEGAL_SURROGATE: &[u8] = br#"{"bad":"\ud800"}"#;
+
+        #[derive(Clone, Copy)]
+        enum MatrixCase {
+            AclLateExactStale,
+            AclLateExactWriteZero,
+            ClientExactMatched,
+            ServerExactMatchedWriteZero,
+            ExactMissing,
+            ExactNulAclZero,
+            EscapedNul,
+            BothBadPayloadAndToken,
+            TypedNulAclZero,
+            TypedMalformedAclZero,
+        }
+        impl MatrixCase {
+            const fn name(self) -> &'static str {
+                match self {
+                    Self::AclLateExactStale => "acl_late_exact_stale",
+                    Self::AclLateExactWriteZero => "acl_late_exact_write_zero",
+                    Self::ClientExactMatched => "client_exact_matched_wait_commit",
+                    Self::ServerExactMatchedWriteZero => "server_exact_write_zero_wait_commit",
+                    Self::ExactMissing => "exact_missing_drain_wait_rollback",
+                    Self::ExactNulAclZero => "exact_nul_before_acl_zero",
+                    Self::EscapedNul => "escaped_nul_native_profile",
+                    Self::BothBadPayloadAndToken => "both_bad_payload_token_native_priority",
+                    Self::TypedNulAclZero => "typed_nul_acl_zero",
+                    Self::TypedMalformedAclZero => "typed_malformed_acl_zero",
+                }
+            }
+            const fn typed(self) -> bool {
+                matches!(self, Self::TypedNulAclZero | Self::TypedMalformedAclZero)
+            }
+            const fn authoritative(self) -> bool {
+                matches!(self, Self::ServerExactMatchedWriteZero)
+            }
+            const fn waits(self, profile: DatabaseProfile) -> bool {
+                match self {
+                    Self::ClientExactMatched
+                    | Self::ServerExactMatchedWriteZero
+                    | Self::ExactMissing => true,
+                    Self::AclLateExactStale
+                    | Self::AclLateExactWriteZero
+                    | Self::ExactNulAclZero => {
+                        matches!(profile, DatabaseProfile::CockroachDb)
+                    }
+                    _ => false,
+                }
+            }
+        }
+        enum Expected {
+            Rejected(DomainError),
+            Committed,
+        }
+        enum NativeObservation {
+            Rendered(Vec<u8>),
+            ServerError(String),
+        }
+
+        // Match the candidate's native input ABI without exposing a private
+        // production helper or touching payload bytes with serde_json::Value.
+        struct RawInput<'a>(&'a [u8]);
+        impl fmt::Debug for RawInput<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct("FixtureRawJsonb")
+                    .field("bytes", &self.0.len())
+                    .finish()
+            }
+        }
+        impl ToSql for RawInput<'_> {
+            fn to_sql(
+                &self,
+                kind: &Type,
+                out: &mut BytesMut,
+            ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+                if *kind != Type::JSONB || self.0.len() > 1024 * 1024 {
+                    return Err(Box::new(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "fixture JSONB type/bound rejected",
+                    )));
+                }
+                out.extend_from_slice(self.0);
+                Ok(IsNull::No)
+            }
+            fn accepts(kind: &Type) -> bool {
+                *kind == Type::JSONB
+            }
+            fn encode_format(&self, _: &Type) -> Format {
+                Format::Text
+            }
+            to_sql_checked!();
+        }
+        struct RawToken<'a>(&'a str);
+        impl fmt::Debug for RawToken<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct("FixtureRawText")
+                    .field("bytes", &self.0.len())
+                    .finish()
+            }
+        }
+        impl ToSql for RawToken<'_> {
+            fn to_sql(
+                &self,
+                kind: &Type,
+                out: &mut BytesMut,
+            ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+                if *kind != Type::TEXT {
+                    return Err(Box::new(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "fixture TEXT type rejected",
+                    )));
+                }
+                out.extend_from_slice(self.0.as_bytes());
+                Ok(IsNull::No)
+            }
+            fn accepts(kind: &Type) -> bool {
+                *kind == Type::TEXT
+            }
+            fn encode_format(&self, _: &Type) -> Format {
+                Format::Text
+            }
+            to_sql_checked!();
+        }
+        fn raw_hex(raw: &[u8]) -> String {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut out = String::with_capacity(raw.len() * 2);
+            for byte in raw {
+                out.push(char::from(HEX[usize::from(byte >> 4)]));
+                out.push(char::from(HEX[usize::from(byte & 15)]));
+            }
+            out
+        }
+        fn native_probe(
+            control: &mut Client,
+            profile: DatabaseProfile,
+            case: &str,
+            payload: Option<&[u8]>,
+            token: Option<&str>,
+        ) -> NativeObservation {
+            let (sql, types) = match (payload,token) {
+                (Some(_),Some(_)) => ("SELECT CASE WHEN pg_catalog.octet_length($1::JSONB::TEXT)<=16384 THEN $1::JSONB::TEXT END, $2::TEXT", vec![Type::JSONB,Type::TEXT]),
+                (Some(_),None) => ("SELECT CASE WHEN pg_catalog.octet_length($1::JSONB::TEXT)<=16384 THEN $1::JSONB::TEXT END", vec![Type::JSONB]),
+                (None,Some(_)) => ("SELECT $1::TEXT",vec![Type::TEXT]),
+                (None,None) => panic!("native fixture probe has no input"),
+            };
+            let statement = control.prepare_typed(sql, &types).unwrap_or_else(|error| {
+                panic!(
+                    "native input probe prepare failed sqlstate={}",
+                    sqlstate(&error)
+                )
+            });
+            assert_eq!(statement.params(), types.as_slice());
+            let actual_oids: Vec<_> = statement.params().iter().map(Type::oid).collect();
+            let jsonb = RawInput(payload.unwrap_or_default());
+            let condition = RawToken(token.unwrap_or_default());
+            let mut parameters: Vec<&(dyn ToSql + Sync)> = Vec::new();
+            if payload.is_some() {
+                parameters.push(&jsonb);
+            }
+            if token.is_some() {
+                parameters.push(&condition);
+            }
+            let observation = match control.query_one(&statement, &parameters) {
+                Ok(row) => {
+                    let value: String = if payload.is_some() {
+                        row.get::<_, Option<String>>(0)
+                            .expect("synthetic native render exceeded independent probe bound")
+                    } else {
+                        row.get(0)
+                    };
+                    if let Some(token) = token {
+                        let token_column = usize::from(payload.is_some());
+                        let returned: String = row.get(token_column);
+                        assert_eq!(returned.as_bytes(), token.as_bytes());
+                    }
+                    NativeObservation::Rendered(value.into_bytes())
+                }
+                Err(error) => {
+                    let code = error
+                        .code()
+                        .expect("native probe driver error has no actual server SQLSTATE")
+                        .code()
+                        .to_owned();
+                    assert!(
+                        code.len() == 5
+                            && code
+                                .bytes()
+                                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+                    );
+                    NativeObservation::ServerError(code)
+                }
+            };
+            println!(
+                "{}",
+                serde_json::json!({"schema":"local.storage-native-jsonb-input-observation.v1",
+                "profile":profile.metadata_value(),"case":case,"parameter_oids":actual_oids,"parameter_format":"Text",
+                "payload_hex":payload.map(raw_hex),"token_hex":token.map(|s|raw_hex(s.as_bytes())),
+                "actual_native_render_hex":match &observation {NativeObservation::Rendered(raw)=>Some(raw_hex(raw)),NativeObservation::ServerError(_)=>None},
+                "independent_probe_sqlstate":match &observation {NativeObservation::ServerError(code)=>Some(code.as_str()),NativeObservation::Rendered(_)=>None},
+                "batch_sqlstate":null,"payload_serde_roundtrip":false,"accepted":false,"compatibility_credit":false,
+                "production_ready":false,"full_protocol_parity":false})
+            );
+            observation
+        }
+        fn permission_error() -> DomainError {
+            DomainError::new(
+                StableCode::PermissionDenied,
+                "storage_write_permission_denied",
+                RetryClass::Never,
+            )
+        }
+        fn version_error() -> DomainError {
+            DomainError::new(
+                StableCode::FailedPrecondition,
+                "storage_version_mismatch",
+                RetryClass::ResyncRequired,
+            )
+        }
+        fn expected_native(observation: &NativeObservation, accepted: Expected) -> Expected {
+            match observation {
+                NativeObservation::Rendered(_) => accepted,
+                NativeObservation::ServerError(code) => {
+                    // Independent native SQLSTATE is real. The business API
+                    // intentionally carries only DomainError, never guessed
+                    // hidden native fault state. Its actual mapper is public.
+                    Expected::Rejected(trnm_persistence_pg::classify_sqlstate(code))
+                }
+            }
+        }
+        fn application_name(case: &str, role: &str, stamp: u128) -> String {
+            let value = format!("exact_{case}_{role}_{stamp:x}");
+            assert!(
+                value.len() < 64
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            );
+            value
+        }
+        fn log_actual(profile: DatabaseProfile, case: &str, outcome: &Outcome, late: bool) {
+            match &outcome.batch {
+                Err(error)=>println!("nakama_native_jsonb_exact_actual_result profile={} case={case} code={:?} reason={} retry={:?} batch_sqlstate=null receipt_count=0 late={late}",profile.metadata_value(),error.code(),error.reason(),error.retry()),
+                Ok(receipts)=>println!("nakama_native_jsonb_exact_actual_result profile={} case={case} committed_receipt_count={} late={late}",profile.metadata_value(),receipts.len()),
+            }
+        }
+        fn verify_committed(
+            control: &mut Client,
+            collection: &str,
+            before: &[RawRow],
+            operations: &[StorageBatchOperation],
+            receipts: &[StoredStorageMutationReceipt],
+            audit: i64,
+        ) {
+            assert_eq!(receipts.len(), operations.len());
+            let mut expected = before.to_vec();
+            for (operation, receipt) in operations.iter().zip(receipts) {
+                let StorageBatchOperation::Write(write) = operation else {
+                    panic!("native Exact matrix changed operation kind")
+                };
+                let old = expected.iter().find(|row| {
+                    row.key == write.key.key()
+                        && row.owner.as_slice() == write.key.user_id().as_bytes().as_slice()
+                });
+                let prior = old.map(|row| row.public_version.as_str());
+                assert_eq!(receipt.receipt.key, write.key);
+                assert_eq!(
+                    receipt
+                        .receipt
+                        .previous_version
+                        .as_ref()
+                        .map(|value| value.as_str()),
+                    prior
+                );
+                assert_eq!(
+                    receipt.receipt.current_version,
+                    Some(ContentVersion::from_value(&write.value))
+                );
+                assert_eq!(receipt.times.create, old.and_then(|row| row.create));
+                assert!(receipt.times.update.is_some());
+                let row = expected_known_row(
+                    control,
+                    &write.key,
+                    &write.value,
+                    write.read_permission,
+                    write.write_permission,
+                    audit,
+                    receipt.times,
+                );
+                let position = expected
+                    .iter()
+                    .position(|old| old.key == row.key && old.owner == row.owner)
+                    .expect("matrix success unexpectedly inserted a missing row");
+                expected[position] = row;
+            }
+            assert_eq!(
+                snapshot(control, collection),
+                expected,
+                "native Exact committed full15field tuple or unrelated row changed"
+            );
+        }
+
+        fn exercise_case(
+            url: &str,
+            profile: DatabaseProfile,
+            collection: &str,
+            case: MatrixCase,
+            bad_payload: &'static [u8],
+            subvector_label: Option<&'static str>,
+        ) {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let label = subvector_label.unwrap_or_else(|| case.name());
+            let key = |suffix: &str| {
+                StorageObjectKey::new(collection, format!("native-exact-{label}-{suffix}"), OWNER)
+                    .unwrap()
+            };
+            let prelude = key("0-prelude");
+            let rejected = key("a-rejected");
+            let probe = key("y-readable");
+            let later = key("z-held");
+            let mut control = bounded_control(url);
+            let mut repository = bounded_repository(url, profile);
+            let rejected_acl = if matches!(
+                case,
+                MatrixCase::AclLateExactStale
+                    | MatrixCase::AclLateExactWriteZero
+                    | MatrixCase::ServerExactMatchedWriteZero
+                    | MatrixCase::ExactNulAclZero
+                    | MatrixCase::TypedNulAclZero
+                    | MatrixCase::TypedMalformedAclZero
+                    | MatrixCase::BothBadPayloadAndToken
+            ) {
+                WritePermission::NONE
+            } else {
+                WritePermission::OWNER
+            };
+            let later_acl = if matches!(case, MatrixCase::AclLateExactWriteZero) {
+                WritePermission::NONE
+            } else {
+                WritePermission::OWNER
+            };
+            let mut seeds = vec![
+                write(&prelude, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&probe, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&later, A, VersionCheck::Any, later_acl),
+            ];
+            if !matches!(case, MatrixCase::ExactMissing) {
+                seeds.push(write(&rejected, A, VersionCheck::Any, rejected_acl));
+            }
+            let seeded = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::Server,
+                    &seeds,
+                    301,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            assert_eq!(seeded.len(), seeds.len());
+            for (operation, receipt) in seeds.iter().zip(&seeded) {
+                let StorageBatchOperation::Write(write) = operation else {
+                    unreachable!()
+                };
+                assert_known_row(
+                    &mut control,
+                    &write.key,
+                    A,
+                    write.read_permission,
+                    write.write_permission,
+                    301,
+                    receipt.times,
+                );
+            }
+            let current = ContentVersion::from_value(A).as_str().to_owned();
+            let mut operations = vec![write(
+                &prelude,
+                C,
+                VersionCheck::Any,
+                WritePermission::OWNER,
+            )];
+            let expected = match case {
+                MatrixCase::AclLateExactStale | MatrixCase::AclLateExactWriteZero => {
+                    operations.push(write(
+                        &rejected,
+                        B,
+                        VersionCheck::Any,
+                        WritePermission::OWNER,
+                    ));
+                    let token = if matches!(case, MatrixCase::AclLateExactStale) {
+                        "opaque-literal-stale".to_owned()
+                    } else {
+                        current.clone()
+                    };
+                    operations.push(write(
+                        &later,
+                        B,
+                        VersionCheck::Exact(token.into()),
+                        WritePermission::OWNER,
+                    ));
+                    Expected::Rejected(permission_error())
+                }
+                MatrixCase::ClientExactMatched | MatrixCase::ServerExactMatchedWriteZero => {
+                    operations.push(write(
+                        &rejected,
+                        B,
+                        VersionCheck::Exact(current.clone().into()),
+                        WritePermission::OWNER,
+                    ));
+                    Expected::Committed
+                }
+                MatrixCase::ExactMissing => {
+                    operations.push(write(
+                        &rejected,
+                        B,
+                        VersionCheck::Exact(current.clone().into()),
+                        WritePermission::OWNER,
+                    ));
+                    operations.push(write(&later, B, VersionCheck::Any, WritePermission::OWNER));
+                    Expected::Rejected(version_error())
+                }
+                MatrixCase::ExactNulAclZero => {
+                    let observation =
+                        native_probe(&mut control, profile, label, Some(B), Some(NUL_TOKEN));
+                    operations.push(write(
+                        &rejected,
+                        B,
+                        VersionCheck::Exact(NUL_TOKEN.into()),
+                        WritePermission::OWNER,
+                    ));
+                    operations.push(write(&later, B, VersionCheck::Any, WritePermission::OWNER));
+                    expected_native(&observation, Expected::Rejected(permission_error()))
+                }
+                MatrixCase::EscapedNul => {
+                    let observation =
+                        native_probe(&mut control, profile, label, Some(ESCAPED_NUL), None);
+                    operations = vec![write(
+                        &rejected,
+                        ESCAPED_NUL,
+                        VersionCheck::Any,
+                        WritePermission::OWNER,
+                    )];
+                    expected_native(&observation, Expected::Committed)
+                }
+                MatrixCase::BothBadPayloadAndToken => {
+                    let token_probe_label = format!("{label}_token_only");
+                    let _token_only = native_probe(
+                        &mut control,
+                        profile,
+                        &token_probe_label,
+                        None,
+                        Some(NUL_TOKEN),
+                    );
+                    let observation = native_probe(
+                        &mut control,
+                        profile,
+                        label,
+                        Some(bad_payload),
+                        Some(NUL_TOKEN),
+                    );
+                    assert!(matches!(&observation,NativeObservation::ServerError(code) if code=="22P02"),"native payload+token probe did not retain first actual malformed JSONB SQLSTATE");
+                    operations.push(write(
+                        &rejected,
+                        bad_payload,
+                        VersionCheck::Exact(NUL_TOKEN.into()),
+                        WritePermission::OWNER,
+                    ));
+                    operations.push(write(&later, B, VersionCheck::Any, WritePermission::OWNER));
+                    expected_native(&observation, Expected::Committed)
+                }
+                MatrixCase::TypedNulAclZero => {
+                    operations = vec![write(
+                        &rejected,
+                        B,
+                        VersionCheck::Exact(NUL_TOKEN.into()),
+                        WritePermission::OWNER,
+                    )];
+                    Expected::Rejected(permission_error())
+                }
+                MatrixCase::TypedMalformedAclZero => {
+                    operations = vec![write(
+                        &rejected,
+                        BAD_JSON,
+                        VersionCheck::Any,
+                        WritePermission::OWNER,
+                    )];
+                    Expected::Rejected(permission_error())
+                }
+            };
+            // Matched Exact waits target the eligible row. Native CR also
+            // waits on the two excluded late Exact rows, as qualified by the
+            // official source primary-holder cases. Missing-Exact semantic
+            // rejection drains a real later Any occurrence instead.
+            let held_key = if matches!(
+                case,
+                MatrixCase::ClientExactMatched | MatrixCase::ServerExactMatchedWriteZero
+            ) {
+                rejected.clone()
+            } else {
+                later.clone()
+            };
+            let expected_query = if matches!(
+                case,
+                MatrixCase::ClientExactMatched | MatrixCase::ServerExactMatchedWriteZero
+            ) || (matches!(profile, DatabaseProfile::CockroachDb)
+                && matches!(
+                    case,
+                    MatrixCase::AclLateExactStale | MatrixCase::AclLateExactWriteZero
+                )) {
+                EXACT_ACCESS_SQL
+            } else {
+                ACCESS_SQL
+            };
+            let before = snapshot(&mut control, collection);
+            let mut worker_repository = bounded_repository(url, profile);
+            let probe_before = worker_repository
+                .read_storage_object_with_metadata(StorageActor::User(OWNER), &probe)
+                .unwrap();
+            let worker_application = application_name(label, "w", stamp);
+            worker_repository
+                .execute_migration_batch(&format!("SET application_name='{worker_application}'"))
+                .unwrap();
+            let mut holder_control = bounded_control(url);
+            control_application(&mut holder_control, &application_name(label, "h", stamp));
+            let actor = if case.authoritative() {
+                StorageActor::Server
+            } else {
+                StorageActor::User(OWNER)
+            };
+            let worker_operations = operations.clone();
+            let started = Instant::now();
+            let mut held = Some(holder_control.transaction().unwrap());
+            hold(held.as_mut().unwrap(), &held_key);
+            let holder = capture_holder(held.as_mut().unwrap(), &mut control, profile, &held_key);
+            assert!(
+                started.elapsed() < CAUSAL_BUDGET,
+                "native Exact holder setup exceeded original causal budget"
+            );
+            let (send, receive) = mpsc::sync_channel(1);
+            let worker = std::thread::spawn(move || {
+                let batch = if case.typed() {
+                    worker_repository.apply_storage_batch_with_metadata(
+                        actor,
+                        &worker_operations,
+                        302,
+                    )
+                } else {
+                    worker_repository.apply_storage_batch_nakama_with_metadata(
+                        actor,
+                        &worker_operations,
+                        302,
+                        StorageNakamaBatchKind::Write,
+                    )
+                };
+                let completed_at = Instant::now();
+                let reused = worker_repository
+                    .read_storage_object_with_metadata(StorageActor::User(OWNER), &probe)
+                    .map(|actual| actual == probe_before);
+                send.send(Outcome {
+                    batch,
+                    reused,
+                    completed_at,
+                })
+                .expect("native Exact result receiver unavailable");
+            });
+            let mut outcome = None;
+            let mut rollback_ok = true;
+            let primary = catch_unwind(AssertUnwindSafe(|| {
+                if case.waits(profile) {
+                    let proof = wait_for_lock(
+                        &mut control,
+                        &worker_application,
+                        &holder,
+                        expected_query,
+                        &receive,
+                        &mut outcome,
+                        started,
+                    );
+                    println!("nakama_native_jsonb_exact_lock_observed profile={} case={label} worker={} blocker={} actual_query_sha256={} expected_wire_query_sha256={} proof=native-lock-view",profile.metadata_value(),proof.worker,proof.blocker,proof.query_sha256,query_digest(expected_query));
+                    rollback_ok &= release(&mut held, profile, label, "held-causal-release");
+                    assert!(rollback_ok, "native Exact causal holder release failed");
+                }
+                let actual = receive
+                    .recv_timeout(CAUSAL_BUDGET.saturating_sub(started.elapsed()))
+                    .expect("native Exact actual result absent within original causal budget");
+                log_actual(profile, label, &actual, false);
+                outcome = Some(actual);
+                let actual = outcome.as_ref().unwrap();
+                assert!(actual.completed_at.duration_since(started) < CAUSAL_BUDGET);
+                match &expected {
+                    Expected::Rejected(error) => assert_eq!(
+                        actual.batch.as_ref().err(),
+                        Some(error),
+                        "native Exact failure lost selected error or returned receipts"
+                    ),
+                    Expected::Committed => assert_eq!(
+                        actual.batch.as_ref().map(Vec::len),
+                        Ok(operations.len()),
+                        "native Exact matched input did not return committed receipts"
+                    ),
+                }
+                assert_eq!(
+                    actual.reused,
+                    Ok(true),
+                    "native Exact same-lease read health changed or failed"
+                );
+                if !case.waits(profile) {
+                    holder_still_open(&mut control, &held_key, &holder);
+                }
+                assert!(
+                    started.elapsed() < CAUSAL_BUDGET,
+                    "native Exact completion/held readback exceeded causal clock"
+                );
+            }));
+            let settling_started = Instant::now();
+            rollback_ok &= release(&mut held, profile, label, "held-cleanup");
+            // The inherited settle helper joins only is_finished workers and
+            // retains the first panic/result. Its six-second clock does not
+            // hard interrupt this preceding five-second SQL rollback.
+            let joined = settle(
+                worker,
+                &receive,
+                &mut outcome,
+                settling_started,
+                profile,
+                label,
+            );
+            let state_check = if rollback_ok && joined.as_ref().is_some_and(Result::is_ok) {
+                Some(catch_unwind(AssertUnwindSafe(|| match &expected {
+                    Expected::Rejected(_) => assert_eq!(
+                        snapshot(&mut control, collection),
+                        before,
+                        "native Exact failed transaction changed a full15field tuple"
+                    ),
+                    Expected::Committed => verify_committed(
+                        &mut control,
+                        collection,
+                        &before,
+                        &operations,
+                        outcome.as_ref().unwrap().batch.as_ref().unwrap(),
+                        302,
+                    ),
+                })))
+            } else {
+                None
+            };
+            if let Err(payload) = primary {
+                if state_check.as_ref().is_some_and(Result::is_err) {
+                    eprintln!("nakama_native_jsonb_exact_secondary_snapshot_failed profile={} case={label} primary_panic_preserved=true",profile.metadata_value());
+                }
+                if let Some(actual) = &outcome {
+                    log_actual(profile, label, actual, true);
+                }
+                if joined.as_ref().is_some_and(Result::is_err) {
+                    eprintln!("nakama_native_jsonb_exact_secondary_worker_panic profile={} case={label} primary_panic_preserved=true",profile.metadata_value());
+                }
+                resume_unwind(payload);
+            }
+            match joined {Some(Ok(()))=>{},Some(Err(payload))=>resume_unwind(payload),None=>panic!("native Exact worker unsettled; original result retained; process-group deadline required")}
+            assert!(
+                rollback_ok,
+                "native Exact holder rollback failed after successful causal body"
+            );
+            match state_check {
+                Some(Ok(())) => {}
+                Some(Err(payload)) => resume_unwind(payload),
+                None => panic!("native Exact full15field state comparison unavailable"),
+            }
+            if subvector_label.is_some() {
+                println!("nakama_native_jsonb_exact_subvector_executed profile={} case={label} main_case=both_bad_payload_token_native_priority input=legal_object_escaped_unpaired_surrogate fields=15 actual_domain=InvalidArgument actual_reason=database_constraint_violation retry=Never no_receipts=true same_lease_readable=true hidden_batch_sqlstate=null",profile.metadata_value());
+            } else {
+                println!("nakama_native_jsonb_exact_case_executed profile={} case={label} fields=15 native_wait={} committed={} same_lease_readable=true payload_serde_roundtrip=false",profile.metadata_value(),case.waits(profile),matches!(expected,Expected::Committed));
+            }
+        }
+
+        fn duplicate_exact(url: &str, profile: DatabaseProfile, collection: &str) {
+            let key = StorageObjectKey::new(collection, "native-exact-successful-duplicate", OWNER)
+                .unwrap();
+            let mut repository = bounded_repository(url, profile);
+            let mut control = bounded_control(url);
+            let seed = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::Server,
+                    &[write(&key, A, VersionCheck::Any, WritePermission::OWNER)],
+                    401,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            assert_eq!(seed.len(), 1);
+            assert_known_row(
+                &mut control,
+                &key,
+                A,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
+                401,
+                seed[0].times,
+            );
+            let before = snapshot(&mut control, collection);
+            let operations = [
+                write(
+                    &key,
+                    B,
+                    VersionCheck::Exact(ContentVersion::from_value(A).into()),
+                    WritePermission::OWNER,
+                ),
+                write(
+                    &key,
+                    C,
+                    VersionCheck::Exact(ContentVersion::from_value(B).into()),
+                    WritePermission::OWNER,
+                ),
+            ];
+            let receipts = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::User(OWNER),
+                    &operations,
+                    402,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            verify_committed(
+                &mut control,
+                collection,
+                &before,
+                &operations,
+                &receipts,
+                402,
+            );
+            assert_eq!(receipts[0].times.create, seed[0].times.create);
+            assert_eq!(receipts[1].times.create, seed[0].times.create);
+            assert_eq!(receipts[0].times.update, receipts[1].times.update);
+            let generated = ContentVersion::from_value(C);
+            let row=control.query_one("SELECT public_version::TEXT=$4::TEXT, write_permission=1 FROM public.trnm_storage_objects WHERE collection=$1 AND object_key=$2 AND user_id=$3",
+                &[&key.collection(),&key.key(),&key.user_id().as_bytes().as_slice(),&generated.as_str()]).unwrap();
+            assert!(row.get::<_, bool>(0) && row.get::<_, bool>(1));
+            let actual = repository
+                .read_storage_object_with_metadata(StorageActor::User(OWNER), &key)
+                .unwrap();
+            assert_eq!(actual.object.version.as_str(), generated.as_str());
+            assert_eq!(actual.times, receipts[1].times);
+            assert!(actual
+                .object
+                .collision_witness
+                .as_ref()
+                .is_some_and(|witness| witness.matches_request(C)));
+            actual.object.verify_integrity().unwrap();
+            println!("nakama_native_jsonb_exact_case_executed profile={} case=duplicate_exact_step_receipts fields=15 occurrences=2 ack_positions=original committed=true native_returning_predicates=true same_lease_readable=true",profile.metadata_value());
+        }
+        pub(super) fn exercise(url: &str, profile: DatabaseProfile, collection: &str) {
+            for case in [
+                MatrixCase::AclLateExactStale,
+                MatrixCase::AclLateExactWriteZero,
+                MatrixCase::ClientExactMatched,
+                MatrixCase::ServerExactMatchedWriteZero,
+                MatrixCase::ExactMissing,
+                MatrixCase::ExactNulAclZero,
+                MatrixCase::EscapedNul,
+                MatrixCase::BothBadPayloadAndToken,
+                MatrixCase::TypedNulAclZero,
+                MatrixCase::TypedMalformedAclZero,
+            ] {
+                exercise_case(url, profile, collection, case, BAD_JSON, None);
+                if matches!(case, MatrixCase::BothBadPayloadAndToken) {
+                    exercise_case(
+                        url,
+                        profile,
+                        collection,
+                        case,
+                        LEGAL_SURROGATE,
+                        Some("both_bad_input_legal_surrogate"),
+                    );
+                }
+            }
+            duplicate_exact(url, profile, collection);
+            let (late_exact_wait_cases, late_exact_no_wait_cases) = match profile {
+                DatabaseProfile::PostgreSql => (0_u8, 2_u8),
+                DatabaseProfile::CockroachDb => (2_u8, 0_u8),
+            };
+            println!(
+                "{}",
+                serde_json::json!({"schema":"local.storage-native-jsonb-exact-fixture.v1","profile":profile.metadata_value(),
+                "cases":11,"late_exact_excluded_cases":2,"late_exact_wait_cases":late_exact_wait_cases,
+                "late_exact_no_wait_cases":late_exact_no_wait_cases,"matched_wait_commit_cases":2,"missing_exact_drain_wait_rollback_cases":1,
+                "literal_native_text_cases":1,"escaped_nul_profile_observations":1,"both_bad_input_priority_cases":1,"both_bad_input_vectors":2,"legal_surrogate_bind_vectors":1,
+                "duplicate_exact_commit_cases":1,"typed_policy_cases":2,"tuple_fields":15,
+                "payload_serde_roundtrip":false,"automatic_mutation_retry":false,"accepted":false,"compatibility_credit":false,
+                "production_ready":false,"full_protocol_parity":false,"full_nakama_replacement":false})
+            );
+            println!("nakama_native_jsonb_exact_matrix_executed profile={} cases=11 late_exact_excluded=2 matched_wait_commit=2 missing_exact_drain_wait=1 literal_native_text=1 escaped_nul=1 both_bad_input=1 both_bad_input_vectors=2 surrogate_bind=1 duplicate_exact=1 typed_policy=2 fields=15 late_exact_wait={late_exact_wait_cases} late_exact_no_wait={late_exact_no_wait_cases}",profile.metadata_value());
+        }
     }
 }

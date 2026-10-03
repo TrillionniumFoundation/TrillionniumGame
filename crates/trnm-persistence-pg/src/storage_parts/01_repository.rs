@@ -376,7 +376,12 @@ impl PgRepository {
                 // The canonical occurrence plan already orders every key. Lock and
                 // validate only this occurrence before advancing to a later key;
                 // never reuse an initial ACL/version as later occurrence authority.
-                let refreshed_access = if kind.is_some() {
+                let refreshed_access = if kind == Some(NakamaBatchKind::Write) {
+                    let BatchOperation::Write(write) = operation else {
+                        return Err(data_loss("storage_nakama_write_plan_mismatch"));
+                    };
+                    acquire_nakama_write_access(&mut transaction, actor, write)?
+                } else if kind.is_some() {
                     lock_storage_access(&mut transaction, operation.key())?
                 } else {
                     None
@@ -397,7 +402,7 @@ impl PgRepository {
                     let BatchOperation::Write(write) = operation else {
                         return Err(data_loss("storage_nakama_write_plan_mismatch"));
                     };
-                    match validate_nakama_write_step(&mut transaction, actor, write, access)? {
+                    match validate_nakama_write_step(actor, write, access)? {
                         WriteStepValidation::Ready => {}
                         WriteStepValidation::Semantic(rejection) => {
                             first_write_rejection.get_or_insert(rejection);
@@ -416,14 +421,27 @@ impl PgRepository {
                 );
                 verify_storage_staged_budget(&staged)?;
                 let receipt = match operation {
-                    BatchOperation::Write(write) => apply_write(
-                        &mut transaction,
-                        &mut staged,
-                        actor,
-                        write,
-                        updated_at_i64,
-                        self.profile,
-                    )?,
+                    BatchOperation::Write(write) => {
+                        if kind == Some(NakamaBatchKind::Write) {
+                            apply_nakama_write(
+                                &mut transaction,
+                                &mut staged,
+                                actor,
+                                write,
+                                updated_at_i64,
+                                self.profile,
+                            )?
+                        } else {
+                            apply_write(
+                                &mut transaction,
+                                &mut staged,
+                                actor,
+                                write,
+                                updated_at_i64,
+                                self.profile,
+                            )?
+                        }
+                    }
                     BatchOperation::Delete(delete) => {
                         if kind == Some(NakamaBatchKind::Delete) {
                             apply_nakama_delete(&mut transaction, &mut staged, actor, delete)?
@@ -480,16 +498,16 @@ enum WriteStepValidation {
 }
 
 fn validate_nakama_write_step(
-    transaction: &mut Transaction<'_>,
     actor: Actor,
     write: &WriteOperation,
     access: Option<&LockedStorageAccess>,
 ) -> Result<WriteStepValidation, DomainError> {
-    // Keep the same order and byte authority as validate_locked_operation:
-    // owner/ACL, native raw TEXT condition, then raw public token comparison.
-    // The whole-request owner precheck must already have succeeded. Mark only
-    // these host decisions as semantic; never infer origin from a generic
-    // projection, native SQL, decoding, resource or RETURNING error.
+    // The whole-request owner precheck precedes the transaction. The actual
+    // acquisition query must already have bound raw JSONB and any raw TEXT
+    // condition before reaching these host ACL/version decisions. Do not
+    // rebind the condition with a different wire format after checking ACL.
+    // Mark only these host decisions as semantic; never infer origin from a
+    // generic native SQL, projection, decoding, resource or RETURNING error.
     let acl = if write.expected == VersionCheck::MustNotExist {
         None
     } else {
@@ -502,13 +520,6 @@ fn validate_nakama_write_step(
         }
         Err(hard_error) => return Err(hard_error),
     }
-    validate_native_condition(
-        transaction,
-        match &write.expected {
-            VersionCheck::Exact(token) => Some(token.as_str()),
-            _ => None,
-        },
-    )?;
     match &write.expected {
         VersionCheck::Any => Ok(WriteStepValidation::Ready),
         VersionCheck::MustNotExist if access.is_none() => Ok(WriteStepValidation::Ready),

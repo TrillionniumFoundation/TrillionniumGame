@@ -24,6 +24,18 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+
+def native_write_source_inputs() -> list[str]:
+    """Read the actual connected sources; local mutants grant no execution credit."""
+    return [(ROOT / name).read_text() for name in (
+        "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs",
+        "crates/trnm-persistence-pg/src/storage_parts/03_write.rs",
+        "crates/trnm-persistence-pg/src/storage_parts/06_native_projection.rs",
+        "crates/trnm-server/src/runtime/storage_api.rs",
+        "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs",
+        "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
+    )]
+
 ENVIRONMENT = '''CARGO_TERM_COLOR=never \\
 TRNM_REQUIRE_LIVE_DATABASE=1 \\
 TRNM_DATABASE_URL="$database_url" \\
@@ -66,9 +78,10 @@ JSONB_MARKER = '''grep -Fxq "storage_jsonb_v3_live_executed profile=${profile} h
 NATIVE_INPUT_MARKER = '''test "$(grep -Ec "^storage_jsonb_v3_native_inputs profile=${profile} condition_sql=(accepted|rejected) payload_sql=(accepted|rejected) compatibility_credit=false$" "$evidence/canonical-storage-app.log")" -eq 1
 '''
 HOMOGENEOUS_APP_MARKER = 'grep -Fxq "storage_homogeneous_app_executed profile=${profile} write_occurrences=13 rollback_cases=3" "$evidence/canonical-storage-app.log"\ntest "$(grep -Ec \'^storage_homogeneous_app_executed \' "$evidence/canonical-storage-app.log")" -eq 1\n'
+NATIVE_WRITE_FAILURE_APP_MARKER = 'grep -Fxq "storage_jsonb_native_write_failure_executed profile=${profile} cases=1 fields=15 sqlstate=22P02" "$evidence/canonical-storage-app.log"\ntest "$(grep -Ec \'^storage_jsonb_native_write_failure_executed \' "$evidence/canonical-storage-app.log")" -eq 1\n'
 CANONICAL = CANONICAL.replace(
     "if grep -Fq 'canonical_storage_api_live_skipped'",
-    OPAQUE_MARKER + JSONB_MARKER + NATIVE_INPUT_MARKER + HOMOGENEOUS_APP_MARKER + "if grep -Fq 'canonical_storage_api_live_skipped'"
+    OPAQUE_MARKER + JSONB_MARKER + NATIVE_INPUT_MARKER + HOMOGENEOUS_APP_MARKER + NATIVE_WRITE_FAILURE_APP_MARKER + "if grep -Fq 'canonical_storage_api_live_skipped'"
 )
 PROJECTION = lane(
     "trnm-persistence-pg", "--test authority_storage",
@@ -149,7 +162,7 @@ DUPLICATES = lane(
 DUPLICATE_GUARDS = "".join(
     f'grep -Fxq "{marker} profile=${{profile}}{suffix}" "$evidence/{MODULE.STORAGE_DUPLICATE_LOG}"\n'
     f'test "$(grep -Ec \'^{marker} \' "$evidence/{MODULE.STORAGE_DUPLICATE_LOG}")" -eq 1\n'
-    for marker, suffix in MODULE.STORAGE_DUPLICATE_MARKERS
+    for marker, suffix in MODULE.storage_duplicate_shell_markers()
 )
 DUPLICATE_TERMINAL = 'test "$(grep -Ec \'^test result:\' "$evidence/storage-duplicate-batches.log")" -eq 1\n'
 DUPLICATES = (DUPLICATES[:DUPLICATES.index('grep -Fxq "nakama_duplicate_batches_executed')] +
@@ -209,7 +222,9 @@ EOF
 find "$evidence" -type f ! -name SHA256SUMS -print0 \\
   | sort -z | xargs -0 sha256sum > "$evidence/SHA256SUMS"
 '''
-SUFFIX = SUFFIX.replace('"storage_v4_acl":true,', '"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,"storage_write_tail_drain":true,')
+SUFFIX = SUFFIX.replace('"storage_v4_acl":true,', '"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,"storage_write_tail_drain":true,"storage_native_jsonb_exact":true,"storage_jsonb_native_write_failure":true,')
+SUFFIX = SUFFIX.replace('"storage_native_jsonb_exact":true,', '"storage_native_jsonb_exact":true,"late_exact_wait_cases":${storage_late_exact_wait_cases},"late_exact_no_wait_cases":${storage_late_exact_no_wait_cases},')
+DUPLICATES = 'begin_stage storage-duplicate-batches "$evidence/storage-duplicate-batches.log"\n' + 'case "$profile" in\n  postgresql) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;\n  cockroachdb) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;\n  *) echo \'unsupported storage native Exact profile\' >&2; exit 1 ;;\nesac\n' + DUPLICATES
 FIXTURE = PREFIX + CANONICAL + PROJECTION + OCC + TIMESTAMPS + NATIVE_JSONB + V4_ACL + IMPORT_ANNEX + V4_IMPORT + DUPLICATES + SCHEMA + SCHEMA_V3 + SUFFIX
 
 
@@ -508,8 +523,8 @@ class StorageListLiveContractTests(unittest.TestCase):
 
 
     def test_write_tail_seventh_marker_and_five_case_guard_are_required(self) -> None:
-        self.assertEqual(len(MODULE.STORAGE_DUPLICATE_MARKERS), 7)
-        self.assertEqual(MODULE.STORAGE_DUPLICATE_MARKERS[-1], (
+        self.assertEqual(len(MODULE.STORAGE_DUPLICATE_MARKERS), 9)
+        self.assertEqual(MODULE.STORAGE_DUPLICATE_MARKERS[6], (
             "nakama_write_tail_drain_executed",
             " held_wait_cases=2 early_reject_cases=3 fields=15",
         ))
@@ -539,7 +554,7 @@ class StorageListLiveContractTests(unittest.TestCase):
             ("if kind == Some(NakamaBatchKind::Write)", "if kind.is_some()"),
             ("Err(rejection) if rejection == write_permission_error()", "Err(rejection)"),
             ("VersionCheck::MustNotExist => Err(error(", "VersionCheck::MustNotExist => Ok(WriteStepValidation::Semantic(error("),
-            ("validate_native_condition(", "removed_native_condition("),
+            ("acquire_nakama_write_access(&mut transaction, actor, write)?", "removed_native_acquisition"),
             ("transaction.rollback().err().map(map_postgres_error)", "None"),
             ("if rollback_error.is_some() {", "if false {"),
             ("self.client.retire();", ""),
@@ -580,11 +595,240 @@ class StorageListLiveContractTests(unittest.TestCase):
             ("native_failing_occurrence_jsonb_bind_priority_qualified", True),
             ("conditional_exact_lock_footprint_qualified", True),
             ("native_isolation_retry_qualified", True),
+            ("native_jsonb_binding", "binary-prefix-or-serde-reconstruction"),
+            ("native_condition_binding", "varchar32-input-cast"),
+            ("exact_acquisition_policy", "relock-excluded-fallback"),
+            ("exact_update_policy", "omit-native-token-predicate"),
+            ("native_write_constraint_facade", "native-error-http400-code3"),
+            ("native_jsonb_exact_main_cases", 10),
+            ("native_jsonb_exact_legal_surrogate_subvectors", 0),
+            ("native_write_failure_app_cases", 0),
+            ("late_exact_excluded_semantics", "excluded-always-means-no-wait"),
+            ("late_exact_wait_cases", {"postgresql": False, "cockroachdb": 2}),
+            ("late_exact_no_wait_cases", {"postgresql": 2, "cockroachdb": False}),
+            ("late_exact_wait_cases", {"postgresql": 2, "cockroachdb": 0}),
+            ("literal_nul_condition_tail_policy", {"postgresql": "native-text-accepted-first-acl-rejection-real-later-any-wait", "cockroachdb": "native-text-hard-rejection-no-tail"}),
+            ("literal_nul_condition_tail_policy", {"postgresql": False, "cockroachdb": True}),
         ):
             changed = json.loads(json.dumps(contract))
             changed["homogeneous_mutation_batches"][field] = value
             with self.subTest(field=field), self.assertRaises(SystemExit):
                 MODULE.validate_homogeneous_storage_contract(changed, lock, license_data, notice, sorter)
+
+
+    def test_native_jsonb_exact_matrix_and_surrogate_guards_cannot_be_dropped_or_weakened(self) -> None:
+        self.assertEqual(len(MODULE.STORAGE_DUPLICATE_MARKERS), 9)
+        for marker, suffix in MODULE.storage_duplicate_shell_markers()[-2:]:
+            guard = f'grep -Fxq "{marker} profile=${{profile}}{suffix}" "$evidence/storage-duplicate-batches.log"\n'
+            unique = f'test "$(grep -Ec \'^{marker} \' "$evidence/storage-duplicate-batches.log")" -eq 1\n'
+            for changed in (FIXTURE.replace(guard, ""), FIXTURE.replace(unique, ""), FIXTURE.replace(guard, guard + guard)):
+                with self.subTest(marker=marker): self.reject(changed)
+        for old, new in (
+            ("cases=11", "cases=10"), ("both_bad_input_vectors=2", "both_bad_input_vectors=1"),
+            ("surrogate_bind=1", "surrogate_bind=0"), ("hidden_batch_sqlstate=null", "hidden_batch_sqlstate=22P02"),
+            ("actual_domain=InvalidArgument", "actual_domain=Internal"), ("retry=Never", "retry=SafeImmediate"),
+        ):
+            self.reject(FIXTURE.replace(old, new))
+        for field in ("storage_native_jsonb_exact", "storage_jsonb_native_write_failure"):
+            self.reject(FIXTURE.replace(f'"{field}":true', f'"{field}":false'))
+            self.reject(FIXTURE.replace(f'"{field}":true,', ""))
+        self.reject(FIXTURE.replace(NATIVE_WRITE_FAILURE_APP_MARKER, ""))
+        self.reject(FIXTURE.replace("cases=1 fields=15 sqlstate=22P02", "cases=1 fields=14 sqlstate=22P02"))
+
+    def test_native_exact_profile_counters_cannot_be_relabelled_or_reordered(self) -> None:
+        for profile, counts in (("postgresql", (0, 2)), ("cockroachdb", (2, 0))):
+            matrix = dict(MODULE.storage_duplicate_markers(profile))["nakama_native_jsonb_exact_matrix_executed"]
+            self.assertTrue(matrix.endswith(f"fields=15 late_exact_wait={counts[0]} late_exact_no_wait={counts[1]}"))
+        with self.assertRaises(SystemExit):
+            MODULE.storage_duplicate_markers("unknown")
+        for old, new in (
+            ("postgresql) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;",
+             "postgresql) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;"),
+            ("cockroachdb) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;",
+             "cockroachdb) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;"),
+            ("*) echo 'unsupported storage native Exact profile' >&2; exit 1 ;;",
+             "*) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;"),
+            ('"late_exact_wait_cases":${storage_late_exact_wait_cases},', ""),
+            ('"late_exact_no_wait_cases":${storage_late_exact_no_wait_cases},', ""),
+            ('"late_exact_wait_cases":${storage_late_exact_wait_cases}', '"late_exact_wait_cases":0'),
+            ("late_exact_wait=${storage_late_exact_wait_cases} late_exact_no_wait=${storage_late_exact_no_wait_cases}", ""),
+        ):
+            with self.subTest(old=old):
+                self.reject(FIXTURE.replace(old, new))
+        guard = "case \"$profile\" in\n  postgresql) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;\n  cockroachdb) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;\n  *) echo 'unsupported storage native Exact profile' >&2; exit 1 ;;\nesac\n"
+        self.reject(FIXTURE.replace(guard, ""))
+        self.reject(FIXTURE.replace(guard, "\n".join("# " + line for line in guard.splitlines()) + "\n"))
+
+    def test_native_jsonb_exact_binding_predicate_fallback_and_facade_source_are_closed(self) -> None:
+        names = (
+            "crates/trnm-persistence-pg/src/storage_parts/01_repository.rs",
+            "crates/trnm-persistence-pg/src/storage_parts/03_write.rs",
+            "crates/trnm-persistence-pg/src/storage_parts/06_native_projection.rs",
+            "crates/trnm-server/src/runtime/storage_api.rs",
+            "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs",
+            "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
+        )
+        inputs = [(ROOT / name).read_text() for name in names]
+        MODULE.validate_nakama_native_write_source(*inputs)
+        for index, before, after in (
+            (2, "output.extend_from_slice(self.0);", "removed_raw_payload"),
+            (2, "postgres::types::Format::Text", "postgres::types::Format::Binary"),
+            (2, "output.extend_from_slice(self.0.as_bytes());", "removed_raw_token"),
+            (2, "AND $4::JSONB IS NOT NULL", "removed_native_bind_predicate"),
+            (2, "AND ($6::BOOL OR write_permission=1) FOR UPDATE", "FOR UPDATE"),
+            (2, "storage_exact_access_predicate_mismatch", "removed_fallback_failclosed"),
+            (1, " AND public_version::TEXT=$12::TEXT AND ($13::BOOL OR write_permission=1)", ""),
+            (1, "parameters.push(condition);", "removed_raw_update_condition"),
+            (1, '"$4::JSONB"', '"$4::TEXT::JSONB"'),
+            (3, '(OperationKind::Write, StableCode::InvalidArgument)', '(OperationKind::Delete, StableCode::InvalidArgument)'),
+            (3, 'if error.reason() == "database_constraint_violation"', 'if error.reason() == "database_internal_error"'),
+            (3, 'gateway_error(500, 13, "Error writing storage objects.")', 'gateway_error(400, 3, "Error writing storage objects.")'),
+            (4, "native_exact_input::exercise(url, profile, collection);", "removed_native_matrix"),
+            (4, "LEGAL_SURROGATE", "removed_surrogate_subvector"),
+            (4, "const fn waits(self, profile: DatabaseProfile) -> bool", "const fn waits(self) -> bool"),
+            (4, "matches!(profile, DatabaseProfile::CockroachDb)", "matches!(profile, DatabaseProfile::PostgreSql)"),
+            (4, "DatabaseProfile::PostgreSql => (0_u8, 2_u8)", "DatabaseProfile::PostgreSql => (2_u8, 0_u8)"),
+            (4, "DatabaseProfile::CockroachDb => (2_u8, 0_u8)", "DatabaseProfile::CockroachDb => (0_u8, 2_u8)"),
+            (4, "late_exact_wait={late_exact_wait_cases} late_exact_no_wait={late_exact_no_wait_cases}", "late_exact_wait=0 late_exact_no_wait=2"),
+            (5, "cases=1 fields=15 sqlstate=22P02", "cases=1 fields=15 sqlstate=22021"),
+        ):
+            changed=inputs.copy(); self.assertIn(before,changed[index]);changed[index]=changed[index].replace(before,after)
+            with self.subTest(index=index,marker=before), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_native_write_source(*changed)
+        changed=inputs.copy()
+        plain = 'WHERE collection=$1 AND object_key=$2 AND user_id=$3",'
+        self.assertIn(plain,changed[2]);changed[2]=changed[2].replace(plain,plain[:-2]+' FOR UPDATE",')
+        with self.assertRaises(SystemExit): MODULE.validate_nakama_native_write_source(*changed)
+        changed=inputs.copy()
+        old="&payload,\n                &condition,"
+        self.assertIn(old,changed[2]);changed[2]=changed[2].replace(old,"&condition,\n                &payload,")
+        with self.assertRaises(SystemExit): MODULE.validate_nakama_native_write_source(*changed)
+
+
+    def test_native_exact_local_wait_body_rejects_independent_profile_and_nul_mutants(self) -> None:
+        inputs = native_write_source_inputs()
+        MODULE.validate_nakama_native_write_source(*inputs)
+        fixture = inputs[4]
+        begin = fixture.index("            const fn waits(self, profile: DatabaseProfile) -> bool {")
+        end = fixture.index("        enum Expected {", begin)
+        policy = fixture[begin:end]
+        profile = "matches!(profile, DatabaseProfile::CockroachDb)"
+        self.assertEqual(policy.count(profile), 1)
+        # This token is independently present in the actual query selector.
+        # A local arm change cannot rely on global token presence.
+        self.assertGreater(fixture.count(profile), policy.count(profile))
+        for before, after in (
+            (profile, "false"),
+            (profile, "matches!(profile, DatabaseProfile::PostgreSql)"),
+            ("| Self::ExactNulAclZero => {", "=> {"),
+            ("| Self::ExactMissing => true,", "| Self::ExactMissing => false,"),
+            ("_ => false,", "_ => true,"),
+        ):
+            self.assertEqual(policy.count(before), 1)
+            changed = inputs.copy()
+            changed[4] = fixture[:begin] + policy.replace(before, after, 1) + fixture[end:]
+            self.assertIn(profile, changed[4])
+            with self.subTest(before=before), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_native_write_source(*changed)
+
+    def test_native_exact_local_query_selector_rejects_independent_predicate_mutants(self) -> None:
+        inputs = native_write_source_inputs()
+        MODULE.validate_nakama_native_write_source(*inputs)
+        fixture = inputs[4]
+        begin = fixture.index("            let expected_query = if")
+        end = fixture.index("            let before = snapshot(&mut control, collection);", begin)
+        selector = fixture[begin:end]
+        profile = "matches!(profile, DatabaseProfile::CockroachDb)"
+        self.assertEqual(selector.count(profile), 1)
+        self.assertGreater(fixture.count(profile), selector.count(profile))
+        for before, after in (
+            (profile, "false"),
+            (profile, "matches!(profile, DatabaseProfile::PostgreSql)"),
+            ("MatrixCase::AclLateExactStale | MatrixCase::AclLateExactWriteZero",
+             "MatrixCase::AclLateExactStale | MatrixCase::AclLateExactWriteZero | MatrixCase::ExactNulAclZero"),
+            ("EXACT_ACCESS_SQL", "ACCESS_SQL"),
+            ("} else {\n                ACCESS_SQL", "} else {\n                EXACT_ACCESS_SQL"),
+        ):
+            self.assertEqual(selector.count(before), 1)
+            changed = inputs.copy()
+            changed[4] = fixture[:begin] + selector.replace(before, after, 1) + fixture[end:]
+            self.assertIn(profile, changed[4])
+            with self.subTest(before=before), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_native_write_source(*changed)
+
+    def test_native_exact_each_profile_call_site_must_drive_its_actual_operation(self) -> None:
+        inputs = native_write_source_inputs()
+        MODULE.validate_nakama_native_write_source(*inputs)
+        fixture = inputs[4]
+        matrix = fixture.index("mod native_exact_input {")
+        begin = fixture.index("        fn exercise_case(\n", matrix)
+        end = fixture.index("        fn duplicate_exact(", begin)
+        exercise = fixture[begin:end]
+        self.assertEqual(exercise.count("case.waits(profile)"), 3)
+        for before, after in (
+            ("if case.waits(profile) {", "if case.waits() {"),
+            ("if case.waits(profile) {", "if false {"),
+            ("if !case.waits(profile) {", "if !case.waits() {"),
+            ("if !case.waits(profile) {", "if !false {"),
+            (",case.waits(profile),matches!(expected,Expected::Committed)",
+             ",case.waits(),matches!(expected,Expected::Committed)"),
+            (",case.waits(profile),matches!(expected,Expected::Committed)",
+             ",false,matches!(expected,Expected::Committed)"),
+        ):
+            self.assertEqual(exercise.count(before), 1)
+            modified = exercise.replace(before, after, 1)
+            # Preserve the old superficial count with a comment, demonstrating
+            # that the guard checks the real operation at each local site.
+            modified += "        // case.waits(profile) is not an executable call site.\n"
+            self.assertEqual(modified.count("case.waits(profile)"), 3)
+            changed = inputs.copy()
+            changed[4] = fixture[:begin] + modified + fixture[end:]
+            with self.subTest(before=before, after=after), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_native_write_source(*changed)
+
+    def test_native_exact_local_policy_regions_are_unique_and_bounded(self) -> None:
+        inputs = native_write_source_inputs()
+        MODULE.validate_nakama_native_write_source(*inputs)
+        fixture = inputs[4]
+        begin = fixture.index("            const fn waits(self, profile: DatabaseProfile) -> bool {")
+        end = fixture.index("        enum Expected {", begin) + len("        enum Expected")
+        for changed in (
+            fixture + "\n" + fixture[begin:end],
+            fixture.replace("            let expected_query = if", "            let other_query = if", 1),
+            fixture.replace("        fn duplicate_exact(", "        fn other_duplicate_exact(", 1),
+            fixture + " " * (1024 * 1024),
+        ):
+            with self.subTest(bytes=len(changed.encode("utf-8"))), self.assertRaises(SystemExit):
+                MODULE.validate_native_exact_fixture_local_policy(changed)
+
+
+    def test_native_exact_call_site_headers_cannot_come_from_comments_or_literals(self) -> None:
+        inputs = native_write_source_inputs()
+        MODULE.validate_nakama_native_write_source(*inputs)
+        fixture = inputs[4]
+        matrix = fixture.index("mod native_exact_input {")
+        begin = fixture.index("        fn exercise_case(\n", matrix)
+        end = fixture.index("        fn duplicate_exact(", begin)
+        exercise = fixture[begin:end]
+        header = "                if case.waits(profile) {\n                    let proof = wait_for_lock("
+        false_header = header.replace("case.waits(profile)", "false")
+        self.assertEqual(exercise.count(header), 1)
+        # Each mutant retains exactly three apparent profile-call tokens but
+        # supplies the required header only inside nonexecuted Rust text.
+        for fake in (
+            "                /*\n" + header + "\n                */\n" + false_header,
+            '                let forged = r#"\n' + header + '\n"#;\n' + false_header,
+            '                let forged = br#"\n' + header + '\n"#;\n' + false_header,
+            '                let forged = cr#"\n' + header + '\n"#;\n' + false_header,
+            '                let forged = "\n' + header + '\n";\n' + false_header,
+            '                let forged = b"\n' + header + '\n";\n' + false_header,
+        ):
+            changed = inputs.copy()
+            modified = exercise.replace(header, fake, 1)
+            self.assertEqual(modified.count("case.waits(profile)"), 3)
+            changed[4] = fixture[:begin] + modified + fixture[end:]
+            with self.subTest(fake=fake), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_native_write_source(*changed)
 
 
 class ActualNativeLaneShellTests(unittest.TestCase):
@@ -649,12 +893,12 @@ done
                     else:
                         self.assertEqual(failure.returncode, 0, failure.stdout + failure.stderr)
 
-    def run_block(self, block: str, lines: list[str], status: int = 0) -> subprocess.CompletedProcess[str]:
+    def run_block(self, block: str, lines: list[str], status: int = 0, profile: str = "postgresql") -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             (root / "input.log").write_text("\n".join(lines) + "\n")
             bootstrap = '''set -euo pipefail
-profile=postgresql
+profile=$MOCK_PROFILE
 evidence=$MOCK_ROOT
 evidence_absolute=$MOCK_ROOT
 database_url=synthetic-database-configuration
@@ -665,7 +909,7 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
 '''
             finish = "printf 'synthetic-guards-passed-no-live-credit\\n'\n"
             return subprocess.run(["bash", "-c", bootstrap + block + finish],
-                                  env={**os.environ, "MOCK_ROOT": str(root), "MOCK_CARGO_STATUS": str(status)},
+                                  env={**os.environ, "MOCK_ROOT": str(root), "MOCK_CARGO_STATUS": str(status), "MOCK_PROFILE": profile},
                                   text=True, capture_output=True, timeout=10)
 
     def test_real_schema_block_rejects_missing_wrong_duplicate_skipped_and_bad_terminal_cases(self) -> None:
@@ -737,7 +981,7 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
     def test_real_duplicate_block_rejects_every_missing_wrong_extra_skipped_and_failed_observation(self) -> None:
         block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage storage-duplicate-batches"):
                                ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
-        markers = [f"{marker} profile=postgresql{suffix}" for marker, suffix in MODULE.STORAGE_DUPLICATE_MARKERS]
+        markers = [f"{marker} profile=postgresql{suffix}" for marker, suffix in MODULE.storage_duplicate_markers("postgresql")]
         terminal = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"
         lines = markers + [terminal]
         self.assertEqual(self.run_block(block, lines).returncode, 0)
@@ -766,6 +1010,49 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
         self.assertEqual(self.run_block(block, lines, status=37).returncode, 37)
 
 
+    def test_real_duplicate_block_requires_the_exact_profile_wait_pair(self) -> None:
+        block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage storage-duplicate-batches"):
+                               ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
+        terminal = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"
+        for profile, expected, wrong in (("postgresql", "late_exact_wait=0 late_exact_no_wait=2", "late_exact_wait=2 late_exact_no_wait=0"),
+                                         ("cockroachdb", "late_exact_wait=2 late_exact_no_wait=0", "late_exact_wait=0 late_exact_no_wait=2")):
+            lines = [f"{marker} profile={profile}{suffix}" for marker, suffix in MODULE.storage_duplicate_markers(profile)] + [terminal]
+            with self.subTest(profile=profile):
+                self.assertEqual(self.run_block(block, lines, profile=profile).returncode, 0)
+                for changed in (
+                    [line.replace(expected, wrong) for line in lines],
+                    [line.replace(" " + expected, "") for line in lines],
+                    [line.replace(expected, "late_exact_wait=1 late_exact_no_wait=1") for line in lines],
+                    [line.replace(expected, "late_exact_wait=true late_exact_no_wait=false") for line in lines],
+                ):
+                    self.assertNotEqual(self.run_block(block, changed, profile=profile).returncode, 0)
+        self.assertNotEqual(self.run_block(block, lines, profile="unknown").returncode, 0)
+
+    def test_real_canonical_block_rejects_missing_or_forged_native_write_failure_observation(self) -> None:
+        block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage canonical-storage-app"):
+                               ACTUAL_HARNESS.index("begin_stage nakama-client-list-projection")]
+        marker = "storage_jsonb_native_write_failure_executed profile=postgresql cases=1 fields=15 sqlstate=22P02"
+        lines = [
+            "canonical_storage_api_live_executed profile=postgresql",
+            "storage_opaque_conditions_live_executed profile=postgresql write_cases=15 delete_cases=18 batch_cases=2",
+            "storage_jsonb_v3_live_executed profile=postgresql history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
+            "storage_jsonb_v3_native_inputs profile=postgresql condition_sql=rejected payload_sql=rejected compatibility_credit=false",
+            "storage_homogeneous_app_executed profile=postgresql write_occurrences=13 rollback_cases=3",
+            marker, "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s",
+        ]
+        self.assertEqual(self.run_block(block, lines).returncode, 0)
+        for changed in (
+            [line for line in lines if line != marker], lines + [marker],
+            lines + [marker.replace("profile=postgresql", "profile=cockroachdb")],
+            [line.replace(marker, "test forged-prefix ... " + marker) for line in lines],
+            [line.replace("cases=1 fields=15 sqlstate=22P02", "cases=0 fields=15 sqlstate=22P02") for line in lines],
+            [line.replace("cases=1 fields=15 sqlstate=22P02", "cases=1 fields=14 sqlstate=22P02") for line in lines],
+            [line.replace("cases=1 fields=15 sqlstate=22P02", "cases=1 fields=15 sqlstate=22021") for line in lines],
+            lines + ["canonical_storage_api_live_skipped"],
+        ):
+            with self.subTest(lines=changed): self.assertNotEqual(self.run_block(block, changed).returncode, 0)
+        self.assertEqual(self.run_block(block, lines, status=37).returncode, 37)
+
     def test_real_canonical_block_requires_additional_homogeneous_marker_without_replacing_old_cases(self) -> None:
         block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage canonical-storage-app"):
                                ACTUAL_HARNESS.index("begin_stage nakama-client-list-projection")]
@@ -775,7 +1062,8 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
             "storage_opaque_conditions_live_executed profile=postgresql write_cases=15 delete_cases=18 batch_cases=2",
             "storage_jsonb_v3_live_executed profile=postgresql history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
             "storage_jsonb_v3_native_inputs profile=postgresql condition_sql=rejected payload_sql=rejected compatibility_credit=false",
-            app, "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s",
+            app, "storage_jsonb_native_write_failure_executed profile=postgresql cases=1 fields=15 sqlstate=22P02",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s",
         ]
         self.assertEqual(self.run_block(block, lines).returncode, 0)
         for changed in (
@@ -812,6 +1100,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                 "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
                 "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
                 "storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain",
+                "storage_native_jsonb_exact", "storage_jsonb_native_write_failure",
                 "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
                 "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
                 "process_restart_exact_receipt_replay",
@@ -822,6 +1111,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             )},
             **{field: 4 for field in ("schema_version", "storage_writer_epoch", "authoritative_migrations_count")},
             "storage_jsonb_v3_cases": {"history": 6, "opaque_success": 4, "no_op": 2, "resource": 1, "native_input": 3},
+            "late_exact_wait_cases": 0, "late_exact_no_wait_cases": 2,
             "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_FAMILIES.copy(),
             **{field: False for field in (
                 "production_pitr", "multi_node", "wire_compatible", "compatibility_credit", "accepted", "production_ready",
@@ -857,6 +1147,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             "storage_jsonb_v3_live_executed profile=postgresql history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
             "storage_jsonb_v3_native_inputs profile=postgresql condition_sql=rejected payload_sql=rejected compatibility_credit=false",
             "storage_homogeneous_app_executed profile=postgresql write_occurrences=13 rollback_cases=3",
+            "storage_jsonb_native_write_failure_executed profile=postgresql cases=1 fields=15 sqlstate=22P02",
             "test result: ok. 1 passed; 0 failed; 0 ignored; 99 filtered out; finished in 0.01s",
         ]
         self.write_log(self.log_lines)
@@ -874,7 +1165,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         self.v4_import_lines = ["storage_v4_import_live_executed profile=postgresql",
                                 "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"]
         self.write_named_log("storage-v4-import.log", self.v4_import_lines)
-        self.duplicate_lines = [f"{marker} profile=postgresql{suffix}" for marker, suffix in MODULE.STORAGE_DUPLICATE_MARKERS] + [
+        self.duplicate_lines = [f"{marker} profile=postgresql{suffix}" for marker, suffix in MODULE.storage_duplicate_markers("postgresql")] + [
             "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"
         ]
         self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, self.duplicate_lines)
@@ -1390,7 +1681,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
     def test_cockroach_archive_uses_its_own_source_chain_and_observed_input_outcomes(self) -> None:
         self.profile = "cockroachdb"
         self.write_native_fixture()
-        self.write_json("summary.json", {**self.summary, "profile": self.profile})
+        self.write_json("summary.json", {**self.summary, "profile": self.profile, "late_exact_wait_cases": 2, "late_exact_no_wait_cases": 0})
         self.write_json("storage-v4-import-source.json", {**self.import_source, "profile": self.profile})
         self.write_json("schema-identity.json", {**self.identity, "profile": self.profile,
                                                  "chain_digest": self.chain_digest(self.profile)})
@@ -1412,13 +1703,29 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         self.write_named_log("storage-v4-import.log", [line.replace("profile=postgresql", "profile=cockroachdb")
                                                       for line in self.v4_import_lines])
         self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG,
-                             [line.replace("profile=postgresql", "profile=cockroachdb") for line in self.duplicate_lines])
+                             [line.replace("profile=postgresql", "profile=cockroachdb").replace("late_exact_wait=0 late_exact_no_wait=2", "late_exact_wait=2 late_exact_no_wait=0") for line in self.duplicate_lines])
         for condition, payload in (("accepted", "accepted"), ("accepted", "rejected"),
                                    ("rejected", "accepted"), ("rejected", "rejected")):
             with self.subTest(condition=condition, payload=payload):
                 self.write_log([line.replace("condition_sql=rejected", "condition_sql=" + condition)
                                 .replace("payload_sql=rejected", "payload_sql=" + payload) for line in lines])
                 self.assertEqual(self.validate()["profile"], self.profile)
+
+        good_summary = json.loads((self.root / "summary.json").read_text())
+        for field, expected in (("late_exact_wait_cases", 2), ("late_exact_no_wait_cases", 0)):
+            for value in (None, True, False, str(expected), 1, 2 if expected == 0 else 0):
+                changed = {**good_summary, field: value}
+                if value is None:
+                    changed.pop(field)
+                with self.subTest(profile=self.profile, field=field, value=value):
+                    self.write_json("summary.json", changed)
+                    self.reject()
+        self.write_json("summary.json", good_summary)
+        cr_duplicates = [line.replace("profile=postgresql", "profile=cockroachdb").replace("late_exact_wait=0 late_exact_no_wait=2", "late_exact_wait=2 late_exact_no_wait=0") for line in self.duplicate_lines]
+        self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, [line.replace("late_exact_wait=2 late_exact_no_wait=0", "late_exact_wait=0 late_exact_no_wait=2") for line in cr_duplicates])
+        self.reject()
+        self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, cr_duplicates)
+        self.assertEqual(self.validate()["profile"], self.profile)
 
     def test_duplicate_json_fields_cannot_override_identity_or_claims(self) -> None:
         original = (self.root / "summary.json").read_text()
@@ -1592,7 +1899,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         ):
             self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, changed); self.reject()
         self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, self.duplicate_lines)
-        for field in ("storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain"):
+        for field in ("storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain", "storage_native_jsonb_exact", "storage_jsonb_native_write_failure"):
             for value in (False, 1):
                 self.write_json("summary.json", {**self.summary, field: value}); self.reject()
         self.write_json("summary.json", self.summary)
@@ -1606,6 +1913,47 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             self.write_log(changed); self.reject()
         self.write_log(self.log_lines)
         (self.root / MODULE.STORAGE_DUPLICATE_LOG).unlink(); self.reject()
+
+
+    def test_native_exact_packet_rejects_missing_boolean_or_other_profile_wait_counts(self) -> None:
+        self.assertEqual(self.validate()["profile"], "postgresql")
+        for field, expected in (("late_exact_wait_cases", 0), ("late_exact_no_wait_cases", 2)):
+            for value in (None, True, False, str(expected), 1, 2 if expected == 0 else 0):
+                with self.subTest(field=field, value=value):
+                    changed = {**self.summary, field: value}
+                    if value is None:
+                        changed.pop(field)
+                    self.write_json("summary.json", changed)
+                    self.reject()
+        self.write_json("summary.json", self.summary)
+        for replacement in ("late_exact_wait=2 late_exact_no_wait=0", "late_exact_wait=1 late_exact_no_wait=1", ""):
+            self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, [line.replace("late_exact_wait=0 late_exact_no_wait=2", replacement) for line in self.duplicate_lines])
+            self.reject()
+        self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, self.duplicate_lines)
+        self.assertEqual(self.validate()["profile"], "postgresql")
+
+    def test_native_jsonb_exact_packet_rejects_wrong_counters_app_native_error_and_summary(self) -> None:
+        for field in ("storage_native_jsonb_exact", "storage_jsonb_native_write_failure"):
+            for value in (False, 1):
+                self.write_json("summary.json", {**self.summary, field: value});self.reject()
+        self.write_json("summary.json",self.summary)
+        for before,after in (
+            ("cases=11", "cases=12"), ("both_bad_input_vectors=2", "both_bad_input_vectors=1"),
+            ("surrogate_bind=1", "surrogate_bind=0"), ("actual_domain=InvalidArgument", "actual_domain=Internal"),
+            ("hidden_batch_sqlstate=null", "hidden_batch_sqlstate=22P02"),
+        ):
+            self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG,[line.replace(before,after) for line in self.duplicate_lines]);self.reject()
+        self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG,self.duplicate_lines)
+        marker="storage_jsonb_native_write_failure_executed profile=postgresql cases=1 fields=15 sqlstate=22P02"
+        for lines in (
+            [line for line in self.log_lines if line!=marker],self.log_lines+[marker],
+            self.log_lines+[marker.replace("profile=postgresql","profile=cockroachdb")],
+            [line.replace(marker,"test prefix ... "+marker) for line in self.log_lines],
+            [line.replace("cases=1 fields=15 sqlstate=22P02","cases=1 fields=14 sqlstate=22P02") for line in self.log_lines],
+            [line.replace("cases=1 fields=15 sqlstate=22P02","cases=1 fields=15 sqlstate=22021") for line in self.log_lines],
+        ):
+            self.write_log(lines);self.reject()
+        self.write_log(self.log_lines)
 
     def test_v4_import_requires_terminal_execution_and_all_materialized_source_bytes(self) -> None:
         for lines in (

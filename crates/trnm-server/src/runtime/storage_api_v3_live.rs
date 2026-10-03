@@ -60,16 +60,27 @@ fn native_input_gateway_failure(
     error: &postgres::Error,
     deleting: bool,
 ) -> (u16, serde_json::Value) {
-    let code = error
+    let classified = error
         .code()
-        .map(|code| trnm_persistence_pg::classify_sqlstate(code.code()).code())
-        .unwrap_or(StableCode::Unavailable);
+        .map(|code| trnm_persistence_pg::classify_sqlstate(code.code()))
+        .unwrap_or_else(|| {
+            DomainError::new(
+                StableCode::Unavailable,
+                "native_input_sqlstate_missing",
+                RetryClass::Never,
+            )
+        });
     let message = if deleting {
         "Error deleting storage objects."
     } else {
         "Error writing storage objects."
     };
-    match code {
+    match classified.code() {
+        StableCode::InvalidArgument
+            if !deleting && classified.reason() == "database_constraint_violation" =>
+        {
+            (500, serde_json::json!({"code":13,"message":message}))
+        }
         StableCode::InvalidArgument => (
             400,
             serde_json::json!({"code":3,"message":"Invalid storage request."}),
@@ -361,6 +372,66 @@ fn prove_storage_jsonb_v3_app(
             );
         }
     }
+    // This syntactically valid JSON object passes the outer protobuf string
+    // and RawValue host parser. A separate native TEXT::JSONB expression
+    // observes SQLSTATE 22P02; it is not itself a native Bind-format proof.
+    // The authenticated App below exercises the production repository path.
+    let surrogate_payload = r#"{"bad":"\ud800"}"#;
+    assert_eq!(surrogate_payload.len(), 16);
+    let native_surrogate = control
+        .query_one("SELECT (($1::TEXT)::JSONB)::TEXT", &[&surrogate_payload])
+        .expect_err("canonical storage fixture: native lone surrogate unexpectedly accepted");
+    assert_eq!(
+        native_surrogate.code().map(|code| code.code()),
+        Some("22P02")
+    );
+    let before_surrogate = storage_live_snapshot(control);
+    let input = serde_json::json!({"objects":[{
+        "collection":LIVE_COLLECTION,"key":"v3-native-unpaired-surrogate","value":surrogate_payload
+    }]})
+    .to_string();
+    let rejected = app.handle(&request("/v2/storage", Some(credential), &input));
+    assert_eq!(rejected.status, 500);
+    assert_eq!(
+        json(&rejected),
+        serde_json::json!({"code":13,"message":"Error writing storage objects."})
+    );
+    assert_eq!(
+        storage_live_snapshot(control),
+        before_surrogate,
+        "native lone surrogate rejection changed a complete storage tuple"
+    );
+    // This App owns the original directly connected PgRepository. A following
+    // authenticated repository read uses that same connection after rollback,
+    // rather than acquiring or replacing a pooled lease for the health check.
+    let health_input = serde_json::json!({"object_ids":[{
+        "collection":LIVE_COLLECTION,"key":"v3-history-boolean","user_id":LIVE_USER_UUID
+    }]})
+    .to_string();
+    let healthy = app.handle(&read_request(
+        "/v2/storage",
+        Some(credential),
+        &health_input,
+    ));
+    assert_eq!(healthy.status, 200);
+    let healthy = json(&healthy);
+    let healthy_objects = healthy["objects"].as_array().unwrap();
+    assert_eq!(healthy_objects.len(), 1);
+    let (native_boolean, boolean_version) = native_history.get("v3-history-boolean").unwrap();
+    assert_eq!(healthy_objects[0]["key"], "v3-history-boolean");
+    assert_eq!(
+        healthy_objects[0]["value"].as_str().unwrap().as_bytes(),
+        native_boolean.as_bytes()
+    );
+    assert_eq!(
+        healthy_objects[0]["version"].as_str().unwrap(),
+        boolean_version.as_str()
+    );
+    assert_eq!(storage_live_snapshot(control), before_surrogate);
+    println!(
+        "\nstorage_jsonb_native_write_failure_executed profile={} cases=1 fields=15 sqlstate=22P02",
+        profile.metadata_value()
+    );
     println!("\nstorage_jsonb_v3_native_inputs profile={} condition_sql={} payload_sql={} compatibility_credit=false",
         profile.metadata_value(), if native_condition.is_ok() { "accepted" } else { "rejected" }, if native_payload.is_ok() { "accepted" } else { "rejected" });
     println!("\nstorage_jsonb_v3_live_executed profile={} history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3", profile.metadata_value());

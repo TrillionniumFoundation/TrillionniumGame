@@ -346,11 +346,11 @@
     "scope": "Canonical principal UUID subset; source-DDL export/import and pure Go ordering observations are separate from immutable Nakama, SDK, production and independent acceptance.",
     "gap_closed": false,
     "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged",
-    "write_failure_timing_boundary": "The narrow SomeWrite candidate remembers the first ACL rejection or Exact mismatch after successful native TEXT validation, then performs real later occurrence work until a hard error stops further SQL. An existing insert-only conflict, native error, DataLoss or resource rejection remains an immediate hard stop; sequential delete is unchanged. Explicit rollback precedes the inner error return. Rollback failure does not confirm rollback: it retires a pooled lease to prevent recycling after return, without disabling a direct repository. Existing outer pool deadline/shutdown policy can override the inner first error. Two held-tail and three early-stop cases are required source-execution observations. Full pgx prequeue/preparation/query-group and failing-occurrence native JSONB binding priority remain open. Controlled official Nakama PostgreSQL observations show a stale late Exact or token-matching/write0 Exact returning the first ACL rejection while the later tuple remains locked; Rust SELECT FOR UPDATE acquires that tuple lock. This observed conditional-lock countervector remains open alongside native isolation/retries, raw Runtime owners, hooks/index and full parity. No difference is normalized and no immutable-oracle or independent acceptance is granted.",
+    "write_failure_timing_boundary": "The narrow SomeWrite candidate binds original request bytes as native JSONB with FormatText, and Exact conditions as raw native TEXT, before per-occurrence host ACL/OCC classification. Exact acquisition and UPDATE both predicate on the literal token and server-or-write1 eligibility; an excluded row uses a nonlocking skinny fallback, and an unexpectedly eligible fallback fails closed. Any/star retain the existing FOR UPDATE approximation. The first host ACL rejection or Exact mismatch is remembered while real later work continues until a hard error; existing insert-only conflict, native error, DataLoss or resource rejection stops further SQL. Explicit rollback precedes the inner error return. Failed rollback remains unconfirmed and retires a pooled lease only to prevent recycling, without disabling direct repositories. Outer pool deadline/shutdown may override the inner primary error. Native Write InvalidArgument with the exact database_constraint_violation reason maps to HTTP500/code13; host validation, ACL/OCC and delete mappings retain their separate behavior. The old seven fixture markers and App13/3 remain required. The added native matrix has eleven main cases plus a separately bound legal-surrogate subvector; the same fixture binds an independently observed native-expression SQLSTATE22P02 to authenticated App HTTP500, exact fifteen-field rollback and a same-connection read; the App's hidden SQLSTATE is not reconstructed. The historical held-invalid-b observation belongs to its earlier source; the new causal case uses valid held b then invalid c before held z. Controlled official PostgreSQL HTTP observations motivated this candidate but do not qualify its execution. Full pgx prequeue/preparation/query-group and parameter schedule, native ON CONFLICT/insert-only lock behavior, concurrent Exact predicate races, native isolation/retries, raw Runtime owner ordering, hooks/index, SDK/immutable-oracle and independent acceptance remain open. Input/projection/response bounds do not prove database-internal JSONB memory containment. No error, identity, ACL, version, occurrence or durable effect is normalized; all full compatibility and replacement claims remain false. The two late Exact exclusions mean conditional eligibility exclusion, not absence of native waiting. The required matrix binds late_exact_wait=0/late_exact_no_wait=2 for PostgreSQL and 2/0 for CockroachDB; the sealed summary must independently contain matching integer late_exact_wait_cases and late_exact_no_wait_cases. This finite profile difference follows controlled official-source primary-index causal observations with a positive Any wait, literal single Exact and early ACL/late Exact requests; old secondary-index observations and the original rejected query classifier remain separate. It changes no production SQL or isolation policy and grants no full native lock schedule, oracle acceptance or replacement claim. In the separate literal-NUL Exact condition case, PostgreSQL's native TEXT rejection stops the tail, while CockroachDB accepts the TEXT input, preserves the first ACL rejection and waits on a later Any write. That later Any query uses ACCESS_SQL; it is not a third late Exact exclusion, so the 0/2 and 2/0 late Exact counters remain unchanged. The source observation binds the later Any's actual primary-index waiter/holder join and HTTP first ACL error; it does not reveal a hidden SQLSTATE for the first NUL condition. The fixture policy is checked in its local waits body, Exact query selector and three actual profile-aware call sites. These static guards do not prove candidate native execution.",
     "write_tail_policy": "some-write-first-acl-or-exact-rejection-real-tail-until-hard-error",
     "write_tail_semantic_conditions": [
-      "write-acl-rejection",
-      "exact-mismatch-after-native-text-validation"
+      "write-acl-rejection-after-native-jsonb-bind",
+      "exact-mismatch-after-native-jsonb-and-text-bind"
     ],
     "write_tail_hard_errors": "must-not-exist-existing-native-data-loss-resource-stop",
     "write_tail_primary_error": "first-inner-semantic-rejection-existing-outer-pool-budget-may-override",
@@ -360,6 +360,27 @@
     "native_preparation_query_group_qualified": false,
     "native_failing_occurrence_jsonb_bind_priority_qualified": false,
     "conditional_exact_lock_footprint_qualified": false,
-    "native_isolation_retry_qualified": false
+    "native_isolation_retry_qualified": false,
+    "native_jsonb_binding": "formattext-original-request-bytes-before-host-acl-occ",
+    "native_condition_binding": "formattext-raw-text-before-host-acl-occ-no-varchar32-input-cast",
+    "exact_acquisition_policy": "token-and-server-or-write1-forupdate-with-nonlocking-rejected-fallback",
+    "exact_update_policy": "token-and-server-or-write1-native-jsonb-parameter4",
+    "native_write_constraint_facade": "write-invalidargument-database-constraint-violation-http500-code13",
+    "native_jsonb_exact_main_cases": 11,
+    "native_jsonb_exact_legal_surrogate_subvectors": 1,
+    "native_write_failure_app_cases": 1,
+    "late_exact_excluded_semantics": "conditional-eligibility-exclusion-not-absence-of-native-wait",
+    "late_exact_wait_cases": {
+      "postgresql": 0,
+      "cockroachdb": 2
+    },
+    "late_exact_no_wait_cases": {
+      "postgresql": 2,
+      "cockroachdb": 0
+    },
+    "literal_nul_condition_tail_policy": {
+      "postgresql": "native-text-hard-rejection-no-tail",
+      "cockroachdb": "native-text-accepted-first-acl-rejection-real-later-any-wait"
+    }
   }
 }

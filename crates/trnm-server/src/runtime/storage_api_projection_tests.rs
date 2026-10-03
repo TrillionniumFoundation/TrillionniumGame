@@ -337,3 +337,182 @@ fn storage_repository_resource_errors_preserve_code_eight_and_redact_reasons() {
             .contains("private"));
     }
 }
+
+#[test]
+fn storage_write_native_constraint_errors_are_internal_at_http_boundary() {
+    for sqlstate in ["23502", "23514", "22P02"] {
+        // Exercise the unchanged shared classifier, rather than assigning
+        // an HTTP status from a synthetic SQLSTATE string in this facade.
+        let error = trnm_persistence_pg::classify_sqlstate(sqlstate);
+        assert_eq!(error.code(), StableCode::InvalidArgument);
+        assert_eq!(error.reason(), "database_constraint_violation");
+        assert_eq!(error.retry(), RetryClass::Never);
+        let mut repository = TestRepository {
+            failure: Some(error),
+            ..TestRepository::default()
+        };
+        let before = repository.storage.clone();
+        let response = handle(
+            &mut repository,
+            &request("/v2/storage", &write("k", "{}", "")),
+            user(),
+        );
+        assert_eq!(response.status, 500, "SQLSTATE {sqlstate}");
+        assert_eq!(
+            body(&response),
+            serde_json::json!({"code":13,"message":"Error writing storage objects."})
+        );
+        assert_eq!(repository.calls, 1);
+        assert_eq!(repository.storage, before);
+        assert_eq!(repository.failure, Some(error));
+        assert!(!String::from_utf8(response.body)
+            .unwrap()
+            .contains(error.reason()));
+    }
+
+    // These native input errors already use the Internal branch. They are
+    // controls, and do not establish execution of the new 22P02 guard.
+    for sqlstate in ["22P05", "22021"] {
+        let error = trnm_persistence_pg::classify_sqlstate(sqlstate);
+        assert_eq!(error.code(), StableCode::Internal);
+        let response = storage_error(error, OperationKind::Write);
+        assert_eq!(response.status, 500);
+        assert_eq!(
+            body(&response),
+            serde_json::json!({"code":13,"message":"Error writing storage objects."})
+        );
+    }
+}
+
+#[test]
+fn storage_write_native_constraint_guard_requires_exact_reason_and_code() {
+    for reason in [
+        "invalid_storage_value",
+        "invalid_storage_value_utf8",
+        "invalid_storage_batch_size",
+        "database_constraint_violation_extra",
+        "database_constraint_violation ",
+        "DATABASE_CONSTRAINT_VIOLATION",
+        "private native SQL input or key detail",
+    ] {
+        let response = storage_error(
+            DomainError::new(StableCode::InvalidArgument, reason, RetryClass::Never),
+            OperationKind::Write,
+        );
+        assert_eq!(response.status, 400, "reason {reason}");
+        assert_eq!(
+            body(&response),
+            serde_json::json!({"code":3,"message":"Invalid storage request."})
+        );
+        assert!(!String::from_utf8(response.body).unwrap().contains(reason));
+    }
+    for (code, message) in [
+        (StableCode::PermissionDenied, REJECTED_PERMISSION),
+        (StableCode::AlreadyExists, REJECTED_VERSION),
+        (StableCode::FailedPrecondition, REJECTED_VERSION),
+    ] {
+        let response = storage_error(
+            DomainError::new(code, "database_constraint_violation", RetryClass::Never),
+            OperationKind::Write,
+        );
+        assert_eq!(response.status, 400);
+        assert_eq!(
+            body(&response),
+            serde_json::json!({"code":3,"message":message})
+        );
+    }
+}
+
+#[test]
+fn storage_native_constraint_guard_preserves_delete_read_and_host_validation() {
+    let error = trnm_persistence_pg::classify_sqlstate("22P02");
+    let mut repository = TestRepository {
+        failure: Some(error),
+        ..TestRepository::default()
+    };
+    let deleted = handle(
+        &mut repository,
+        &request(
+            "/v2/storage/delete",
+            r#"{"object_ids":[{"collection":"profile","key":"k"}]}"#,
+        ),
+        user(),
+    );
+    assert_eq!(deleted.status, 400);
+    assert_eq!(
+        body(&deleted),
+        serde_json::json!({"code":3,"message":"Invalid storage request."})
+    );
+    let read = handle(
+        &mut repository,
+        &read_request(
+            &serde_json::json!({"object_ids":[{
+                "collection":"profile","key":"k","user_id":uuid_string(user())
+            }]})
+            .to_string(),
+        ),
+        user(),
+    );
+    assert_eq!(read.status, 500);
+    assert_eq!(
+        body(&read),
+        serde_json::json!({"code":13,"message":"Error reading storage objects."})
+    );
+    assert_eq!(repository.calls, 1);
+    assert_eq!(repository.read_calls, 1);
+
+    for (input, message) in [
+        (write("k", "not JSON", ""), INVALID_VALUE),
+        (
+            serde_json::json!({"objects":[{
+                "collection":"profile","key":"k","value":"{}","permission_write":2
+            }]})
+            .to_string(),
+            INVALID_WRITE,
+        ),
+    ] {
+        let mut repository = TestRepository {
+            failure: Some(error),
+            ..TestRepository::default()
+        };
+        let response = handle(&mut repository, &request("/v2/storage", &input), user());
+        assert_eq!(response.status, 400);
+        assert_eq!(
+            body(&response),
+            serde_json::json!({"code":3,"message":message})
+        );
+        assert_eq!(repository.calls, 0, "host validation must precede storage");
+        assert_eq!(repository.storage.object_count(), 0);
+    }
+}
+
+#[test]
+fn storage_write_lone_surrogate_object_reaches_repository_without_normalization() {
+    // The outer protobuf string contains literal backslash-u bytes. RawValue
+    // validates the inner JSON syntax without turning its string into Rust
+    // Unicode or a serde_json::Value. Live SQL and App execution are covered
+    // separately by prove_storage_jsonb_v3_app, not by this mock repository.
+    let raw = r#"{"bad":"\ud800"}"#;
+    assert_eq!(raw.len(), 16);
+    assert!(serde_json::from_str::<serde_json::Value>(raw).is_err());
+    let input = write("native-surrogate", raw, "");
+    let request = request("/v2/storage", &input);
+    let decoded = decode_operations(&request, user(), OperationKind::Write).unwrap();
+    let BatchOperation::Write(operation) = &decoded[0] else {
+        panic!("expected write operation")
+    };
+    assert_eq!(operation.value.as_slice(), raw.as_bytes());
+    let mut repository = TestRepository {
+        failure: Some(trnm_persistence_pg::classify_sqlstate("22P02")),
+        ..TestRepository::default()
+    };
+    let response = handle(&mut repository, &request, user());
+    assert_eq!(response.status, 500);
+    assert_eq!(
+        body(&response),
+        serde_json::json!({"code":13,"message":"Error writing storage objects."})
+    );
+    assert_eq!(repository.calls, 1);
+    assert_eq!(repository.operations, decoded);
+    assert_eq!(repository.storage.object_count(), 0);
+}

@@ -146,7 +146,43 @@ STORAGE_DUPLICATE_MARKERS = (
         "nakama_write_tail_drain_executed",
         " held_wait_cases=2 early_reject_cases=3 fields=15",
     ),
+    (
+        'nakama_native_jsonb_exact_matrix_executed',
+        ' cases=11 late_exact_excluded=2 matched_wait_commit=2 missing_exact_drain_wait=1 literal_native_text=1 escaped_nul=1 both_bad_input=1 both_bad_input_vectors=2 surrogate_bind=1 duplicate_exact=1 typed_policy=2 fields=15',
+    ),
+    (
+        'nakama_native_jsonb_exact_subvector_executed',
+        ' case=both_bad_input_legal_surrogate main_case=both_bad_payload_token_native_priority input=legal_object_escaped_unpaired_surrogate fields=15 actual_domain=InvalidArgument actual_reason=database_constraint_violation retry=Never no_receipts=true same_lease_readable=true hidden_batch_sqlstate=null',
+    ),
 )
+STORAGE_LATE_EXACT_PROFILE_COUNTERS = {"postgresql": (0, 2), "cockroachdb": (2, 0)}
+STORAGE_LATE_EXACT_SHELL_SUFFIX = ' late_exact_wait=${storage_late_exact_wait_cases} late_exact_no_wait=${storage_late_exact_no_wait_cases}'
+
+
+def storage_duplicate_markers(profile: str) -> tuple[tuple[str, str], ...]:
+    if profile not in STORAGE_LATE_EXACT_PROFILE_COUNTERS:
+        fail("unsupported native Exact profile")
+    wait, no_wait = STORAGE_LATE_EXACT_PROFILE_COUNTERS[profile]
+    return tuple((marker, suffix + (f" late_exact_wait={wait} late_exact_no_wait={no_wait}"
+                  if marker == "nakama_native_jsonb_exact_matrix_executed" else ""))
+                 for marker, suffix in STORAGE_DUPLICATE_MARKERS)
+
+
+def validate_late_exact_policy_counters(policy: dict[str, object]) -> None:
+    for field in ("late_exact_wait_cases", "late_exact_no_wait_cases"):
+        observed = policy.get(field)
+        if not isinstance(observed, dict) or set(observed) != {"postgresql", "cockroachdb"} or any(
+            type(value) is not int for value in observed.values()
+        ):
+            fail("native Exact policy profile counters must be integers")
+
+
+def storage_duplicate_shell_markers() -> tuple[tuple[str, str], ...]:
+    return tuple((marker, suffix + (STORAGE_LATE_EXACT_SHELL_SUFFIX
+                  if marker == "nakama_native_jsonb_exact_matrix_executed" else ""))
+                 for marker, suffix in STORAGE_DUPLICATE_MARKERS)
+
+
 STORAGE_HOMOGENEOUS_POLICY = {
     "status": "source-candidate",
     "maximum_occurrences": 100,
@@ -169,7 +205,7 @@ STORAGE_HOMOGENEOUS_POLICY = {
     "full_nakama_replacement": False,
     "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged",
     'write_tail_policy': 'some-write-first-acl-or-exact-rejection-real-tail-until-hard-error',
-    'write_tail_semantic_conditions': ['write-acl-rejection', 'exact-mismatch-after-native-text-validation'],
+    'write_tail_semantic_conditions': ['write-acl-rejection-after-native-jsonb-bind', 'exact-mismatch-after-native-jsonb-and-text-bind'],
     'write_tail_hard_errors': 'must-not-exist-existing-native-data-loss-resource-stop',
     'write_tail_primary_error': 'first-inner-semantic-rejection-existing-outer-pool-budget-may-override',
     'write_tail_cleanup': 'explicit-rollback-before-error-no-confirmation-on-rollback-failure',
@@ -179,9 +215,27 @@ STORAGE_HOMOGENEOUS_POLICY = {
     'native_failing_occurrence_jsonb_bind_priority_qualified': False,
     'conditional_exact_lock_footprint_qualified': False,
     'native_isolation_retry_qualified': False,
+    'native_jsonb_binding': 'formattext-original-request-bytes-before-host-acl-occ',
+    'native_condition_binding': 'formattext-raw-text-before-host-acl-occ-no-varchar32-input-cast',
+    'exact_acquisition_policy': 'token-and-server-or-write1-forupdate-with-nonlocking-rejected-fallback',
+    'exact_update_policy': 'token-and-server-or-write1-native-jsonb-parameter4',
+    'native_write_constraint_facade': 'write-invalidargument-database-constraint-violation-http500-code13',
+    'native_jsonb_exact_main_cases': 11,
+    'native_jsonb_exact_legal_surrogate_subvectors': 1,
+    'native_write_failure_app_cases': 1,
+    'late_exact_excluded_semantics': 'conditional-eligibility-exclusion-not-absence-of-native-wait',
+    'late_exact_wait_cases': {'postgresql': 0, 'cockroachdb': 2},
+    'late_exact_no_wait_cases': {'postgresql': 2, 'cockroachdb': 0},
+    'literal_nul_condition_tail_policy': {'postgresql': 'native-text-hard-rejection-no-tail', 'cockroachdb': 'native-text-accepted-first-acl-rejection-real-later-any-wait'},
 }
 
 REQUIRED_TESTS = {
+    'raw_jsonb_text_binding_preserves_bytes_and_rejects_wrong_type_or_budget',
+    'raw_condition_text_binding_preserves_long_unicode_star_empty_and_nul',
+    'storage_write_native_constraint_errors_are_internal_at_http_boundary',
+    'storage_write_native_constraint_guard_requires_exact_reason_and_code',
+    'storage_native_constraint_guard_preserves_delete_read_and_host_validation',
+    'storage_write_lone_surrogate_object_reaches_repository_without_normalization',
     STORAGE_DUPLICATE_SELECTOR,
     "nakama_two_client_writes_keep_occurrence_receipts_and_last_step_state",
     "nakama_three_server_writes_bypass_step_acl_without_collapsing_acks",
@@ -587,7 +641,15 @@ def validate_storage_live_harness(source: str) -> None:
                 'test "$(grep -Ec \'^storage_homogeneous_app_executed \' '
                 '"$evidence/canonical-storage-app.log")" -eq 1'
             )
-            if not opaque < jsonb < native_inputs < homogeneous < homogeneous_unique < reject_skip:
+            native_failure = once(
+                'grep -Fxq "storage_jsonb_native_write_failure_executed profile=${profile} '
+                'cases=1 fields=15 sqlstate=22P02" "$evidence/canonical-storage-app.log"'
+            )
+            native_failure_unique = once(
+                'test "$(grep -Ec \'^storage_jsonb_native_write_failure_executed \' '
+                '"$evidence/canonical-storage-app.log")" -eq 1'
+            )
+            if not opaque < jsonb < native_inputs < homogeneous < homogeneous_unique < native_failure < native_failure_unique < reject_skip:
                 fail("storage JSONB and homogeneous App markers must bind actual cases to the canonical fixture")
         if logfile in ("storage-native-jsonb.log", "storage-v4-acl.log", STORAGE_IMPORT_LOG):
             unique_marker = once(
@@ -602,12 +664,22 @@ def validate_storage_live_harness(source: str) -> None:
             if not exact < terminal < executed:
                 fail("storage import fixture must have one complete terminal result before its marker")
         if logfile == STORAGE_DUPLICATE_LOG:
+            profile_guard = (
+                'case "$profile" in',
+                'postgresql) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;',
+                'cockroachdb) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;',
+                "*) echo 'unsupported storage native Exact profile' >&2; exit 1 ;;",
+                'esac',
+            )
+            start_guard = once('begin_stage storage-duplicate-batches "$evidence/storage-duplicate-batches.log"')
+            if commands[start_guard + 1:start_guard + 1 + len(profile_guard)] != list(profile_guard):
+                fail("storage duplicate native Exact profile counters must remain closed and before execution")
             terminal = once('test "$(grep -Ec \'^test result:\' '
                             '"$evidence/storage-duplicate-batches.log")" -eq 1')
             if not exact < terminal < executed:
                 fail("storage duplicate fixture must have one successful terminal result")
             previous_marker = terminal
-            for expected_marker, suffix in STORAGE_DUPLICATE_MARKERS:
+            for expected_marker, suffix in storage_duplicate_shell_markers():
                 marker_position = once(
                     f'grep -Fxq "{expected_marker} profile=${{profile}}{suffix}" '
                     f'"$evidence/{logfile}"'
@@ -617,7 +689,7 @@ def validate_storage_live_harness(source: str) -> None:
                     f'"$evidence/{logfile}")" -eq 1'
                 )
                 if not previous_marker < marker_position < unique_position < reject_skip:
-                    fail("storage duplicate fixture requires seven unique whole-line profile markers")
+                    fail("storage duplicate fixture requires all finite unique whole-line profile markers")
                 previous_marker = unique_position
         previous_end = end
     schema_start = once(
@@ -703,7 +775,9 @@ def validate_storage_live_harness(source: str) -> None:
     require_markers("storage v3 fixture summary", commands[summary[0]], (
         '"storage_jsonb_v3_projection":true',
         '"storage_native_jsonb":true', '"storage_v4_acl":true', '"schema_v3_extra_cases":41',
-        '"storage_v4_import":true', '"storage_homogeneous_batches":true', '"storage_homogeneous_app":true', '"storage_write_tail_drain":true',
+        '"storage_v4_import":true', '"storage_homogeneous_batches":true', '"storage_homogeneous_app":true', '"storage_write_tail_drain":true', '"storage_native_jsonb_exact":true', '"storage_jsonb_native_write_failure":true',
+        '"late_exact_wait_cases":${storage_late_exact_wait_cases}',
+        '"late_exact_no_wait_cases":${storage_late_exact_no_wait_cases}',
         '"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6}',
         '"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3}',
         '"schema_version":${schema_version}', '"storage_writer_epoch":${storage_writer_epoch}',
@@ -1299,6 +1373,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
         "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
         "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
         "storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain",
+        "storage_native_jsonb_exact", "storage_jsonb_native_write_failure",
         "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
         "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
         "process_restart_exact_receipt_replay",
@@ -1309,6 +1384,10 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
                   "entity_revision", "event_sequence", "command_receipts", "events", "outbox_intents"):
         if type(summary.get(field)) is not int or summary[field] != (4 if field in ("schema_version", "storage_writer_epoch", "authoritative_migrations_count") else 3):
             fail("server packet count or schema ABI differs: " + field)
+    wait, no_wait = STORAGE_LATE_EXACT_PROFILE_COUNTERS[profile]
+    for field, expected in (("late_exact_wait_cases", wait), ("late_exact_no_wait_cases", no_wait)):
+        if type(summary.get(field)) is not int or summary[field] != expected:
+            fail("server packet native Exact profile counter differs: " + field)
     cases = {"history": 6, "opaque_success": 4, "no_op": 2, "resource": 1, "native_input": 3}
     observed = summary.get("storage_jsonb_v3_cases")
     if not isinstance(observed, dict) or observed != cases or any(type(value) is not int for value in observed.values()):
@@ -1393,12 +1472,16 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
         f"storage_opaque_conditions_live_executed profile={profile} write_cases=15 delete_cases=18 batch_cases=2",
         f"storage_jsonb_v3_live_executed profile={profile} history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3",
         f"storage_homogeneous_app_executed profile={profile} write_occurrences=13 rollback_cases=3",
+        f"storage_jsonb_native_write_failure_executed profile={profile} cases=1 fields=15 sqlstate=22P02",
     ):
         if lines.count(marker) != 1:
             fail("canonical storage fixture has a missing or duplicate execution marker")
     homogeneous_app = [line for line in lines if "storage_homogeneous_app_executed " in line]
     if homogeneous_app != [f"storage_homogeneous_app_executed profile={profile} write_occurrences=13 rollback_cases=3"]:
         fail("canonical homogeneous App marker must occur once for the packet profile")
+    native_failure = [line for line in lines if "storage_jsonb_native_write_failure_executed " in line]
+    if native_failure != [f"storage_jsonb_native_write_failure_executed profile={profile} cases=1 fields=15 sqlstate=22P02"]:
+        fail("canonical native write failure marker must occur once for the packet profile")
     branch = rf"storage_jsonb_v3_native_inputs profile={profile} condition_sql=(accepted|rejected) payload_sql=(accepted|rejected) compatibility_credit=false"
     branches = [line for line in lines if line.startswith("storage_jsonb_v3_native_inputs ")]
     if len(branches) != 1 or re.fullmatch(branch, branches[0]) is None or any(
@@ -1448,7 +1531,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     if import_markers != [f"storage_v4_import_live_executed profile={profile}"]:
         fail("native storage v4 import fixture did not execute once for the packet profile")
     duplicate_lines = execution_log(STORAGE_DUPLICATE_LOG, 1, "nakama_duplicate_batches_skipped")
-    for marker, suffix in STORAGE_DUPLICATE_MARKERS:
+    for marker, suffix in storage_duplicate_markers(profile):
         recorded = [line for line in duplicate_lines if marker + " " in line]
         if recorded != [f"{marker} profile={profile}{suffix}"]:
             fail("homogeneous storage fixture has a missing, duplicate or incorrect marker: " + marker)
@@ -1473,6 +1556,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
             "schema_version": 4, "storage_writer_epoch": 4, "authoritative_migrations_count": 4,
             "storage_jsonb_v3_cases": cases, "storage_native_jsonb": True, "storage_v4_acl": True,
             "storage_v4_import": True, "storage_homogeneous_batches": True, "storage_homogeneous_app": True, "storage_write_tail_drain": True,
+            "storage_native_jsonb_exact": True, "storage_jsonb_native_write_failure": True,
             "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_V3_CASE_FAMILIES.copy(),
             "compatibility_credit": False, "accepted": False,
             "production_ready": False}
@@ -1487,6 +1571,7 @@ def validate_homogeneous_storage_contract(contract: dict[str, object], source_lo
         for field, value in STORAGE_HOMOGENEOUS_POLICY.items()
     ):
         fail("homogeneous storage policy must retain its exact canonical scope, bounds and no-credit flags")
+    validate_late_exact_policy_counters(policy)
     commit = "c19862e5f8415b4f24b189d065ed739517c548ba"
     expected_files = [
         (
@@ -1587,7 +1672,8 @@ def validate_nakama_write_tail_source(repository: str, pool_base: str, fixture: 
     require_markers("Nakama write tail repository", repository, (
         "let mut first_write_rejection = None;",
         "if kind == Some(NakamaBatchKind::Write)",
-        "match validate_nakama_write_step(&mut transaction, actor, write, access)?",
+        "acquire_nakama_write_access(&mut transaction, actor, write)?",
+        "match validate_nakama_write_step(actor, write, access)?",
         "WriteStepValidation::Semantic(rejection)",
         "first_write_rejection.get_or_insert(rejection)",
         "Err(hard_error) => {", "let _tail_stop_error = hard_error;",
@@ -1602,14 +1688,16 @@ def validate_nakama_write_tail_source(repository: str, pool_base: str, fixture: 
     require_markers("Nakama write semantic classification", step, (
         "Err(rejection) if rejection == write_permission_error()",
         "Err(hard_error) => return Err(hard_error)",
-        "validate_native_condition(", "VersionCheck::Any => Ok(WriteStepValidation::Ready)",
+        "VersionCheck::Any => Ok(WriteStepValidation::Ready)",
         "VersionCheck::MustNotExist => Err(error(",
         "VersionCheck::Exact(_) => Ok(WriteStepValidation::Semantic(version_error()))",
     ))
-    if step.index("validate_native_condition(") > step.index(
-        "VersionCheck::Exact(_) => Ok(WriteStepValidation::Semantic(version_error()))"
+    if "validate_native_condition(" in step or "transaction:" in step:
+        fail("SomeWrite host rejection must not rebind TEXT after ACL")
+    if repository.index("acquire_nakama_write_access(&mut transaction, actor, write)?") > repository.index(
+        "match validate_nakama_write_step(actor, write, access)?"
     ):
-        fail("write tail Exact rejection must follow successful native TEXT validation")
+        fail("SomeWrite native acquisition must precede host semantic classification")
     if repository.index("let receipts = receipts") < repository.index(
         "if let Some(primary) = first_write_rejection {\n"
     ):
@@ -1626,6 +1714,158 @@ def validate_nakama_write_tail_source(repository: str, pool_base: str, fixture: 
         "retired.store(true, Ordering::Release)",
         "connection.retired.load(Ordering::Acquire) || self.inner.has_broken(&mut connection.client)",
         "Self::Direct(_) => None",
+    ))
+
+
+
+def validate_native_exact_fixture_local_policy(fixture: str) -> None:
+    """Close the finite fixture's local wait/query branches, without execution credit."""
+    if len(fixture.encode("utf-8")) > 1024 * 1024:
+        fail("native Exact fixture source exceeds its local policy parsing budget")
+    waits = re.findall(
+        r"(?m)^[ \t]*const fn waits\(self, profile: DatabaseProfile\) -> bool \{\n"
+        r"([\s\S]*?)^[ \t]{12}\}\n[ \t]{8}\}\n[ \t]{8}enum Expected",
+        fixture,
+    )
+    expected_waits = """match self {
+        Self::ClientExactMatched | Self::ServerExactMatchedWriteZero | Self::ExactMissing => true,
+        Self::AclLateExactStale | Self::AclLateExactWriteZero | Self::ExactNulAclZero => {
+            matches!(profile, DatabaseProfile::CockroachDb)
+        }
+        _ => false,
+    }"""
+    # Only formatter whitespace in this Rust policy is ignored. Original
+    # fixture/SQL/query/observation bytes remain unchanged and hash-bound.
+    compact = lambda value: re.sub(r"\s+", "", value)
+    if len(waits) != 1 or compact(waits[0]) != compact(expected_waits):
+        fail("native Exact fixture local waits body differs from the finite profile policy")
+    cases = re.findall(
+        r"(?m)^[ \t]{8}fn exercise_case\(\n([\s\S]*?)^[ \t]{8}fn duplicate_exact\(",
+        fixture,
+    )
+    if len(cases) != 1:
+        fail("native Exact fixture exercise-case source boundary missing or duplicated")
+    case = cases[0]
+    # This reviewed finite exercise body has no block comments or raw/multiline
+    # literals. Reject those structures before counting executable headers so
+    # they cannot supply a fake call site. This is a source seam restriction,
+    # not a general Rust lexer or an execution/oracle claim.
+    if "/*" in case or "*/" in case:
+        fail("native Exact exercise-case block comments may not supply policy sites")
+    if re.search(r'\b(?:br|cr|r)#{0,255}"', case):
+        fail("native Exact exercise-case raw literals are outside the finite policy")
+    literals = re.finditer(r'"(?:\\[\s\S]|[^"\\])*"', case)
+    if any("\n" in literal.group() for literal in literals):
+        fail("native Exact exercise-case multiline literals may not supply policy sites")
+    selectors = re.findall(
+        r"(?m)^[ \t]*let expected_query = ([\s\S]*?)^[ \t]*let before = snapshot\(&mut control, collection\);",
+        case,
+    )
+    expected_selector = """if matches!(
+        case, MatrixCase::ClientExactMatched | MatrixCase::ServerExactMatchedWriteZero
+    ) || (matches!(profile, DatabaseProfile::CockroachDb)
+        && matches!(case, MatrixCase::AclLateExactStale | MatrixCase::AclLateExactWriteZero)) {
+        EXACT_ACCESS_SQL
+    } else {
+        ACCESS_SQL
+    };"""
+    if len(selectors) != 1 or compact(selectors[0]) != compact(expected_selector):
+        fail("native Exact fixture local expected-query selector differs from the finite profile policy")
+    if case.count("case.waits(profile)") != 3:
+        fail("native Exact fixture requires exactly three real profile-aware wait call sites")
+    wait_sites = re.findall(
+        r"(?m)^[ \t]*if case\.waits\(profile\) \{\n[ \t]*let proof = wait_for_lock\(", case,
+    )
+    no_wait_sites = re.findall(
+        r"(?m)^[ \t]*if !case\.waits\(profile\) \{\n"
+        r"[ \t]*holder_still_open\(&mut control, &held_key, &holder\);\n[ \t]*\}", case,
+    )
+    marker_sites = re.findall(
+        r'(?m)^[ \t]*println!\("nakama_native_jsonb_exact_case_executed profile=\{\} case=\{label\} fields=15 native_wait=\{\} committed=\{\} same_lease_readable=true payload_serde_roundtrip=false",profile\.metadata_value\(\),case\.waits\(profile\),matches!\(expected,Expected::Committed\)\);',
+        case,
+    )
+    if tuple(map(len, (wait_sites, no_wait_sites, marker_sites))) != (1, 1, 1):
+        fail("native Exact fixture profile wait calls must drive proof, holder readback and case marker")
+
+
+def validate_nakama_native_write_source(repository: str, write: str, projection: str,
+                                       wire: str, fixture: str, app_fixture: str) -> None:
+    """Closed source seam only: source checks do not grant native/oracle acceptance."""
+    validate_native_exact_fixture_local_policy(fixture)
+    jsonb = projection.split("struct RawStorageJsonb", 1)[-1].split("struct RawStorageCondition", 1)[0]
+    require_markers("raw JSONB text binding", jsonb, (
+        "if value.len() > MAX_VALUE_BYTES", "if *kind != postgres::types::Type::JSONB",
+        "output.extend_from_slice(self.0);", "postgres::types::IsNull::No",
+        "*kind == postgres::types::Type::JSONB", "postgres::types::Format::Text",
+        "postgres::types::to_sql_checked!();", '.field("bytes", &self.0.len())',
+    ))
+    condition = projection.split("struct RawStorageCondition", 1)[-1].split("fn decode_locked_storage_access", 1)[0]
+    require_markers("raw TEXT condition binding", condition, (
+        "(&'a str)", "if *kind != postgres::types::Type::TEXT",
+        "output.extend_from_slice(self.0.as_bytes());", "postgres::types::IsNull::No",
+        "*kind == postgres::types::Type::TEXT", "postgres::types::Format::Text",
+        "postgres::types::to_sql_checked!();", '.field("bytes", &self.0.len())',
+    ))
+    if "Format::Binary" in jsonb + condition or "serde_json" in jsonb + condition:
+        fail("native input must not use binary/serde reconstruction")
+    acquisition = projection.split("fn acquire_nakama_write_access(", 1)[-1].split("fn validate_locked_operation(", 1)[0]
+    require_markers("Nakama native input and Exact acquisition", acquisition, (
+        "RawStorageJsonb::new(&operation.value)?", "let VersionCheck::Exact(token)",
+        "AND $4::JSONB IS NOT NULL FOR UPDATE", "RawStorageCondition(token.as_str())",
+        "AND $4::JSONB IS NOT NULL AND public_version::TEXT=$5::TEXT",
+        "AND ($6::BOOL OR write_permission=1) FOR UPDATE", "let authoritative = actor == Actor::Server;",
+        "&payload,", "&condition,", "&authoritative,", "let fallback = transaction",
+        "row.version.as_str() == token.as_str()", "row.write.allows_client_write()",
+        'data_loss("storage_exact_access_predicate_mismatch")', "Ok(fallback)",
+    ))
+    fallback = acquisition.split("let fallback = transaction", 1)[-1].split("if fallback.as_ref()", 1)[0]
+    if "FOR UPDATE" in fallback:
+        fail("excluded Exact fallback must remain nonlocking")
+    eligible = acquisition.split("let eligible = transaction", 1)[-1].split("if eligible.is_some()", 1)[0]
+    if not eligible.index("&payload,") < eligible.index("&condition,") < eligible.index("&authoritative,"):
+        fail("eligible acquisition must bind JSONB before raw TEXT and authority")
+    require_markers("Nakama native UPDATE binding", write, (
+        "fn apply_nakama_write(", "StorageWriteBinding::Typed", "StorageWriteBinding::Nakama",
+        "apply_write_with_binding(", "RawStorageJsonb::new(&operation.value)?",
+        '"$4::JSONB"', '"$4::TEXT::JSONB"', "RawStorageCondition(token.as_str())",
+        '" AND public_version::TEXT=$12::TEXT AND ($13::BOOL OR write_permission=1)"',
+        "{exact_predicate}", "&native_payload", "parameters.push(condition);", "parameters.push(&authoritative);",
+        'data_loss("storage_write_row_count_mismatch")', 'data_loss("storage_write_native_returning_mismatch")',
+    ))
+    error = wire.split("fn storage_error(", 1)[-1].split("pub(crate) fn authentication_error", 1)[0]
+    require_markers("native Write facade", error, (
+        "(OperationKind::Write, StableCode::InvalidArgument)",
+        'if error.reason() == "database_constraint_violation"',
+        'gateway_error(500, 13, "Error writing storage objects.")',
+        '(_, StableCode::InvalidArgument) => gateway_error(400, 3, "Invalid storage request.")',
+    ))
+    if error.index('if error.reason() == "database_constraint_violation"') > error.index("(_, StableCode::InvalidArgument)"):
+        fail("native Write facade must precede generic host validation mapping")
+    require_markers("native JSONB/Exact matrix fixture", fixture, (
+        "native_exact_input::exercise(url, profile, collection);", "mod native_exact_input {",
+        "MatrixCase::AclLateExactStale,", "MatrixCase::AclLateExactWriteZero,",
+        "MatrixCase::ClientExactMatched,", "MatrixCase::ServerExactMatchedWriteZero,",
+        "MatrixCase::ExactMissing,", "MatrixCase::ExactNulAclZero,", "MatrixCase::EscapedNul,",
+        "MatrixCase::BothBadPayloadAndToken,", "MatrixCase::TypedNulAclZero,", "MatrixCase::TypedMalformedAclZero,",
+        "duplicate_exact(url, profile, collection);", "statement.params()", "Type::oid",
+        "local.storage-native-jsonb-lock-query.v1", "local.storage-native-jsonb-input-observation.v1",
+        "local.storage-native-jsonb-exact-fixture.v1", "LEGAL_SURROGATE", "hidden_batch_sqlstate=null",
+        "const fn waits(self, profile: DatabaseProfile) -> bool", "case.waits(profile)",
+        "Self::AclLateExactStale", "Self::AclLateExactWriteZero", "Self::ExactNulAclZero",
+        "matches!(profile, DatabaseProfile::CockroachDb)",
+        "DatabaseProfile::PostgreSql => (0_u8, 2_u8)", "DatabaseProfile::CockroachDb => (2_u8, 0_u8)",
+        '"late_exact_wait_cases":late_exact_wait_cases', '"late_exact_no_wait_cases":late_exact_no_wait_cases',
+    ))
+    for marker, suffix in STORAGE_DUPLICATE_MARKERS[-2:]:
+        source_suffix = suffix.replace("case=both_bad_input_legal_surrogate", "case={label}")
+        if marker == "nakama_native_jsonb_exact_matrix_executed":
+            source_suffix += " late_exact_wait={late_exact_wait_cases} late_exact_no_wait={late_exact_no_wait_cases}"
+        require_markers("native JSONB/Exact matrix exact marker", fixture, (marker + " profile={}" + source_suffix,))
+    require_markers("bound surrogate source invocation", fixture, ('Some("both_bad_input_legal_surrogate")',))
+    require_markers("authenticated native Write facade fixture", app_fixture, (
+        "storage_jsonb_native_write_failure_executed profile={} cases=1 fields=15 sqlstate=22P02",
+        'native_surrogate.code().map(|code| code.code())', '"Error writing storage objects."', '"22P02"',
+        'assert_eq!(rejected.status, 500)', 'before_surrogate', 'assert_eq!(healthy.status, 200)',
     ))
 
 
@@ -2099,6 +2339,14 @@ def main(arguments: list[str] | None = None) -> int:
         (ROOT / "crates/trnm-persistence-pg/src/pool_parts/base.rs").read_text(encoding="utf-8"),
         sources[Path("crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs")],
     )
+    validate_nakama_native_write_source(
+        sources[Path("crates/trnm-persistence-pg/src/storage_parts/01_repository.rs")],
+        sources[Path("crates/trnm-persistence-pg/src/storage_parts/03_write.rs")],
+        sources[Path("crates/trnm-persistence-pg/src/storage_parts/06_native_projection.rs")],
+        sources[Path("crates/trnm-server/src/runtime/storage_api.rs")],
+        sources[Path("crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs")],
+        sources[Path("crates/trnm-server/src/runtime/storage_api_v3_live.rs")],
+    )
     if storage_contract.get("composition") != "crates/trnm-server::trnm-server":
         fail("storage HTTP API must use the canonical process authority")
     expected_storage_routes = {
@@ -2134,6 +2382,7 @@ def main(arguments: list[str] | None = None) -> int:
         for field, value in STORAGE_HOMOGENEOUS_POLICY.items()
     ) or homogeneous_status.get("gap_closed") is not False:
         fail("homogeneous storage status must retain exact source scope and false acceptance")
+    validate_late_exact_policy_counters(homogeneous_status)
     condition_state = status.get("storage_http_mutations", {}).get("condition_version")
     if condition_state != (
         "Original-string ExpectedVersion: write empty is blind, write star is insert-only, "

@@ -163,6 +163,110 @@ struct LockedStorageAccess {
     write: WritePermission,
 }
 
+// The pinned pgx JSONB codec prefers text and appends a Go string unchanged.
+// Bind the original bytes as native JSONB, including on excluded rows. Never
+// use Json<Value>, add a binary version byte, or reconstruct request bytes.
+struct RawStorageJsonb<'a>(&'a [u8]);
+
+impl<'a> RawStorageJsonb<'a> {
+    fn new(value: &'a [u8]) -> Result<Self, DomainError> {
+        if value.len() > MAX_VALUE_BYTES {
+            return Err(invalid("invalid_storage_value"));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl std::fmt::Debug for RawStorageJsonb<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawStorageJsonb")
+            .field("bytes", &self.0.len())
+            .finish()
+    }
+}
+
+impl ToSql for RawStorageJsonb<'_> {
+    fn to_sql(
+        &self,
+        kind: &postgres::types::Type,
+        output: &mut bytes::BytesMut,
+    ) -> Result<postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        if *kind != postgres::types::Type::JSONB || self.0.len() > MAX_VALUE_BYTES {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "raw storage JSONB type or input bound rejected",
+            )));
+        }
+        output.extend_from_slice(self.0);
+        Ok(postgres::types::IsNull::No)
+    }
+
+    fn accepts(kind: &postgres::types::Type) -> bool {
+        *kind == postgres::types::Type::JSONB
+    }
+
+    fn encode_format(&self, _kind: &postgres::types::Type) -> postgres::types::Format {
+        postgres::types::Format::Text
+    }
+
+    postgres::types::to_sql_checked!();
+}
+
+// Expected input is arbitrary TEXT, distinct from stored VARCHAR(32). Keep
+// pgx's text wire format as well as the exact bytes, without a token-size cap.
+struct RawStorageCondition<'a>(&'a str);
+
+impl std::fmt::Debug for RawStorageCondition<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawStorageCondition")
+            .field("bytes", &self.0.len())
+            .finish()
+    }
+}
+
+impl ToSql for RawStorageCondition<'_> {
+    fn to_sql(
+        &self,
+        kind: &postgres::types::Type,
+        output: &mut bytes::BytesMut,
+    ) -> Result<postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        if *kind != postgres::types::Type::TEXT {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "raw storage condition type rejected",
+            )));
+        }
+        output.extend_from_slice(self.0.as_bytes());
+        Ok(postgres::types::IsNull::No)
+    }
+
+    fn accepts(kind: &postgres::types::Type) -> bool {
+        *kind == postgres::types::Type::TEXT
+    }
+
+    fn encode_format(&self, _kind: &postgres::types::Type) -> postgres::types::Format {
+        postgres::types::Format::Text
+    }
+
+    postgres::types::to_sql_checked!();
+}
+
+fn decode_locked_storage_access(row: Row) -> Result<LockedStorageAccess, DomainError> {
+    let version = PublicVersion::new(
+        row.try_get::<_, String>(0)
+            .map_err(|_| data_loss("invalid_storage_public_version"))?,
+    )
+    .map_err(|_| data_loss("invalid_storage_public_version"))?;
+    let write = WritePermission::from_stored(
+        row.try_get::<_, i16>(1)
+            .map_err(|_| data_loss("invalid_storage_write_permission"))?,
+    )
+    .map_err(|_| data_loss("invalid_storage_write_permission"))?;
+    Ok(LockedStorageAccess { version, write })
+}
+
 fn lock_storage_access(
     transaction: &mut Transaction<'_>,
     key: &StorageObjectKey,
@@ -178,20 +282,80 @@ fn lock_storage_access(
             ],
         )
         .map_err(map_postgres_error)?
-        .map(|row| {
-            let version = PublicVersion::new(
-                row.try_get::<_, String>(0)
-                    .map_err(|_| data_loss("invalid_storage_public_version"))?,
-            )
-            .map_err(|_| data_loss("invalid_storage_public_version"))?;
-            let write = WritePermission::from_stored(
-                row.try_get::<_, i16>(1)
-                    .map_err(|_| data_loss("invalid_storage_write_permission"))?,
-            )
-            .map_err(|_| data_loss("invalid_storage_write_permission"))?;
-            Ok(LockedStorageAccess { version, write })
-        })
+        .map(decode_locked_storage_access)
         .transpose()
+}
+
+fn acquire_nakama_write_access(
+    transaction: &mut Transaction<'_>,
+    actor: Actor,
+    operation: &WriteOperation,
+) -> Result<Option<LockedStorageAccess>, DomainError> {
+    let payload = RawStorageJsonb::new(&operation.value)?;
+    let VersionCheck::Exact(token) = &operation.expected else {
+        // Any/star retain the existing lock approximation, with payload input
+        // validated at native Bind before that lock or host ACL/OCC decision.
+        return transaction
+            .query_opt(
+                "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects \
+                 WHERE collection=$1 AND object_key=$2 AND user_id=$3 \
+                   AND $4::JSONB IS NOT NULL FOR UPDATE",
+                &[
+                    &operation.key.collection(),
+                    &operation.key.key(),
+                    &operation.key.user_id().as_bytes().as_slice(),
+                    &payload,
+                ],
+            )
+            .map_err(map_postgres_error)?
+            .map(decode_locked_storage_access)
+            .transpose();
+    };
+    let condition = RawStorageCondition(token.as_str());
+    let authoritative = actor == Actor::Server;
+    let eligible = transaction
+        .query_opt(
+            "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects \
+             WHERE collection=$1 AND object_key=$2 AND user_id=$3 \
+               AND $4::JSONB IS NOT NULL AND public_version::TEXT=$5::TEXT \
+               AND ($6::BOOL OR write_permission=1) FOR UPDATE",
+            &[
+                &operation.key.collection(),
+                &operation.key.key(),
+                &operation.key.user_id().as_bytes().as_slice(),
+                &payload,
+                &condition,
+                &authoritative,
+            ],
+        )
+        .map_err(map_postgres_error)?
+        .map(decode_locked_storage_access)
+        .transpose()?;
+    if eligible.is_some() {
+        return Ok(eligible);
+    }
+    // Excluded Exact rows use only a plain skinny fallback. A held stale or
+    // write0 row must not be locked to classify ACL before version. Input has
+    // already been natively bound; do not decode a rejected payload/witness.
+    let fallback = transaction
+        .query_opt(
+            "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects \
+             WHERE collection=$1 AND object_key=$2 AND user_id=$3",
+            &[
+                &operation.key.collection(),
+                &operation.key.key(),
+                &operation.key.user_id().as_bytes().as_slice(),
+            ],
+        )
+        .map_err(map_postgres_error)?
+        .map(decode_locked_storage_access)
+        .transpose()?;
+    if fallback.as_ref().is_some_and(|row| {
+        row.version.as_str() == token.as_str() && (authoritative || row.write.allows_client_write())
+    }) {
+        return Err(data_loss("storage_exact_access_predicate_mismatch"));
+    }
+    Ok(fallback)
 }
 
 fn validate_locked_operation(
@@ -248,5 +412,59 @@ fn validate_locked_operation(
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod raw_storage_binding_tests {
+    use super::{RawStorageCondition, RawStorageJsonb, MAX_VALUE_BYTES};
+    use bytes::BytesMut;
+    use postgres::types::{Format, IsNull, ToSql, Type};
+
+    #[test]
+    fn raw_jsonb_text_binding_preserves_bytes_and_rejects_wrong_type_or_budget() {
+        let original = br#" {"b":1e0, "a":3, "b":2, "s":"\u0061"} "#;
+        let payload = RawStorageJsonb::new(original).unwrap();
+        assert_eq!(Type::JSONB.oid(), 3802);
+        assert!(matches!(payload.encode_format(&Type::JSONB), Format::Text));
+        let mut wire = BytesMut::new();
+        assert!(matches!(
+            payload.to_sql_checked(&Type::JSONB, &mut wire).unwrap(),
+            IsNull::No
+        ));
+        assert_eq!(wire.as_ref(), original);
+        assert!(!format!("{payload:?}").contains("1e0"));
+        assert!(payload
+            .to_sql_checked(&Type::TEXT, &mut BytesMut::new())
+            .is_err());
+        assert!(RawStorageJsonb::new(&vec![b'x'; MAX_VALUE_BYTES + 1]).is_err());
+
+        // Native input validity belongs to the engine, including invalid UTF8.
+        let native_invalid = RawStorageJsonb::new(&[0xff, 0x00]).unwrap();
+        let mut raw = BytesMut::new();
+        native_invalid
+            .to_sql_checked(&Type::JSONB, &mut raw)
+            .unwrap();
+        assert_eq!(raw.as_ref(), &[0xff, 0x00]);
+    }
+
+    #[test]
+    fn raw_condition_text_binding_preserves_long_unicode_star_empty_and_nul() {
+        let long = "q".repeat(8192);
+        for original in ["", "*", "ABCDEF", "非十六进制", "x\0y", long.as_str()] {
+            let condition = RawStorageCondition(original);
+            assert_eq!(Type::TEXT.oid(), 25);
+            assert!(matches!(condition.encode_format(&Type::TEXT), Format::Text));
+            let mut wire = BytesMut::new();
+            assert!(matches!(
+                condition.to_sql_checked(&Type::TEXT, &mut wire).unwrap(),
+                IsNull::No
+            ));
+            assert_eq!(wire.as_ref(), original.as_bytes());
+            assert!(condition
+                .to_sql_checked(&Type::VARCHAR, &mut BytesMut::new())
+                .is_err());
+        }
+        assert!(!format!("{:?}", RawStorageCondition("secret-token")).contains("secret-token"));
     }
 }

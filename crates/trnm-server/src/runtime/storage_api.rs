@@ -865,6 +865,14 @@ fn storage_error(error: DomainError, kind: OperationKind) -> Response {
             | StableCode::FailedPrecondition
             | StableCode::PermissionDenied,
         ) => gateway_error(400, 3, REJECTED_DELETE),
+        (OperationKind::Write, StableCode::InvalidArgument)
+            if error.reason() == "database_constraint_violation" =>
+        {
+            // Keep the shared repository classifier unchanged. Native write
+            // constraint/input errors are internal at this HTTP boundary;
+            // host request-validation errors still use the next 400 branch.
+            gateway_error(500, 13, "Error writing storage objects.")
+        }
         (_, StableCode::InvalidArgument) => gateway_error(400, 3, "Invalid storage request."),
         (_, StableCode::ResourceExhausted) => storage_resource_error(kind.internal_message()),
         // Repository availability errors are redacted like all internal errors.
