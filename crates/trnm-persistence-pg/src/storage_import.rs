@@ -42,7 +42,11 @@ impl crate::PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        crate::storage::verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        crate::storage::verify_storage_writer_epoch_target(
+            &mut transaction,
+            self.profile,
+            self.serving_schema_target,
+        )?;
         transaction.commit().map_err(map_postgres_error)
     }
 }
@@ -69,6 +73,32 @@ pub(crate) fn verify_business_storage_import_serving(
         return Err(data_loss("storage_import_admission_invalid"));
     }
     crate::storage::verify_storage_writer_epoch(transaction, profile)
+}
+
+/// Explicit selected-target bridge. The same metadata share lock and complete
+/// import admission remain in the business transaction; no second authority.
+pub(crate) fn verify_business_storage_import_serving_target(
+    transaction: &mut Transaction<'_>,
+    profile: DatabaseProfile,
+    target: crate::AuthoritativeSchemaTarget,
+) -> Result<(), DomainError> {
+    if target == crate::AuthoritativeSchemaTarget::StorageV4 {
+        return verify_business_storage_import_serving(transaction, profile);
+    }
+    target.require_capture_ready()?;
+    transaction
+        .batch_execute("SET LOCAL search_path TO pg_catalog, public")
+        .map_err(map_postgres_error)?;
+    let row = transaction
+        .query_one(
+            "SELECT singleton FROM public.trnm_schema_metadata WHERE singleton=1 FOR SHARE",
+            &[],
+        )
+        .map_err(map_postgres_error)?;
+    if row.try_get::<_, i16>(0).map_err(map_postgres_error)? != 1 {
+        return Err(data_loss("storage_import_admission_invalid"));
+    }
+    crate::storage::verify_storage_writer_epoch_target(transaction, profile, target)
 }
 
 /// Called inside every ordinary storage transaction, including read-only

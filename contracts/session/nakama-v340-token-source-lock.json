@@ -288,5 +288,143 @@
     ],
     "accepted": false,
     "compatibility_credit": false
+  },
+  "HTTP_adapter_source_binding": {
+    "upstream_commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "verified_files": [
+      {
+        "path": "apigrpc/apigrpc.proto",
+        "bytes": 24346,
+        "sha256": "8e2ebf5d8569b2847dec95d3132d3a2537e28d588f55d301decdd1775c906ca4",
+        "git_blob_sha1": "1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/apigrpc/apigrpc.proto"
+      },
+      {
+        "path": "apigrpc/apigrpc.pb.gw.go",
+        "bytes": 367338,
+        "sha256": "590d0d37be149e158fe514e64ecef06955e5baa5b2b64c7cb4d5bb2b0e1c670d",
+        "git_blob_sha1": "0e741e8ef596cb7c3ca2a636e3b3403a22105a39",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/apigrpc/apigrpc.pb.gw.go"
+      },
+      {
+        "path": "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/query.go",
+        "bytes": 12228,
+        "sha256": "cdb3c973f81862d47dacf2056cf0ac58c66c98f9c0b609efc9bc6f10f69510c6",
+        "git_blob_sha1": "8549dfb97afb0c9e68aa1349d05c87a40fdca117",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/query.go"
+      },
+      {
+        "path": "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/marshal_jsonpb.go",
+        "bytes": 8900,
+        "sha256": "64a8847a795ee97267d48d6a8904ea0e32e6b480e218fbe731ba7472e012962d",
+        "git_blob_sha1": "3d07063007d5d6f097ae90d9f230f2a4e4beb9ac",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/marshal_jsonpb.go"
+      },
+      {
+        "path": "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/errors.go",
+        "bytes": 7193,
+        "sha256": "5dc0dd6af8471c0922164791d4a628338305a30ebbcd3198a22f22b6599e7a8b",
+        "git_blob_sha1": "bbe7decf09bc61c5b2166c9ef3be4754d5df8913",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/errors.go"
+      },
+      {
+        "path": "vendor/google.golang.org/protobuf/encoding/protojson/decode.go",
+        "bytes": 18134,
+        "sha256": "41d2b009c5648973715d476e3668cd736a7c815c31a7b392ea4d7594ad3e81e5",
+        "git_blob_sha1": "737d6876d5efd10c82d1cc2b35782a27579034ba",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/protobuf/encoding/protojson/decode.go"
+      },
+      {
+        "path": "vendor/google.golang.org/protobuf/encoding/protojson/well_known_types.go",
+        "bytes": 26280,
+        "sha256": "b0425d7be0da31c38914588bfdea03ce3452a9d547b2dc649fcd06982695912e",
+        "git_blob_sha1": "e9fe1039437a91f09253addbcd6668f56b08225f",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/protobuf/encoding/protojson/well_known_types.go"
+      },
+      {
+        "path": "vendor/google.golang.org/protobuf/internal/encoding/json/decode.go",
+        "bytes": 8821,
+        "sha256": "149097bfd4ae2cd52f8f8d5b36c850c3972124670c75aaabfaa32edb29512aa4",
+        "git_blob_sha1": "ea1d3e65a5752ff3fdd621635709b6d3dcfae4be",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/protobuf/internal/encoding/json/decode.go"
+      },
+      {
+        "path": "vendor/modules.txt",
+        "bytes": 16427,
+        "sha256": "88f58c86148495545a9c8496c8cb5438919317c65ea53ac44f51d31bea4f7d94",
+        "git_blob_sha1": "3ce9841e5d55abb9918240cfdaae2fbf831699f9",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/modules.txt"
+      },
+      {
+        "path": "apigrpc/apigrpc.pb.go",
+        "bytes": 43220,
+        "sha256": "1d0575929da7cf4020d12155b2ee0cc551f95343ac33ddfa0e2603d3add83ffc",
+        "git_blob_sha1": "b14e5fd82e934fee10b7a0b7d619eeaa488f9366",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/apigrpc/apigrpc.pb.go"
+      },
+      {
+        "path": "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/convert.go",
+        "bytes": 8788,
+        "sha256": "9555d52adab6a92bdccee6654287a28f329762c2b61c8516dad7ddeff78a667a",
+        "git_blob_sha1": "2e50082ad1163331d97a070121d2abb0f95f563b",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/convert.go"
+      },
+      {
+        "path": "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/marshaler.go",
+        "bytes": 1961,
+        "sha256": "c63d20153f702c1238e8cb2fdff72f627d64b1b934c7b49d079b78986c72c047",
+        "git_blob_sha1": "b1dfc37af9b9f61125d6b3544f614bd48984ef15",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/marshaler.go"
+      },
+      {
+        "path": "vendor/google.golang.org/genproto/googleapis/api/annotations/annotations.pb.go",
+        "bytes": 5199,
+        "sha256": "2bcace728699fc0e05c18da5653fba32b61802f13cd2c4fde534e006adcb0454",
+        "git_blob_sha1": "0b789e2c5e9e7effd6416cc0ff87955c6aa1c50c",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/genproto/googleapis/api/annotations/annotations.pb.go"
+      },
+      {
+        "path": "vendor/google.golang.org/genproto/googleapis/api/annotations/http.pb.go",
+        "bytes": 28416,
+        "sha256": "a1ca2f72182fa28782a70c44c52c2bcde28d2e4c73ab67fd24faba92f5f27149",
+        "git_blob_sha1": "998205e180847b3138fa534f0c14c65791e1febb",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/genproto/googleapis/api/annotations/http.pb.go"
+      },
+      {
+        "path": "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options/annotations.pb.go",
+        "bytes": 15763,
+        "sha256": "0860a6f60d589027889073806e941232ebd074f71da3f2bf84dc10a37e9fe29c",
+        "git_blob_sha1": "738c9754a61561adbce8d3543545a5ede98b3985",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options/annotations.pb.go"
+      },
+      {
+        "path": "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options/openapiv2.pb.go",
+        "bytes": 171943,
+        "sha256": "882d72f9f4d605073889cff684ad7d9b2e1dffe457d360dc530d72e89c4abdf9",
+        "git_blob_sha1": "5121dce386cc08f96cfc82f96abea9e2070dd4b4",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options/openapiv2.pb.go"
+      },
+      {
+        "path": "vendor/github.com/heroiclabs/nakama-common/api/api.pb.go",
+        "bytes": 320372,
+        "sha256": "0f227d58b1d3c8077693ca3a5677c0d66bc6a60d53f5f556e7dcb785c3b1a2fd",
+        "git_blob_sha1": "7335fa2a608c8fb7ea58c39ab935ac2c9589d249",
+        "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/heroiclabs/nakama-common/api/api.pb.go"
+      }
+    ],
+    "registered_extensions": [
+      "google.api.http",
+      "grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger",
+      "grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation",
+      "grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema",
+      "grpc.gateway.protoc_gen_openapiv2.options.openapiv2_enum",
+      "grpc.gateway.protoc_gen_openapiv2.options.openapiv2_tag",
+      "grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field"
+    ],
+    "scope": "exact cached primary files and captured gateway transitive registration closure; no full-process registry proof",
+    "HTTP_App_connected": false,
+    "HTTP_compatible": false,
+    "native_execution_qualified": false,
+    "accepted": false
   }
 }

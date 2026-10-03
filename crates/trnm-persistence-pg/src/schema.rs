@@ -21,6 +21,12 @@ pub enum AuthoritativeSchemaTarget {
 }
 
 impl AuthoritativeSchemaTarget {
+    /// Static source frontier only. This performs no I/O and does not establish
+    /// that any database has the selected complete catalog or metadata.
+    pub fn require_capture_ready(self) -> Result<(), DomainError> {
+        require_account_catalog_capture(self)
+    }
+
     #[must_use]
     pub const fn version(self) -> u64 {
         match self {
@@ -260,6 +266,23 @@ pub fn authoritative_supported_chain_digest(profile: DatabaseProfile) -> Integri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_schema_target_is_closed_without_changing_storage_epoch() {
+        assert_eq!(AuthoritativeSchemaTarget::StorageV4.version(), 4);
+        assert_eq!(AuthoritativeSchemaTarget::NakamaAccountsV5.version(), 5);
+        assert_eq!(AUTHORITATIVE_STORAGE_WRITER_EPOCH, 4);
+        assert!(AuthoritativeSchemaTarget::StorageV4
+            .require_capture_ready()
+            .is_ok());
+        assert_eq!(
+            AuthoritativeSchemaTarget::NakamaAccountsV5
+                .require_capture_ready()
+                .unwrap_err()
+                .reason(),
+            "schema5_native_catalog_capture_pending"
+        );
+    }
 
     #[test]
     fn embedded_chain_uses_the_tagged_complete_lock_identity() {

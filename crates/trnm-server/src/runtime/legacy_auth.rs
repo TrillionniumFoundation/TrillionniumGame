@@ -91,7 +91,78 @@ impl fmt::Debug for LegacyAuthConfig {
     }
 }
 
+/// Bounded native failure, never a raw SQL/provider error or stored identity.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct LegacyNativeAccountFailure {
+    pub code: trnm_contracts::StableCode,
+    pub phase: Option<&'static str>,
+    pub last_failure: Option<LegacyCommittedCleanupFailure>,
+    pub cleanup_failure: Option<LegacyCommittedCleanupFailure>,
+    pub attempts: Option<u8>,
+    pub exhausted: Option<bool>,
+    pub unknown_commit: Option<bool>,
+}
+impl fmt::Debug for LegacyNativeAccountFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LegacyNativeAccountFailure")
+            .field("code", &self.code)
+            .field("unknown_commit", &self.unknown_commit)
+            .field("cleanup_failure_present", &self.cleanup_failure.is_some())
+            .finish()
+    }
+}
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum LegacyLeaseCompletion {
+    NotObserved,
+    UserRead,
+    DeviceExisting,
+    UnconfirmedCleanup {
+        committed_cleanup_failure: LegacyCommittedCleanupFailure,
+    },
+    ConfirmedCreation {
+        committed_cleanup_failure: Option<LegacyCommittedCleanupFailure>,
+    },
+    NativeFailure(LegacyNativeAccountFailure),
+}
+impl fmt::Debug for LegacyLeaseCompletion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NotObserved => "NotObserved",
+            Self::UserRead => "UserRead",
+            Self::DeviceExisting => "DeviceExisting",
+            Self::UnconfirmedCleanup { .. } => "UnconfirmedCleanup",
+            Self::ConfirmedCreation { .. } => "ConfirmedCreation",
+            Self::NativeFailure(_) => "NativeFailure",
+        })
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LegacyLeaseCancellation {
+    None,
+    Deadline,
+    Shutdown,
+}
+/// The outer pool boundary cannot erase a real native commit or unknown result.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct LegacyLeaseFailure {
+    pub boundary_error: trnm_contracts::DomainError,
+    pub setup_error: Option<trnm_contracts::DomainError>,
+    pub completion: LegacyLeaseCompletion,
+    pub cancellation: LegacyLeaseCancellation,
+    pub lease_retired: bool,
+}
+impl fmt::Debug for LegacyLeaseFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LegacyLeaseFailure")
+            .field("code", &self.boundary_error.code())
+            .field("completion", &self.completion)
+            .field("cancellation", &self.cancellation)
+            .field("lease_retired", &self.lease_retired)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LegacyRepositoryError {
     Unimplemented,
     Unavailable,
@@ -101,11 +172,13 @@ pub enum LegacyRepositoryError {
     UserNotFound,
     UserBanned,
     UsernameAlreadyInUse,
+    NativeFailure(LegacyNativeAccountFailure),
+    Lease(Box<LegacyLeaseFailure>),
 }
 
 impl LegacyRepositoryError {
     #[must_use]
-    pub const fn code(self) -> trnm_contracts::StableCode {
+    pub fn code(&self) -> trnm_contracts::StableCode {
         use trnm_contracts::StableCode;
         match self {
             Self::Unimplemented => StableCode::Unimplemented,
@@ -116,6 +189,8 @@ impl LegacyRepositoryError {
             Self::UserNotFound => StableCode::NotFound,
             Self::UserBanned => StableCode::PermissionDenied,
             Self::UsernameAlreadyInUse => StableCode::AlreadyExists,
+            Self::NativeFailure(error) => error.code,
+            Self::Lease(error) => error.boundary_error.code(),
         }
     }
 }
@@ -408,6 +483,40 @@ impl std::error::Error for LegacyDeviceAuthError {
         }
     }
 }
+fn device_repository_failure(error: LegacyRepositoryError) -> LegacyDeviceAuthError {
+    // Borrow before moving the owned bounded error. Boxing its lease preserves
+    // all native/boundary facts without enlarging every service Result error.
+    let completion = match &error {
+        LegacyRepositoryError::Lease(failure) => Some(failure.completion),
+        _ => None,
+    };
+    let cause = match error {
+        LegacyRepositoryError::UserNotFound => LegacyAuthError::UserAccountNotFound,
+        LegacyRepositoryError::UserBanned => LegacyAuthError::UserAccountBanned,
+        LegacyRepositoryError::UsernameAlreadyInUse => LegacyAuthError::UsernameAlreadyInUse,
+        other => LegacyAuthError::DeviceRepository(other),
+    };
+    match completion {
+        Some(LegacyLeaseCompletion::ConfirmedCreation {
+            committed_cleanup_failure,
+        }) => {
+            // No token/cache action follows this error. A real commit stays
+            // confirmed even when the boundary prevents acknowledgement.
+            LegacyDeviceAuthError::CommittedCreation(LegacyDevicePostCommitFailure {
+                cause,
+                committed_cleanup_failure,
+            })
+        }
+        Some(LegacyLeaseCompletion::UnconfirmedCleanup {
+            committed_cleanup_failure,
+        }) => LegacyDeviceAuthError::UnconfirmedCleanup {
+            cause,
+            committed_cleanup_failure,
+        },
+        _ => LegacyDeviceAuthError::Unconfirmed(cause),
+    }
+}
+
 // This is the local Device error policy, not new HTTP/grpc routing or a claim
 // that caller resource limits are upstream limits. No diagnostic string is used.
 fn device_failure_code(cause: &LegacyAuthError) -> trnm_contracts::StableCode {
@@ -879,14 +988,7 @@ impl LegacyAuthService {
                 requested_username: name,
                 create: validated.create,
             })
-            .map_err(|error| match error {
-                LegacyRepositoryError::UserNotFound => LegacyAuthError::UserAccountNotFound,
-                LegacyRepositoryError::UserBanned => LegacyAuthError::UserAccountBanned,
-                LegacyRepositoryError::UsernameAlreadyInUse => {
-                    LegacyAuthError::UsernameAlreadyInUse
-                }
-                other => LegacyAuthError::DeviceRepository(other),
-            })?;
+            .map_err(device_repository_failure)?;
         self.finish_device_account(account, input.variables, utc_seconds, random_uuid_v4)
     }
     // Private deterministic sources exist only for finite unit tests. The public

@@ -1,3 +1,32 @@
+/// Complete selected catalog and recorded provenance validation in the caller's
+/// transaction. AccountsV5 remains closed before the first catalog read.
+pub(crate) fn verify_serving_schema_target(
+    client: &mut impl GenericClient,
+    profile: DatabaseProfile,
+    target: AuthoritativeSchemaTarget,
+) -> Result<SchemaIdentity, DomainError> {
+    require_account_catalog_capture(target)?;
+    let catalog = read_catalog(client)?;
+    let prefix = catalog_prefix(&catalog, profile)?;
+    let recorded = read_metadata(client, &catalog)?
+        .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
+    if match target {
+        AuthoritativeSchemaTarget::StorageV4 => {
+            next_revision_for_prefix(&recorded, profile, prefix)?
+        }
+        AuthoritativeSchemaTarget::NakamaAccountsV5 => {
+            next_revision_for_prefix_target(&recorded, profile, prefix, target)?
+        }
+    }
+    .is_some()
+    {
+        return Err(failed_precondition(
+            "authoritative_schema_upgrade_incomplete",
+        ));
+    }
+    verify_ready_metadata_target(&recorded, profile, target)
+}
+
 impl PgRepository {
     /// Verify ready identity/catalog in a READ ONLY transaction. Never binds or
     /// rewrites metadata and does not compare provenance to a new binary SHA.
@@ -19,25 +48,7 @@ impl PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        let catalog = read_catalog(&mut transaction)?;
-        let prefix = catalog_prefix(&catalog, profile)?;
-        let recorded = read_metadata(&mut transaction, &catalog)?
-            .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
-        if match target {
-            AuthoritativeSchemaTarget::StorageV4 => {
-                next_revision_for_prefix(&recorded, profile, prefix)?
-            }
-            AuthoritativeSchemaTarget::NakamaAccountsV5 => {
-                next_revision_for_prefix_target(&recorded, profile, prefix, target)?
-            }
-        }
-        .is_some()
-        {
-            return Err(failed_precondition(
-                "authoritative_schema_upgrade_incomplete",
-            ));
-        }
-        let identity = verify_ready_metadata_target(&recorded, profile, target)?;
+        let identity = verify_serving_schema_target(&mut transaction, profile, target)?;
         transaction.commit().map_err(map_postgres_error)?;
         Ok(identity)
     }

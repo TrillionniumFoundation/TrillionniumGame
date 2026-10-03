@@ -35,7 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "9365e4a28a00d2f711068126722596494faf0f214b38d95d7adcc9823e68cb4f",
+  "overlay_sha256": "3189c472f307f682dcd2762f75b66a8b1ad6979d204c82949028604d6fed2ab1",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -472,7 +472,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "32cdc0e0f2ec4d6361e0854a016ed8618ed074c7",
+      "git_blob_sha1": "382ec6ee9e00ebf2138962b430109b2e40fa910b",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-spool-worker",
       "path": ".github/workflows/outbox-spool-worker.yml",

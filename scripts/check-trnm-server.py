@@ -2063,7 +2063,7 @@ def validate_nakama_any_source(repository: str, write: str, projection: str) -> 
         code = re.sub(r"(?m)^[ \t]*//[^\n]*", "", value[cursor:])
         pieces.append(re.sub(r"\s+", "", code))
         return "".join(pieces)
-    policies = (('storage_batch_isolation', 'repository', '(?m)^fn storage_batch_isolation\\([\\s\\S]*?^\\}\\n', 'ccf503bd75dbe2a36673ef8a533341cf32684f80f34fc53e4d49a61b38c0dd38'), ('nakama_any_write', 'repository', '(?m)^fn nakama_any_write\\([\\s\\S]*?^\\}\\n', '3712f71a6ee676e5e57c7d2df02bad95e486240ff5d04bbf427798e46af4bd9c'), ('decode_any_native_row', 'write', '(?m)^fn decode_any_native_row\\([\\s\\S]*?^\\}\\n', 'cb6ca1176e47e92001679adaf20b0323b791938b27c45cf9ffee8f17248f99be'), ('read_nakama_any_prior', 'write', '(?m)^fn read_nakama_any_prior\\([\\s\\S]*?^\\}\\n', '8de884356b5d3f2cfe8470bca22f7b243d28741f4fb32054dff851e9e9ac1608'), ('any_conflict_noop', 'write', '(?m)^fn any_conflict_noop\\([\\s\\S]*?^\\}\\n', '00902b47451b28969744da793f8a448edf5849fa19e88027ed0fa3657d80adbd'), ('verify_any_written_row', 'write', '(?m)^fn verify_any_written_row\\([\\s\\S]*?^\\}\\n', 'd78821ea1f4155a1742d0bc84e744564cbc52511f84d1d7f158e4824f79ef3ad'), ('apply_nakama_any_write', 'write', '(?m)^fn apply_nakama_any_write\\([\\s\\S]*?^\\}\\n', 'e0a52d34eec89e2ca21b59140373e23cf85db70ca44938332dde8bc7e0f0e0fb'), ('storage_any_row_columns', 'projection', '(?m)^fn storage_any_row_columns\\([\\s\\S]*?^\\}\\n', '320573a85f7fd5658df6e3933830044fe853ca13e7f2a8e5e55fc3294d315446'), ('storage_any_conflict_lock_clause', 'projection', '(?m)^fn storage_any_conflict_lock_clause\\([\\s\\S]*?^\\}\\n', '186b0468429ee6792f3bb262629277e7f378f83f82909b6e2397b1e255a60b0f'), ('storage_any_access_query', 'projection', '(?m)^fn storage_any_access_query\\([\\s\\S]*?^\\}\\n', '176395cc7a2b8ad5e7b279da71f47cc0cac110ec852942ffcf1768d8e00392dc'), ('storage_any_prior_query', 'projection', '(?m)^fn storage_any_prior_query\\([\\s\\S]*?^\\}\\n', '481aa32b04812b42012e7033d1ffe93752d269be6b2035fd74d145b402021a42'), ('storage_any_native_digest', 'projection', '(?m)^fn storage_any_native_digest\\([\\s\\S]*?^\\}\\n', '4cbe5394170d056e85c12d03799b28d25d9852e5e418811e4bc2c9d69a54998d'), ('storage_any_upsert_query', 'projection', '(?m)^fn storage_any_upsert_query\\([\\s\\S]*?^\\}\\n', 'f43eb3c6dfd8e35e9d57f13ceef5914af07249d968331f72d1509b0d717841fc'), ('actual Any batch route and transaction admission', 'repository', '(?m)^    fn apply_storage_batch_with_policy\\([\\s\\S]*?^    \\}\\n', 'bd81ebbc314b0d77874d479d8ddf691361a95d3c16e064e429bff31a39f2bccb'), ('complete private native prior row equality', 'write', '(?m)^#\\[derive\\(Eq, PartialEq\\)\\]\\nstruct AnyNativeRow \\{[\\s\\S]*?^\\}\\n', 'd7a59067c9368e9956c07b9c9252ed1b4e0fb2fa212ee402641762ae2ff3bc62'), ('Any occurrence semantic result scope', 'write', '(?m)^enum AnyWriteStep \\{[\\s\\S]*?^\\}\\n', 'a11098adccce74168965f99e1beff79f7612f2f4f09fa2e80c720cfb0c088f81'))
+    policies = (('storage_batch_isolation', 'repository', '(?m)^fn storage_batch_isolation\\([\\s\\S]*?^\\}\\n', 'ccf503bd75dbe2a36673ef8a533341cf32684f80f34fc53e4d49a61b38c0dd38'), ('nakama_any_write', 'repository', '(?m)^fn nakama_any_write\\([\\s\\S]*?^\\}\\n', '3712f71a6ee676e5e57c7d2df02bad95e486240ff5d04bbf427798e46af4bd9c'), ('decode_any_native_row', 'write', '(?m)^fn decode_any_native_row\\([\\s\\S]*?^\\}\\n', 'cb6ca1176e47e92001679adaf20b0323b791938b27c45cf9ffee8f17248f99be'), ('read_nakama_any_prior', 'write', '(?m)^fn read_nakama_any_prior\\([\\s\\S]*?^\\}\\n', '8de884356b5d3f2cfe8470bca22f7b243d28741f4fb32054dff851e9e9ac1608'), ('any_conflict_noop', 'write', '(?m)^fn any_conflict_noop\\([\\s\\S]*?^\\}\\n', '00902b47451b28969744da793f8a448edf5849fa19e88027ed0fa3657d80adbd'), ('verify_any_written_row', 'write', '(?m)^fn verify_any_written_row\\([\\s\\S]*?^\\}\\n', 'd78821ea1f4155a1742d0bc84e744564cbc52511f84d1d7f158e4824f79ef3ad'), ('apply_nakama_any_write', 'write', '(?m)^fn apply_nakama_any_write\\([\\s\\S]*?^\\}\\n', 'e0a52d34eec89e2ca21b59140373e23cf85db70ca44938332dde8bc7e0f0e0fb'), ('storage_any_row_columns', 'projection', '(?m)^fn storage_any_row_columns\\([\\s\\S]*?^\\}\\n', '320573a85f7fd5658df6e3933830044fe853ca13e7f2a8e5e55fc3294d315446'), ('storage_any_conflict_lock_clause', 'projection', '(?m)^fn storage_any_conflict_lock_clause\\([\\s\\S]*?^\\}\\n', '186b0468429ee6792f3bb262629277e7f378f83f82909b6e2397b1e255a60b0f'), ('storage_any_access_query', 'projection', '(?m)^fn storage_any_access_query\\([\\s\\S]*?^\\}\\n', '176395cc7a2b8ad5e7b279da71f47cc0cac110ec852942ffcf1768d8e00392dc'), ('storage_any_prior_query', 'projection', '(?m)^fn storage_any_prior_query\\([\\s\\S]*?^\\}\\n', '481aa32b04812b42012e7033d1ffe93752d269be6b2035fd74d145b402021a42'), ('storage_any_native_digest', 'projection', '(?m)^fn storage_any_native_digest\\([\\s\\S]*?^\\}\\n', '4cbe5394170d056e85c12d03799b28d25d9852e5e418811e4bc2c9d69a54998d'), ('storage_any_upsert_query', 'projection', '(?m)^fn storage_any_upsert_query\\([\\s\\S]*?^\\}\\n', 'f43eb3c6dfd8e35e9d57f13ceef5914af07249d968331f72d1509b0d717841fc'), ('actual Any batch route and transaction admission', 'repository', '(?m)^    fn apply_storage_batch_with_policy\\([\\s\\S]*?^    \\}\\n', '807d90536372264d9540db21b5152c245f9b71713958147b085553659f639a93'), ('complete private native prior row equality', 'write', '(?m)^#\\[derive\\(Eq, PartialEq\\)\\]\\nstruct AnyNativeRow \\{[\\s\\S]*?^\\}\\n', 'd7a59067c9368e9956c07b9c9252ed1b4e0fb2fa212ee402641762ae2ff3bc62'), ('Any occurrence semantic result scope', 'write', '(?m)^enum AnyWriteStep \\{[\\s\\S]*?^\\}\\n', 'a11098adccce74168965f99e1beff79f7612f2f4f09fa2e80c720cfb0c088f81'))
     for label, name, pattern, expected in policies:
         source = inputs[name]
         if "/*" in source or "*/" in source:
@@ -2302,9 +2302,15 @@ def validate_dependency_boundary(manifest: dict[str, object]) -> None:
 
 
 
-ACCOUNTS_FULL_SOURCE_SHA256 = {'crates/trnm-persistence-pg/src/schema_parts/account_catalog.rs': 'b020b404a676cfc8b118c7e342c90e40a2cccc5e9bf2c9b5f938f08d5e0522dc', 'crates/trnm-persistence-pg/src/schema_parts/migrate.rs': '9f33453327d2f82526fcf550023f2b2cbae315c523c4f9e2a7373b849e0ae6bf', 'crates/trnm-persistence-pg/src/schema_parts/metadata.rs': 'ececa19afd84d92ba152c9c4abde420dbfef9d691178cb7cfd349bb623974d26'}
+ACCOUNTS_FULL_SOURCE_SHA256 = {'crates/trnm-persistence-pg/src/schema_parts/account_catalog.rs': 'b020b404a676cfc8b118c7e342c90e40a2cccc5e9bf2c9b5f938f08d5e0522dc',
+ 'crates/trnm-persistence-pg/src/schema_parts/migrate.rs': '8324f47213f1ea9172e01d6524cd1280649b6c8ffdd07e3fd1b348ae2e2dec16',
+ 'crates/trnm-persistence-pg/src/schema_parts/metadata.rs': 'ececa19afd84d92ba152c9c4abde420dbfef9d691178cb7cfd349bb623974d26'}
 
-LEGACY_AUTH_FULL_SOURCE_SHA256 = {'crates/trnm-token-crypto-provider/src/nakama_legacy.rs': 'b0ead9137eb2a1c7a353a0ba489f287e1dc3de67cbfb4617f06bdf2c8031cb21', 'crates/trnm-token-jwt-adapter/src/nakama_legacy_verify.rs': 'b36fef2b6bf05856a85fed712b2a673069608ebf3387af94729dd906fd43a0fe', 'crates/trnm-server/src/runtime/legacy_auth.rs': '30be2388891ddd692e6f387506ff5f321332a28089ea905d18e2a41ada4957a5', 'crates/trnm-server/src/runtime/legacy_repository.rs': '6bfb23969eab0318661d9241cc91cc03b8b2ff9889eb1fb9acb97958dbd97c31', 'crates/trnm-persistence-pg/src/nakama_account.rs': 'e9ed5ccfafc1bd270501614c9093912223707cc916aafa596149238f73d34b67'}
+LEGACY_AUTH_FULL_SOURCE_SHA256 = {'crates/trnm-token-crypto-provider/src/nakama_legacy.rs': 'b0ead9137eb2a1c7a353a0ba489f287e1dc3de67cbfb4617f06bdf2c8031cb21',
+ 'crates/trnm-token-jwt-adapter/src/nakama_legacy_verify.rs': 'b36fef2b6bf05856a85fed712b2a673069608ebf3387af94729dd906fd43a0fe',
+ 'crates/trnm-server/src/runtime/legacy_auth.rs': '129a4546b3370252282f200e84bcd41fdb77a8a17792f68feeec45267dbf1590',
+ 'crates/trnm-server/src/runtime/legacy_repository.rs': '1784415b61cf8b10888370636f71e18865110c5923129e97293e0da65a726741',
+ 'crates/trnm-persistence-pg/src/nakama_account.rs': 'e9ed5ccfafc1bd270501614c9093912223707cc916aafa596149238f73d34b67'}
 
 def validate_reviewed_complete_production_files(bindings: dict[str, str], sources: dict[Path, str] | None = None) -> None:
     """Bind raw complete files before finite region checks; no Rust parsing claim."""
@@ -2383,6 +2389,18 @@ LEGACY_AUTH_REQUIRED_FILES = tuple(Path(value) for value in (
     'crates/trnm-persistence-pg/src/schema_parts/account_relation_semantics.rs',
     'contracts/session/nakama-v340-token-source-lock.json',
     'crates/trnm-token-crypto-provider/src/software.rs',
+    'crates/trnm-server/src/runtime/legacy_http_api.rs',
+    'crates/trnm-server/src/runtime/legacy_http_api_tests.rs',
+    'crates/trnm-server/src/runtime/pool.rs',
+    'crates/trnm-server/src/runtime/retry.rs',
+    'crates/trnm-persistence-pg/src/lib.rs',
+    'crates/trnm-persistence-pg/src/pool.rs',
+    'crates/trnm-persistence-pg/src/pool_parts/base.rs',
+    'crates/trnm-persistence-pg/src/pool_parts/pool.rs',
+    'crates/trnm-persistence-pg/src/schema_parts/migrate.rs',
+    'crates/trnm-persistence-pg/src/storage_parts/01_repository.rs',
+    'crates/trnm-persistence-pg/src/storage_parts/04_delete_authorize.rs',
+    'crates/trnm-persistence-pg/src/storage_import.rs',
 ))
 REQUIRED_FILES.update(ROOT / path for path in LEGACY_AUTH_REQUIRED_FILES)
 REQUIRED_TESTS.update({
@@ -2405,6 +2423,8 @@ REQUIRED_TESTS.update({
     'public_device_call_keeps_one_repository_outcome_and_commit_truth_on_issue_failure',
     'wrong_mac_precedes_untrusted_claim_semantics',
 })
+
+REQUIRED_TESTS.update({'boxed_lease_clone_preserves_confirmed_creation_cleanup_and_unknown_facts', 'device_error_mapping_preserves_semantics_and_old_private_branches', 'legacy_error_results_remain_below_large_error_threshold_with_boxed_lease', 'device_native_and_lease_errors_keep_private_message_and_specific_code', 'registered_options_extensions_reject_before_unknown_and_null_handling'})
 
 LEGACY_AUTH_REGION_BINDINGS = (('legacy-fixed-key-construction',
   'crates/trnm-token-crypto-provider/src/nakama_legacy.rs',
@@ -2465,12 +2485,12 @@ LEGACY_AUTH_REGION_BINDINGS = (('legacy-fixed-key-construction',
   'crates/trnm-server/src/runtime/legacy_repository.rs',
   'fn map_native_error(',
   'fn map_cleanup(',
-  '933f1f415e0c21910b95061acf9f0ec0669da097763bca4d00b46da76e9b5c8b'),
+  'cfb6ccb73585825006f7395ec71cd2b755ed6c8c703784466d1e00fa46cc997b'),
  ('legacy-single-native-device-call',
   'crates/trnm-server/src/runtime/legacy_repository.rs',
   "impl LegacyDeviceRepository for PgLegacyAuthRepository<'_>",
   'fn map_stored_user(',
-  '1eb193a8b772eeedc575f4e3e6bb807c10777497caa9cceac0849d563a0c5429'),
+  '4b171e15f3dcff6f98af4976f5ebd594bb4c034bebc6e25be75bff6ed99b36ff'),
  ('legacy-deferred-account-UUID',
   'crates/trnm-persistence-pg/src/nakama_account.rs',
   'fn authenticate_device_with_id_source(\n',
@@ -2789,12 +2809,225 @@ def validate_legacy_auth_source(sources: dict[Path, str], status: dict, source_l
     }
     for path, markers in registrations.items():
         require_markers("legacy auth local module registration", sources[Path(path)], markers)
+    validate_legacy_adapter_composition(sources, status, source_lock)
     # No transport/startup admission is fabricated by this library composition.
     for path in ("crates/trnm-server/src/runtime/app.rs","crates/trnm-server/src/runtime/config.rs"):
         source = sources[Path(path)]
         if any(marker in source for marker in ("/v2/account/authenticate/device",
-            "/v2/session/refresh","/v2/session/logout","LegacyAuthService")):
+            "/v2/session/refresh","/v2/account/session/refresh","/v2/session/logout","LegacyAuthService")):
             fail("legacy auth HTTP/startup integration is outside this gated source slice")
+
+
+# Complete raw files close this finite inactive target/pool/HTTP seam. These
+# checks do not parse arbitrary Rust or prove native, route or resource parity.
+LEGACY_ADAPTER_FULL_SOURCE_SHA256 = {'crates/trnm-server/src/runtime/legacy_http_api.rs': 'b3e5c60e95ed94515e7c6f971cf3956a3d211a63c5d6519fcde090a061a5931a',
+ 'crates/trnm-server/src/runtime/pool.rs': '9ff92919a035750c59c815f13fc3a377213a63aab7117d48fa65454187f66cde',
+ 'crates/trnm-server/src/runtime/retry.rs': '8b1a3a2cb78d7088c14e34e16d0b1680bb5246e7851ba41983652ec9d9847487',
+ 'crates/trnm-persistence-pg/src/lib.rs': 'b14d3e26d42500ead67d56d7c7e0bbc3a48ef13abb2330115c65fb7e8eeff61c',
+ 'crates/trnm-persistence-pg/src/pool.rs': 'd4d7f3cff7e922c215ab345ed7e167a6a1c21dbb56b61c0a11ed799902381883',
+ 'crates/trnm-persistence-pg/src/pool_parts/base.rs': 'fb4ba2c9e069476032dec4d542b842efee314613b05a42f7cff8c3f2cf4c95dc',
+ 'crates/trnm-persistence-pg/src/pool_parts/pool.rs': 'b5ef7f83218785290366ba21490389bca23f182c3ec9e5e6dec879c5a171792d',
+ 'crates/trnm-persistence-pg/src/schema_parts/migrate.rs': '8324f47213f1ea9172e01d6524cd1280649b6c8ffdd07e3fd1b348ae2e2dec16',
+ 'crates/trnm-persistence-pg/src/storage_parts/01_repository.rs': '34abe49096eb1f9df15b0ed8a45295de050616971839a3df354c37b3f32fb301',
+ 'crates/trnm-persistence-pg/src/storage_parts/04_delete_authorize.rs': '15d15ef36ef214ed518ef15fdf8acb3c4856faa1b9d063987089b1e03e67ae92',
+ 'crates/trnm-persistence-pg/src/storage_import.rs': 'd54162a7f65c9923098edfa39642a3010f124c0f7d9515fb3de3e27b514a11d0',
+ 'crates/trnm-server/src/runtime/legacy_repository.rs': '1784415b61cf8b10888370636f71e18865110c5923129e97293e0da65a726741',
+ 'crates/trnm-server/src/runtime/legacy_auth.rs': '129a4546b3370252282f200e84bcd41fdb77a8a17792f68feeec45267dbf1590',
+ 'crates/trnm-server/src/runtime/mod.rs': 'fd6e829dd8c3567d938c65a3d6df125ca5941f45b09bfe2f63601fea630a7921',
+ 'crates/trnm-server/src/lib.rs': 'cc28e29f62382b56c719171efed7e95f32ee2ed214db22d15886471491047749'}
+LEGACY_ADAPTER_POLICY = {'immutable_serving_schema_target': True,
+ 'legacy_constructors_default': 'StorageV4',
+ 'default_schema_version': 4,
+ 'default_storage_writer_epoch': 4,
+ 'default_table_count': 12,
+ 'account_source_schema_version': 5,
+ 'account_target_table_count': 14,
+ 'account_gate_enabled': False,
+ 'typed_single_lease': True,
+ 'observed_native_result_retained': True,
+ 'late_result_is_successful_ack': False,
+ 'unobserved_means_no_effect': False,
+ 'generic_business_retry': False,
+ 'caller_replay': False,
+ 'caller_compensation': False,
+ 'canceled_or_unknown_lease_recycled': False,
+ 'HTTP_route_or_authority_installed': False,
+ 'HTTP_codec_source_present': True,
+ 'registered_options_extensions': 7,
+ 'registration_scope': 'captured gateway imports; not whole-process GlobalTypes census',
+ 'registered_extension_check_before_unknown_and_null': True,
+ 'registered_extension_rule_applies_to_vars_map_keys': False,
+ 'first_object_only': True,
+ 'Go_invalid_UTF8_and_overlap_create_qualified': False,
+ 'auth_before_business_policy': 'AGENTS rule 11; differs from pinned gateway decode-first',
+ 'Basic_base64_dependency': '=0.22.1',
+ 'bounds': {'body_bytes': 524288,
+            'json_depth': 64,
+            'json_nodes': 8192,
+            'json_members': 2048,
+            'decoded_string_bytes': 524288,
+            'scalar_bytes': 131072,
+            'vars_entries': 256,
+            'query_bytes': 8192,
+            'query_pairs': 64,
+            'authorization_bytes': 65536,
+            'response_bytes': 2097152},
+ 'accepted': False,
+ 'compatibility_credit': False,
+ 'production_ready': False,
+ 'full_replacement': False}
+LEGACY_HTTP_SOURCE_BINDING = {'upstream_commit': 'd4d92f93f78bbbe62c7fc50a3f85c772ec121a09',
+ 'verified_files': [{'path': 'apigrpc/apigrpc.proto',
+                     'bytes': 24346,
+                     'sha256': '8e2ebf5d8569b2847dec95d3132d3a2537e28d588f55d301decdd1775c906ca4',
+                     'git_blob_sha1': '1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/apigrpc/apigrpc.proto'},
+                    {'path': 'apigrpc/apigrpc.pb.gw.go',
+                     'bytes': 367338,
+                     'sha256': '590d0d37be149e158fe514e64ecef06955e5baa5b2b64c7cb4d5bb2b0e1c670d',
+                     'git_blob_sha1': '0e741e8ef596cb7c3ca2a636e3b3403a22105a39',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/apigrpc/apigrpc.pb.gw.go'},
+                    {'path': 'vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/query.go',
+                     'bytes': 12228,
+                     'sha256': 'cdb3c973f81862d47dacf2056cf0ac58c66c98f9c0b609efc9bc6f10f69510c6',
+                     'git_blob_sha1': '8549dfb97afb0c9e68aa1349d05c87a40fdca117',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/query.go'},
+                    {'path': 'vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/marshal_jsonpb.go',
+                     'bytes': 8900,
+                     'sha256': '64a8847a795ee97267d48d6a8904ea0e32e6b480e218fbe731ba7472e012962d',
+                     'git_blob_sha1': '3d07063007d5d6f097ae90d9f230f2a4e4beb9ac',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/marshal_jsonpb.go'},
+                    {'path': 'vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/errors.go',
+                     'bytes': 7193,
+                     'sha256': '5dc0dd6af8471c0922164791d4a628338305a30ebbcd3198a22f22b6599e7a8b',
+                     'git_blob_sha1': 'bbe7decf09bc61c5b2166c9ef3be4754d5df8913',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/errors.go'},
+                    {'path': 'vendor/google.golang.org/protobuf/encoding/protojson/decode.go',
+                     'bytes': 18134,
+                     'sha256': '41d2b009c5648973715d476e3668cd736a7c815c31a7b392ea4d7594ad3e81e5',
+                     'git_blob_sha1': '737d6876d5efd10c82d1cc2b35782a27579034ba',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/protobuf/encoding/protojson/decode.go'},
+                    {'path': 'vendor/google.golang.org/protobuf/encoding/protojson/well_known_types.go',
+                     'bytes': 26280,
+                     'sha256': 'b0425d7be0da31c38914588bfdea03ce3452a9d547b2dc649fcd06982695912e',
+                     'git_blob_sha1': 'e9fe1039437a91f09253addbcd6668f56b08225f',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/protobuf/encoding/protojson/well_known_types.go'},
+                    {'path': 'vendor/google.golang.org/protobuf/internal/encoding/json/decode.go',
+                     'bytes': 8821,
+                     'sha256': '149097bfd4ae2cd52f8f8d5b36c850c3972124670c75aaabfaa32edb29512aa4',
+                     'git_blob_sha1': 'ea1d3e65a5752ff3fdd621635709b6d3dcfae4be',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/protobuf/internal/encoding/json/decode.go'},
+                    {'path': 'vendor/modules.txt',
+                     'bytes': 16427,
+                     'sha256': '88f58c86148495545a9c8496c8cb5438919317c65ea53ac44f51d31bea4f7d94',
+                     'git_blob_sha1': '3ce9841e5d55abb9918240cfdaae2fbf831699f9',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/modules.txt'},
+                    {'path': 'apigrpc/apigrpc.pb.go',
+                     'bytes': 43220,
+                     'sha256': '1d0575929da7cf4020d12155b2ee0cc551f95343ac33ddfa0e2603d3add83ffc',
+                     'git_blob_sha1': 'b14e5fd82e934fee10b7a0b7d619eeaa488f9366',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/apigrpc/apigrpc.pb.go'},
+                    {'path': 'vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/convert.go',
+                     'bytes': 8788,
+                     'sha256': '9555d52adab6a92bdccee6654287a28f329762c2b61c8516dad7ddeff78a667a',
+                     'git_blob_sha1': '2e50082ad1163331d97a070121d2abb0f95f563b',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/convert.go'},
+                    {'path': 'vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/marshaler.go',
+                     'bytes': 1961,
+                     'sha256': 'c63d20153f702c1238e8cb2fdff72f627d64b1b934c7b49d079b78986c72c047',
+                     'git_blob_sha1': 'b1dfc37af9b9f61125d6b3544f614bd48984ef15',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/marshaler.go'},
+                    {'path': 'vendor/google.golang.org/genproto/googleapis/api/annotations/annotations.pb.go',
+                     'bytes': 5199,
+                     'sha256': '2bcace728699fc0e05c18da5653fba32b61802f13cd2c4fde534e006adcb0454',
+                     'git_blob_sha1': '0b789e2c5e9e7effd6416cc0ff87955c6aa1c50c',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/genproto/googleapis/api/annotations/annotations.pb.go'},
+                    {'path': 'vendor/google.golang.org/genproto/googleapis/api/annotations/http.pb.go',
+                     'bytes': 28416,
+                     'sha256': 'a1ca2f72182fa28782a70c44c52c2bcde28d2e4c73ab67fd24faba92f5f27149',
+                     'git_blob_sha1': '998205e180847b3138fa534f0c14c65791e1febb',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/google.golang.org/genproto/googleapis/api/annotations/http.pb.go'},
+                    {'path': 'vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options/annotations.pb.go',
+                     'bytes': 15763,
+                     'sha256': '0860a6f60d589027889073806e941232ebd074f71da3f2bf84dc10a37e9fe29c',
+                     'git_blob_sha1': '738c9754a61561adbce8d3543545a5ede98b3985',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options/annotations.pb.go'},
+                    {'path': 'vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options/openapiv2.pb.go',
+                     'bytes': 171943,
+                     'sha256': '882d72f9f4d605073889cff684ad7d9b2e1dffe457d360dc530d72e89c4abdf9',
+                     'git_blob_sha1': '5121dce386cc08f96cfc82f96abea9e2070dd4b4',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options/openapiv2.pb.go'},
+                    {'path': 'vendor/github.com/heroiclabs/nakama-common/api/api.pb.go',
+                     'bytes': 320372,
+                     'sha256': '0f227d58b1d3c8077693ca3a5677c0d66bc6a60d53f5f556e7dcb785c3b1a2fd',
+                     'git_blob_sha1': '7335fa2a608c8fb7ea58c39ab935ac2c9589d249',
+                     'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/heroiclabs/nakama-common/api/api.pb.go'}],
+ 'registered_extensions': ['google.api.http',
+                           'grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger',
+                           'grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation',
+                           'grpc.gateway.protoc_gen_openapiv2.options.openapiv2_schema',
+                           'grpc.gateway.protoc_gen_openapiv2.options.openapiv2_enum',
+                           'grpc.gateway.protoc_gen_openapiv2.options.openapiv2_tag',
+                           'grpc.gateway.protoc_gen_openapiv2.options.openapiv2_field'],
+ 'scope': 'exact cached primary files and captured gateway transitive registration closure; no full-process '
+          'registry proof',
+ 'HTTP_App_connected': False,
+ 'HTTP_compatible': False,
+ 'native_execution_qualified': False,
+ 'accepted': False}
+
+def same_typed_value(actual: object, expected: object) -> bool:
+    """Reject bool-as-int or absent/extra nested policy keys."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(
+            same_typed_value(actual[key], value) for key, value in expected.items())
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            same_typed_value(a, b) for a, b in zip(actual, expected))
+    return actual == expected
+
+def validate_legacy_adapter_composition(sources: dict[Path, str], status: dict,
+                                        source_lock: dict) -> None:
+    validate_reviewed_complete_production_files(LEGACY_ADAPTER_FULL_SOURCE_SHA256, sources)
+    if not same_typed_value(status.get("nakama_legacy_auth_source_candidate", {}).get(
+            "target_pool_HTTP_source_policy"), LEGACY_ADAPTER_POLICY):
+        fail("inactive legacy target/pool/HTTP source policy drift")
+    if not same_typed_value(source_lock.get("HTTP_adapter_source_binding"), LEGACY_HTTP_SOURCE_BINDING):
+        fail("legacy HTTP primary source/registry scope drift")
+    # These exact file hashes bind the actual call paths, including single FnOnce
+    # invocation, delayed native result facts, default4 construction, gate-before-I/O,
+    # borrowed boxed lease errors, map-key exception and HTTP call boundaries.
+    # No comment or unused literal can stand in for a changed executable body.
+
+
+def expected_server_dependencies() -> dict[str, object]:
+    path = Path(__file__).with_name("check-rust-foundation.py")
+    spec = importlib.util.spec_from_file_location("trnm_server_direct_dependency_policy", path)
+    if spec is None or spec.loader is None:
+        fail("foundation server dependency policy loader is unavailable")
+    foundation = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(foundation)
+        value = foundation.EXPECTED_DEPENDENCIES["crates/trnm-server"]
+    except (OSError, SyntaxError, AttributeError, KeyError, TypeError) as error:
+        fail("foundation server dependency policy could not be loaded: " + type(error).__name__)
+    if not isinstance(value, dict) or not value:
+        fail("foundation server dependency policy must be a nonempty mapping")
+    return deepcopy(value)
+
+
+def validate_server_dependency_boundary(manifest: dict[str, object]) -> None:
+    if manifest.get("dependencies") != expected_server_dependencies():
+        fail("server candidate changed the reviewed direct dependency boundary")
+    expected_build_dependencies = {
+        "prost-build": "=0.14.3", "prost-types": "=0.14.3",
+        "protoc-bin-vendored": "=3.2.0", "tonic-build": "=0.14.5",
+        "tonic-prost-build": "=0.14.5",
+    }
+    if manifest.get("build-dependencies") != expected_build_dependencies:
+        fail("server candidate changed the reviewed server protobuf build boundary")
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -2826,6 +3059,9 @@ def main(arguments: list[str] | None = None) -> int:
         (ROOT / "crates/trnm-persistence-pg/Cargo.toml").read_text(encoding="utf-8")
     )
     validate_dependency_boundary(manifest)
+    validate_server_dependency_boundary(tomllib.loads(
+        (ROOT / "crates/trnm-server/Cargo.toml").read_text(encoding="utf-8")
+    ))
 
     sources = {
         path.relative_to(ROOT): path.read_text(encoding="utf-8")

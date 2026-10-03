@@ -1632,6 +1632,7 @@ version = "0.1.0"
 name = "trnm-server"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "postgres",
  "prost",
  "prost-build",

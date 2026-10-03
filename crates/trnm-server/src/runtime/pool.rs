@@ -20,6 +20,7 @@ pub trait InflightCancellation {
 pub struct PooledRepository {
     pool: PgPool,
     operation_budget: Duration,
+    last_legacy_native_failure: Option<trnm_persistence_pg::NakamaAccountError>,
 }
 
 impl PooledRepository {
@@ -29,6 +30,7 @@ impl PooledRepository {
         Self {
             pool,
             operation_budget,
+            last_legacy_native_failure: None,
         }
     }
 
@@ -53,6 +55,68 @@ impl PooledRepository {
                 repository.verify_storage_import_serving()?;
                 operation(repository)
             })
+    }
+}
+
+impl super::legacy_repository::LegacyNativeFailureObservation for PooledRepository {
+    fn last_legacy_native_failure(&self) -> Option<trnm_persistence_pg::NakamaAccountError> {
+        self.last_legacy_native_failure
+    }
+}
+impl super::legacy_auth::LegacyUserRepository for PooledRepository {
+    fn read_legacy_user(
+        &mut self,
+        user: UserId,
+    ) -> Result<
+        Option<super::legacy_auth::LegacyStoredUser>,
+        super::legacy_auth::LegacyRepositoryError,
+    > {
+        let lease = self
+            .pool
+            .run_account_with_deadline(self.operation_budget, |repository| {
+                // Native account admission precedes its lookup. Do not use the
+                // default-storage preflight here or bypass the AccountsV5 gate.
+                repository.read_nakama_user(user)
+            });
+        self.last_legacy_native_failure = lease
+            .observed
+            .as_ref()
+            .and_then(|r| r.as_ref().err())
+            .copied();
+        super::legacy_repository::resolve_user_lease(lease)
+    }
+}
+impl super::legacy_auth::LegacyDeviceRepository for PooledRepository {
+    fn authenticate_legacy_device(
+        &mut self,
+        input: super::legacy_auth::LegacyDeviceRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyDeviceAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        self.last_legacy_native_failure = None;
+        let request = trnm_persistence_pg::AuthenticateDevice::new(
+            input.device_id,
+            input.requested_username,
+            input.create,
+        )
+        .map_err(|error| {
+            self.last_legacy_native_failure = Some(error);
+            super::legacy_repository::map_native_error(error)
+        })?;
+        let lease = self
+            .pool
+            .run_account_with_deadline(self.operation_budget, |repository| {
+                repository.authenticate_nakama_device_with_id_source(request, || {
+                    super::legacy_auth::generate_account_id().map_err(|_| {
+                        trnm_persistence_pg::NakamaAccountIdGenerationError::Unavailable
+                    })
+                })
+            });
+        self.last_legacy_native_failure = lease
+            .observed
+            .as_ref()
+            .and_then(|r| r.as_ref().err())
+            .copied();
+        super::legacy_repository::resolve_device_lease(lease)
     }
 }
 
@@ -199,7 +263,15 @@ mod tests {
 
     #[test]
     fn wrapper_is_cloneable_and_supports_budget_and_shutdown_contracts() {
-        fn assert_contract<T: Clone + BudgetedRepository + InflightCancellation>() {}
+        fn assert_contract<
+            T: Clone
+                + BudgetedRepository
+                + InflightCancellation
+                + super::super::legacy_auth::LegacyUserRepository
+                + super::super::legacy_auth::LegacyDeviceRepository
+                + super::super::legacy_repository::LegacyNativeFailureObservation,
+        >() {
+        }
         assert_contract::<PooledRepository>();
     }
 }

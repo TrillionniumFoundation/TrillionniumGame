@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use trnm_persistence_pg::{DatabaseProfile, PgPoolConfig};
+use trnm_persistence_pg::{AuthoritativeSchemaTarget, DatabaseProfile, PgPoolConfig};
 
 use super::auth::AccessTokenVerifier;
 use super::error::ServerError;
@@ -78,6 +78,7 @@ pub struct ServerConfig {
     pub database_tls_identity_key: Option<PathBuf>,
     pub database_pool: PgPoolConfig,
     pub schema_source_commit: String,
+    pub schema_target: AuthoritativeSchemaTarget,
     pub admin_token: String,
     pub session_auth: Option<SessionAuthConfig>,
     pub max_request_bytes: usize,
@@ -105,6 +106,7 @@ impl fmt::Debug for ServerConfig {
             .field("database_tls_identity_key", &"<redacted>")
             .field("database_pool", &self.database_pool)
             .field("schema_source_commit", &self.schema_source_commit)
+            .field("schema_target", &self.schema_target)
             .field("admin_token", &"<redacted>")
             .field("session_auth", &self.session_auth)
             .field("max_request_bytes", &self.max_request_bytes)
@@ -232,6 +234,7 @@ impl ServerConfig {
             _ => return Err(ServerError::Configuration("database_profile_invalid")),
         };
 
+        let schema_target = parse_schema_target(lookup("TRNM_SERVER_SCHEMA_TARGET").as_deref())?;
         let schema_source_commit = required(
             &lookup,
             "TRNM_SERVER_SCHEMA_SOURCE_COMMIT",
@@ -352,6 +355,7 @@ impl ServerConfig {
                 database_tls_identity_key,
                 database_pool,
                 schema_source_commit,
+                schema_target,
                 admin_token,
                 session_auth,
                 max_request_bytes,
@@ -359,6 +363,14 @@ impl ServerConfig {
                 write_timeout: Duration::from_millis(write_timeout_ms),
             },
         ))
+    }
+}
+
+fn parse_schema_target(value: Option<&str>) -> Result<AuthoritativeSchemaTarget, ServerError> {
+    match value {
+        None | Some("storage-v4") => Ok(AuthoritativeSchemaTarget::StorageV4),
+        Some("nakama-accounts-v5") => Ok(AuthoritativeSchemaTarget::NakamaAccountsV5),
+        _ => Err(ServerError::Configuration("schema_target_invalid")),
     }
 }
 
@@ -584,6 +596,47 @@ mod tests {
         assert!(!debug.contains("secret"));
         assert!(!debug.contains("a_secure_local"));
         assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn schema_target_syntax_is_closed_and_defaults_to_storage_four() {
+        let (_, default) = load(&base()).unwrap();
+        assert_eq!(default.schema_target, AuthoritativeSchemaTarget::StorageV4);
+        for (literal, expected) in [
+            ("storage-v4", AuthoritativeSchemaTarget::StorageV4),
+            (
+                "nakama-accounts-v5",
+                AuthoritativeSchemaTarget::NakamaAccountsV5,
+            ),
+        ] {
+            let mut values = base();
+            values.insert("TRNM_SERVER_SCHEMA_TARGET".to_owned(), literal.to_owned());
+            // check-config parses syntax only, even though serving gate5 is closed.
+            let (command, config) = ServerConfig::from_lookup(
+                &["trnm-server".to_owned(), "check-config".to_owned()],
+                |name| values.get(name).cloned(),
+            )
+            .unwrap();
+            assert_eq!(command, Command::CheckConfig);
+            assert_eq!(config.schema_target, expected);
+        }
+        for literal in [
+            "",
+            "4",
+            "5",
+            "6",
+            ">=4",
+            "StorageV4",
+            "nakama-accounts-v6",
+            "storage-v4 ",
+        ] {
+            let mut values = base();
+            values.insert("TRNM_SERVER_SCHEMA_TARGET".to_owned(), literal.to_owned());
+            assert!(matches!(
+                load(&values),
+                Err(ServerError::Configuration("schema_target_invalid"))
+            ));
+        }
     }
 
     #[test]

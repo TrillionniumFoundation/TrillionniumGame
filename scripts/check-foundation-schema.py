@@ -12,6 +12,10 @@ PG_CONTRACT = ROOT / "contracts/server/pg-vertical-slice-v1.json"
 CREATE_TABLE = re.compile(r"CREATE\s+TABLE\s+([a-z0-9_]+)", re.IGNORECASE)
 CREATE_INDEX = re.compile(r"CREATE\s+INDEX\s+([a-z0-9_]+)", re.IGNORECASE)
 DIGEST_ALGORITHM = "ordered-path-git-blob-sha256.v1"
+SOURCE_SCHEMA_VERSION = 5
+SELECTED_RUNTIME_SCHEMA_VERSION = 4
+SELECTED_STORAGE_WRITER_EPOCH = 4
+ACCOUNTS_SOURCE_CANDIDATE = {'target': 'NakamaAccountsV5', 'storage_writer_epoch': 4, 'migration': '0005_nakama_accounts_up.sql', 'tables': ['users', 'user_device'], 'full_current_two_table_fields_defaults_constraints': True, 'native_catalog_observations_bound': False, 'native_activation_allowed': False, 'default_runtime_promotion_allowed': False, 'repository_service_routes_implemented': False, 'account_transfer_implemented': False, 'accounts_v5_backups_restores_qualified': False, 'blocked_before_ddl': 'schema5_native_catalog_capture_pending', 'accepted': False, 'boundary': 'Default serve/migrate/import remains strict schema4 prefix. Schema5 source frontier is explicit and cannot borrow epoch4, storage packet or old catalog observations.'}
 UPGRADE_COLUMNS = (
     ("metadata_chain_digest", "trnm_schema_metadata", "chain_digest", "string"),
     ("metadata_digest_algorithm", "trnm_schema_metadata", "digest_algorithm", "string"),
@@ -189,11 +193,19 @@ def validate_current_contracts(
     historical_native = authority["storage_jsonb_upgrade_source_candidate"]
     if type(historical_native["schema_version"]) is not int or historical_native["schema_version"] != 3 or type(historical_native["storage_writer_epoch"]) is not int or historical_native["storage_writer_epoch"] != 3:
         raise SchemaError("historical v3 native JSONB authority must retain its exact revision")
-    version = chain["schema_version"]
+    source_version = chain["schema_version"]
+    version = chain["default_runtime_schema_version"]
     epoch = current["storage_writer_epoch"]
-    if type(version) is not int or version != 4 or type(authority["schema_version"]) is not int or authority["schema_version"] != version or type(current["schema_version"]) is not int or current["schema_version"] != version:
-        raise SchemaError("current schema authority differs from the complete shared chain")
-    if type(epoch) is not int or epoch != 4:
+    if type(source_version) is not int or source_version != SOURCE_SCHEMA_VERSION:
+        raise SchemaError("complete source frontier must remain exact schema5")
+    if type(version) is not int or version != SELECTED_RUNTIME_SCHEMA_VERSION or type(authority["schema_version"]) is not int or authority["schema_version"] != version or type(current["schema_version"]) is not int or current["schema_version"] != version:
+        raise SchemaError("selected runtime authority must remain exact schema4")
+    if type(contract.get("default_runtime_schema_version")) is not int or contract["default_runtime_schema_version"] != version:
+        raise SchemaError("foundation selected runtime must not follow the source frontier")
+    for candidate in (authority.get("accounts_v5_source_candidate"), contract.get("accounts_v5_source_candidate")):
+        if json.dumps(candidate, sort_keys=True) != json.dumps(ACCOUNTS_SOURCE_CANDIDATE, sort_keys=True):
+            raise SchemaError("Accounts5 source frontier or closed activation gate differs")
+    if type(epoch) is not int or epoch != SELECTED_STORAGE_WRITER_EPOCH:
         raise SchemaError("current storage writer epoch differs from reviewed source-import revision")
     if type(contract.get("schema_version")) is not int or contract["schema_version"] != version:
         raise SchemaError("foundation current schema version differs from the complete shared chain")
@@ -271,7 +283,8 @@ def validate(root: Path = ROOT) -> dict[str, object]:
                        "ordered_paths": row["ordered_paths"], "file_count": row["file_count"],
                        "chain_sha256": row["chain_sha256"], "digest_algorithm": row["digest_algorithm"],
                        "declared_action_count": row["declared_action_count"],
-                       "revision_action_counts": row["revision_action_counts"]})
+                       "revision_action_counts": row["revision_action_counts"],
+                       "selected_runtime_prefix": row["revision_prefixes"][str(SELECTED_RUNTIME_SCHEMA_VERSION)]})
         profiles.append(result)
     if profiles[0]["tables"] != profiles[1]["tables"]:
         raise SchemaError("logical table order differs between profiles")
@@ -290,10 +303,12 @@ def validate(root: Path = ROOT) -> dict[str, object]:
     return {
         "status": "foundation-schema-static-contract-passed",
         "schema_version": contract["schema_version"],
+        "source_schema_version": chain["schema_version"],
+        "default_runtime_schema_version": chain["default_runtime_schema_version"],
         "storage_writer_epoch": contract["storage_writer_epoch"],
         "pg_source_contract_connected": True,
         "current_authoritative_table_count": 12,
-        "foundation_inspection_scope": "immutable0001 ten-table foundation; current full chain includes both import journal tables",
+        "foundation_inspection_scope": "immutable0001 ten-table foundation; complete source5 chain retained separately from selected StorageV4 prefix12 tables/epoch4",
         "profiles": profiles,
         "rollback_authority": "docs/OPERATIONS_AND_RELEASE.md",
         "runtime_execution_verified": False,

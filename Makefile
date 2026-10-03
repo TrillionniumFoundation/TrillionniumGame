@@ -7,7 +7,7 @@ ISOLATED_MANIFESTS := \
 	crates/trnm-presence-router-v2/Cargo.toml
 
 .PHONY: \
-	preflight plan server-source rust security-critical python legacy-go \
+	preflight plan server-source ci-static-contracts rust security-critical python legacy-go \
 	contract core restart compose-smoke legacy-p0 check
 
 preflight:
@@ -18,6 +18,11 @@ plan:
 
 server-source:
 	python3 scripts/check-trnm-server.py
+
+# Exercise independently dispatched source gates in the local aggregate too.
+ci-static-contracts:
+	python3 scripts/check-foundation-schema.py
+	python3 scripts/check-token-core.py
 
 rust:
 	cargo fmt --all -- --check
@@ -65,4 +70,4 @@ compose-smoke: preflight
 legacy-p0:
 	bash scripts/check-nakama-p0.sh
 
-check: plan server-source rust security-critical python legacy-go
+check: plan server-source ci-static-contracts rust security-critical python legacy-go

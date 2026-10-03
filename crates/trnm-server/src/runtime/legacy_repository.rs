@@ -2,14 +2,16 @@
 //! by constructing this adapter; the native AccountsV5 gate remains authoritative.
 use super::legacy_auth::{
     generate_account_id, LegacyCommittedCleanupFailure, LegacyDeviceAccount,
-    LegacyDeviceRepository, LegacyDeviceRepositoryInput, LegacyRepositoryError, LegacyStoredUser,
-    LegacyUserRepository,
+    LegacyDeviceRepository, LegacyDeviceRepositoryInput, LegacyLeaseCancellation,
+    LegacyLeaseCompletion, LegacyLeaseFailure, LegacyNativeAccountFailure, LegacyRepositoryError,
+    LegacyStoredUser, LegacyUserRepository,
 };
 use core::fmt;
 use trnm_contracts::UserId;
 use trnm_persistence_pg::{
-    AccountSqlFailure, AuthenticateDevice, AuthenticateDeviceOutcome, NakamaAccountError,
-    NakamaAccountIdGenerationError, NakamaLegacyUser, PgRepository,
+    AccountPhase, AccountSqlFailure, AuthenticateDevice, AuthenticateDeviceOutcome,
+    NakamaAccountError, NakamaAccountIdGenerationError, NakamaLegacyUser,
+    PgAccountLeaseCancellation, PgAccountLeaseOutcome, PgRepository,
 };
 
 /// Borrow one actual native repository/lease. The adapter has no transaction retry
@@ -83,6 +85,123 @@ impl LegacyDeviceRepository for PgLegacyAuthRepository<'_> {
         self.capture(result).map(map_device_outcome)
     }
 }
+/// Bounded native diagnostic observation on the same request's actual adapter.
+/// It is not a second lookup, retry or a claim that an unobserved call had no effect.
+pub trait LegacyNativeFailureObservation {
+    fn last_legacy_native_failure(&self) -> Option<NakamaAccountError>;
+}
+impl LegacyNativeFailureObservation for PgLegacyAuthRepository<'_> {
+    fn last_legacy_native_failure(&self) -> Option<NakamaAccountError> {
+        self.last_failure
+    }
+}
+fn phase_name(phase: AccountPhase) -> &'static str {
+    match phase {
+        AccountPhase::Input => "input",
+        AccountPhase::DeviceLookup => "device_lookup",
+        AccountPhase::UserLookup => "user_lookup",
+        AccountPhase::Begin => "begin",
+        AccountPhase::Savepoint => "savepoint",
+        AccountPhase::InsertUser => "insert_user",
+        AccountPhase::InsertDevice => "insert_device",
+        AccountPhase::Commit => "commit",
+        AccountPhase::Release => "release",
+        AccountPhase::Restart => "restart",
+    }
+}
+fn map_native_failure(error: NakamaAccountError) -> LegacyNativeAccountFailure {
+    let failure = match error {
+        NakamaAccountError::Internal(failure)
+        | NakamaAccountError::UsernameAlreadyExists(failure) => Some(failure),
+        _ => None,
+    };
+    LegacyNativeAccountFailure {
+        code: error.code(),
+        phase: failure.map(|f| phase_name(f.phase)),
+        last_failure: failure.map(|f| map_cleanup(f.last_failure)),
+        cleanup_failure: failure.and_then(|f| f.cleanup_failure.map(map_cleanup)),
+        attempts: failure.map(|f| f.attempts),
+        exhausted: failure.map(|f| f.exhausted),
+        unknown_commit: failure.map(|f| f.unknown_commit),
+    }
+}
+fn map_cancellation(c: PgAccountLeaseCancellation) -> LegacyLeaseCancellation {
+    match c {
+        PgAccountLeaseCancellation::None => LegacyLeaseCancellation::None,
+        PgAccountLeaseCancellation::Deadline => LegacyLeaseCancellation::Deadline,
+        PgAccountLeaseCancellation::Shutdown => LegacyLeaseCancellation::Shutdown,
+    }
+}
+fn resolve_lease<T, U>(
+    lease: PgAccountLeaseOutcome<T>,
+    success_observation: impl FnOnce(&T) -> LegacyLeaseCompletion,
+    map: impl FnOnce(T) -> U,
+) -> Result<U, LegacyRepositoryError> {
+    if let Some(boundary_error) = lease.boundary_error {
+        let completion = match lease.observed.as_ref() {
+            None => LegacyLeaseCompletion::NotObserved,
+            Some(Ok(value)) => success_observation(value),
+            Some(Err(error)) => LegacyLeaseCompletion::NativeFailure(map_native_failure(*error)),
+        };
+        // Retain outer and inner facts independently; never turn a late commit
+        // into a success or replay this native call after cancellation.
+        return Err(LegacyRepositoryError::Lease(Box::new(LegacyLeaseFailure {
+            boundary_error,
+            setup_error: lease.setup_error,
+            completion,
+            cancellation: map_cancellation(lease.cancellation),
+            lease_retired: lease.lease_retired,
+        })));
+    }
+    match lease.observed {
+        Some(Ok(value)) => Ok(map(value)),
+        Some(Err(error)) => Err(map_native_error(error)),
+        None => Err(LegacyRepositoryError::Lease(Box::new(LegacyLeaseFailure {
+            boundary_error: trnm_contracts::DomainError::new(
+                trnm_contracts::StableCode::DataLoss,
+                "account_pool_result_missing",
+                trnm_contracts::RetryClass::Never,
+            ),
+            setup_error: lease.setup_error,
+            completion: LegacyLeaseCompletion::NotObserved,
+            cancellation: map_cancellation(lease.cancellation),
+            lease_retired: lease.lease_retired,
+        }))),
+    }
+}
+pub(super) fn resolve_user_lease(
+    lease: PgAccountLeaseOutcome<Option<NakamaLegacyUser>>,
+) -> Result<Option<LegacyStoredUser>, LegacyRepositoryError> {
+    resolve_lease(
+        lease,
+        |_| LegacyLeaseCompletion::UserRead,
+        |v| v.map(map_stored_user),
+    )
+}
+pub(super) fn resolve_device_lease(
+    lease: PgAccountLeaseOutcome<AuthenticateDeviceOutcome>,
+) -> Result<LegacyDeviceAccount, LegacyRepositoryError> {
+    resolve_lease(
+        lease,
+        |v| {
+            if v.created {
+                LegacyLeaseCompletion::ConfirmedCreation {
+                    committed_cleanup_failure: v.committed_cleanup_failure.map(map_cleanup),
+                }
+            } else if let Some(failure) = v.committed_cleanup_failure {
+                // Preserve a contradictory cleanup report without inventing a
+                // confirmed creation; the service returns UnconfirmedCleanup.
+                LegacyLeaseCompletion::UnconfirmedCleanup {
+                    committed_cleanup_failure: map_cleanup(failure),
+                }
+            } else {
+                LegacyLeaseCompletion::DeviceExisting
+            }
+        },
+        map_device_outcome,
+    )
+}
+
 fn map_stored_user(user: NakamaLegacyUser) -> LegacyStoredUser {
     LegacyStoredUser {
         user_id: user.id,
@@ -90,13 +209,15 @@ fn map_stored_user(user: NakamaLegacyUser) -> LegacyStoredUser {
         disable_time_unix_seconds: user.disable_unix_seconds,
     }
 }
-fn map_native_error(error: NakamaAccountError) -> LegacyRepositoryError {
+pub(super) fn map_native_error(error: NakamaAccountError) -> LegacyRepositoryError {
     match error {
         NakamaAccountError::SchemaNotReady(_) => LegacyRepositoryError::Unavailable,
         NakamaAccountError::NotFound => LegacyRepositoryError::UserNotFound,
         NakamaAccountError::Banned => LegacyRepositoryError::UserBanned,
         NakamaAccountError::UsernameAlreadyExists(_) => LegacyRepositoryError::UsernameAlreadyInUse,
-        NakamaAccountError::Internal(_) => LegacyRepositoryError::Internal,
+        NakamaAccountError::Internal(failure) => LegacyRepositoryError::NativeFailure(
+            map_native_failure(NakamaAccountError::Internal(failure)),
+        ),
     }
 }
 fn map_cleanup(failure: AccountSqlFailure) -> LegacyCommittedCleanupFailure {

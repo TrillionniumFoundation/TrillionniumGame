@@ -195,8 +195,8 @@ class LegacyAuthSourceCompositionTests(unittest.TestCase):
                            'let generated = new_user_id().map_err',
                            'let generated = new_user_id().and_then(|_| new_user_id()).map_err')
         self.mutate_source('crates/trnm-server/src/runtime/legacy_repository.rs',
-                           'NakamaAccountError::Internal(_) => LegacyRepositoryError::Internal',
-                           'NakamaAccountError::Internal(_) => LegacyRepositoryError::DataLoss')
+                           'NakamaAccountError::Internal(failure) => LegacyRepositoryError::NativeFailure(',
+                           'NakamaAccountError::Internal(failure) => LegacyRepositoryError::DataLoss(')
         self.mutate_source('crates/trnm-server/src/runtime/legacy_repository.rs',
                            'committed_cleanup_failure: outcome.committed_cleanup_failure.map(map_cleanup)',
                            'committed_cleanup_failure: None')
@@ -280,6 +280,109 @@ class LegacyAuthSourceCompositionTests(unittest.TestCase):
         self.lock['implementation_attribution']['Go_code_compiled_into_Rust_target'] = True
         with self.assertRaises(SystemExit):
             self.validate()
+
+
+    def test_immutable_target_and_gate_before_native_IO_cannot_drift(self) -> None:
+        self.validate()
+        for path, old, new in (
+            ('crates/trnm-persistence-pg/src/lib.rs',
+             'Self::connect_for_target(database_url, profile, AuthoritativeSchemaTarget::StorageV4)',
+             'Self::connect_for_target(database_url, profile, AuthoritativeSchemaTarget::NakamaAccountsV5)'),
+            ('crates/trnm-persistence-pg/src/lib.rs', 'target.require_capture_ready()?;', '// omitted gate'),
+            ('crates/trnm-persistence-pg/src/pool_parts/pool.rs',
+             'serving_schema_target: self.serving_schema_target',
+             'serving_schema_target: crate::AuthoritativeSchemaTarget::StorageV4'),
+            ('crates/trnm-persistence-pg/src/schema_parts/migrate.rs',
+             'require_account_catalog_capture(target)?;', '// omitted capture gate'),
+            ('crates/trnm-persistence-pg/src/storage_parts/04_delete_authorize.rs',
+             'verify_serving_schema_target(transaction, profile, target)?;', '// omitted same-TX readiness'),
+        ):
+            with self.subTest(path=path, mutation=old):
+                self.mutate_source(path, old, new)
+
+    def test_typed_single_lease_preserves_late_commit_unknown_and_retirement(self) -> None:
+        self.validate()
+        for path, old, new in (
+            ('crates/trnm-persistence-pg/src/pool_parts/pool.rs',
+             'Some(operation(&mut repository))', 'Some(operation(&mut repository).or_else(|_| operation(&mut repository)))'),
+            ('crates/trnm-persistence-pg/src/pool_parts/pool.rs',
+             'if cancellation_reason != CANCEL_NONE || expired {', 'if false {'),
+            ('crates/trnm-server/src/runtime/legacy_repository.rs',
+             'Some(Ok(value)) => success_observation(value)', 'Some(Ok(_)) => LegacyLeaseCompletion::NotObserved'),
+            ('crates/trnm-server/src/runtime/legacy_repository.rs',
+             'None => LegacyLeaseCompletion::NotObserved', 'None => LegacyLeaseCompletion::UserRead'),
+            ('crates/trnm-server/src/runtime/legacy_repository.rs',
+             'lease_retired: lease.lease_retired', 'lease_retired: false'),
+            ('crates/trnm-server/src/runtime/retry.rs',
+             'self.inner.authenticate_legacy_device(input)', 'self.inner.authenticate_legacy_device(input.clone())'),
+        ):
+            with self.subTest(path=path, mutation=old):
+                self.mutate_source(path, old, new)
+
+    def test_HTTP_message_extensions_leave_vars_map_keys_and_first_object_scope_distinct(self) -> None:
+        self.validate()
+        path = 'crates/trnm-server/src/runtime/legacy_http_api.rs'
+        for old, new in (
+            ('registered_options_extension(name)', 'false /* registered_options_extension(name) */'),
+            ('&body[start..end]', 'body'),
+            ('with_decode_allow_trailing_bits(true)', 'with_decode_allow_trailing_bits(false)'),
+            ('DecodePaddingMode::RequireCanonical', 'DecodePaddingMode::Indifferent'),
+            ('LegacyRepositoryError::NativeFailure(_)\n                | LegacyRepositoryError::Lease(_)',
+             'LegacyRepositoryError::Internal | LegacyRepositoryError::Lease(_)'),
+        ):
+            with self.subTest(mutation=old):
+                self.mutate_source(path, old, new)
+        key = Path(path)
+        before = self.sources[key]
+        # Restoring the old substring only inside a comment does not satisfy the raw body binding.
+        self.sources[key] = before.replace('registered_options_extension(name)', 'false', 1) + '\n// registered_options_extension(name)\n'
+        with self.assertRaises(SystemExit):
+            self.validate()
+        self.sources[key] = before
+
+    def test_target_pool_HTTP_policy_rejects_coerced_or_overstated_facts(self) -> None:
+        self.validate()
+        policy = self.status['nakama_legacy_auth_source_candidate']['target_pool_HTTP_source_policy']
+        for key, original in list(policy.items()):
+            if isinstance(original, dict):
+                for member, value in list(original.items()):
+                    for replacement in (True, str(value), value + 1):
+                        original[member] = replacement
+                        with self.subTest(bound=member, replacement=replacement), self.assertRaises(SystemExit):
+                            self.validate()
+                    original[member] = value
+            else:
+                policy[key] = (not original) if type(original) is bool else (True if type(original) is int else 'unreviewed')
+                with self.subTest(policy=key), self.assertRaises(SystemExit):
+                    self.validate()
+                policy[key] = original
+        policy['extra_claim'] = False
+        with self.assertRaises(SystemExit):
+            self.validate()
+        del policy['extra_claim']
+
+    def test_HTTP_primary_registry_source_binding_is_closed_without_replacing_auth9(self) -> None:
+        self.validate()
+        binding = self.lock['HTTP_adapter_source_binding']
+        self.assertEqual(len(self.lock['verified_files']), 9)
+        self.assertEqual(len(binding['registered_extensions']), 7)
+        for row in binding['verified_files']:
+            for field, replacement in (('sha256', '0'*64), ('git_blob_sha1', '0'*40),
+                                       ('bytes', True), ('path', 'untrusted.go')):
+                previous = row[field]; row[field] = replacement
+                with self.subTest(path=row['path'], field=field), self.assertRaises(SystemExit):
+                    self.validate()
+                row[field] = previous
+        for key in ('HTTP_App_connected','HTTP_compatible','native_execution_qualified','accepted'):
+            binding[key] = True
+            with self.subTest(flag=key), self.assertRaises(SystemExit):
+                self.validate()
+            binding[key] = False
+        before = binding['registered_extensions'][:]
+        binding['registered_extensions'].pop()
+        with self.assertRaises(SystemExit):
+            self.validate()
+        binding['registered_extensions'] = before
 
 
 if __name__ == '__main__':

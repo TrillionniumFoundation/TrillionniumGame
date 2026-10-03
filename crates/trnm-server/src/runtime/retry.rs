@@ -86,6 +86,40 @@ impl<R> RetryingRepository<R> {
     }
 }
 
+// Legacy account methods are not authority commands and have no exact replay
+// receipt. Forward exactly one lease call, including late/unknown completion.
+impl<R: super::legacy_auth::LegacyUserRepository> super::legacy_auth::LegacyUserRepository
+    for RetryingRepository<R>
+{
+    fn read_legacy_user(
+        &mut self,
+        user: UserId,
+    ) -> Result<
+        Option<super::legacy_auth::LegacyStoredUser>,
+        super::legacy_auth::LegacyRepositoryError,
+    > {
+        self.inner.read_legacy_user(user)
+    }
+}
+impl<R: super::legacy_auth::LegacyDeviceRepository> super::legacy_auth::LegacyDeviceRepository
+    for RetryingRepository<R>
+{
+    fn authenticate_legacy_device(
+        &mut self,
+        input: super::legacy_auth::LegacyDeviceRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyDeviceAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        self.inner.authenticate_legacy_device(input)
+    }
+}
+impl<R: super::legacy_repository::LegacyNativeFailureObservation>
+    super::legacy_repository::LegacyNativeFailureObservation for RetryingRepository<R>
+{
+    fn last_legacy_native_failure(&self) -> Option<trnm_persistence_pg::NakamaAccountError> {
+        self.inner.last_legacy_native_failure()
+    }
+}
+
 impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
     fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
         self.inner.verify_storage_import_serving()
@@ -720,5 +754,66 @@ mod tests {
             assert!(value >= Duration::from_millis(50));
             assert!(value <= base);
         }
+    }
+}
+
+#[cfg(test)]
+mod legacy_forwarding_tests {
+    use super::*;
+    use crate::runtime::legacy_auth::*;
+    struct OneCall {
+        calls: usize,
+    }
+    impl LegacyUserRepository for OneCall {
+        fn read_legacy_user(
+            &mut self,
+            _: UserId,
+        ) -> Result<Option<LegacyStoredUser>, LegacyRepositoryError> {
+            self.calls += 1;
+            Err(LegacyRepositoryError::Unavailable)
+        }
+    }
+    impl LegacyDeviceRepository for OneCall {
+        fn authenticate_legacy_device(
+            &mut self,
+            _: LegacyDeviceRepositoryInput<'_>,
+        ) -> Result<LegacyDeviceAccount, LegacyRepositoryError> {
+            self.calls += 1;
+            Err(LegacyRepositoryError::Lease(Box::new(LegacyLeaseFailure {
+                boundary_error: DomainError::new(
+                    StableCode::Unavailable,
+                    "database_operation_deadline_exceeded",
+                    RetryClass::SafeBackoff,
+                ),
+                setup_error: None,
+                completion: LegacyLeaseCompletion::ConfirmedCreation {
+                    committed_cleanup_failure: None,
+                },
+                cancellation: LegacyLeaseCancellation::Deadline,
+                lease_retired: true,
+            })))
+        }
+    }
+    #[test]
+    fn legacy_read_and_late_commit_forward_once_without_authority_retry_metrics() {
+        let mut repository =
+            RetryingRepository::new(OneCall { calls: 0 }, RetryPolicy::candidate_default())
+                .unwrap();
+        assert!(repository.read_legacy_user(UserId::new([0; 16])).is_err());
+        let error = repository
+            .authenticate_legacy_device(LegacyDeviceRepositoryInput {
+                device_id: "0123456789",
+                requested_username: "name",
+                create: true,
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            LegacyRepositoryError::Lease(ref record)
+                if matches!(record.completion, LegacyLeaseCompletion::ConfirmedCreation { .. })
+        ));
+        assert_eq!(repository.inner.calls, 2);
+        assert_eq!(repository.metrics.attempts.load(Ordering::Relaxed), 0);
+        assert_eq!(repository.metrics.retries.load(Ordering::Relaxed), 0);
     }
 }

@@ -35,7 +35,11 @@ impl PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        verify_storage_writer_epoch_target(
+            &mut transaction,
+            self.profile,
+            self.serving_schema_target,
+        )?;
         let columns = storage_row_columns(self.profile, "TRUE");
         let query = format!(
             "SELECT {columns} FROM public.trnm_storage_objects \
@@ -100,7 +104,11 @@ impl PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        verify_storage_writer_epoch_target(
+            &mut transaction,
+            self.profile,
+            self.serving_schema_target,
+        )?;
         let row = transaction
             .query_opt(
                 &query,
@@ -174,7 +182,11 @@ impl PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        verify_storage_writer_epoch_target(
+            &mut transaction,
+            self.profile,
+            self.serving_schema_target,
+        )?;
         let query = storage_list_query(self.profile);
         let has_after = after.is_some();
         let parameters: [&(dyn ToSql + Sync); 7] = [
@@ -249,7 +261,11 @@ impl PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        verify_storage_writer_epoch(&mut transaction, self.profile)?;
+        verify_storage_writer_epoch_target(
+            &mut transaction,
+            self.profile,
+            self.serving_schema_target,
+        )?;
         let after_user = after.map_or_else(
             || vec![0_u8; 16],
             |position| position.user_id.as_bytes().to_vec(),
@@ -356,9 +372,10 @@ impl PgRepository {
             .isolation_level(isolation)
             .start()
             .map_err(map_postgres_error)?;
-        crate::storage_import::verify_business_storage_import_serving(
+        crate::storage_import::verify_business_storage_import_serving_target(
             &mut transaction,
             self.profile,
+            self.serving_schema_target,
         )?;
 
         let mut locked = BTreeMap::new();

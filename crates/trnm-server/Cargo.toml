@@ -16,6 +16,7 @@ name = "trnm-server"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "=0.22.1"
 postgres = "=0.19.14"
 prost = "=0.14.3"
 prost-types = "=0.14.3"

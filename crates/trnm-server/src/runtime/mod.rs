@@ -8,6 +8,7 @@ pub(crate) mod http;
 pub(crate) mod json;
 mod legacy_auth;
 mod legacy_device_predicates;
+mod legacy_http_api;
 mod legacy_repository;
 mod legacy_uuid;
 pub(crate) mod pool;
@@ -77,5 +78,6 @@ mod operator_message_tests {
 // Server-owned service API; native repository and HTTP adapters remain separate.
 pub(crate) mod legacy_service_exports {
     pub use super::legacy_auth::*;
+    pub use super::legacy_http_api::*;
     pub use super::legacy_repository::PgLegacyAuthRepository;
 }

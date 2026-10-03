@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
+import tomllib
 import json
 import subprocess
 import sys
@@ -51,7 +53,7 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertEqual(result["schema"], "trillionnium.server-source-check.v3")
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["binary"], "trnm-server")
-        self.assertEqual(result["runtime_module_count"], 32)
+        self.assertEqual(result["runtime_module_count"], 34)
         self.assertGreaterEqual(result["source_marker_count"], 20)
         self.assertFalse(result["claims"]["compiled"])
         self.assertFalse(result["claims"]["live_process_executed"])
@@ -69,7 +71,8 @@ class RustServerSliceContractTests(unittest.TestCase):
         module.validate_runtime_file_inventory(actual)
         for omitted in ("storage_api_projection_tests.rs", "storage_api_v3_live.rs",
                         "legacy_auth.rs", "legacy_auth_tests.rs", "legacy_device_predicates.rs",
-                        "legacy_repository.rs", "legacy_repository_tests.rs", "legacy_uuid.rs"):
+                        "legacy_repository.rs", "legacy_repository_tests.rs", "legacy_uuid.rs",
+                        "legacy_http_api.rs", "legacy_http_api_tests.rs"):
             with self.subTest(omitted=omitted), self.assertRaisesRegex(module.ValidationError, "file set drift"):
                 module.validate_runtime_file_inventory(actual - {omitted})
         with self.assertRaisesRegex(module.ValidationError, "file set drift"):
@@ -97,6 +100,49 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertGreaterEqual(result["source_tokens"], 20)
         self.assertTrue(result["authority_transferred_source_candidate"])
 
+
+    def test_standalone_base64_edge_is_exact_and_build_policy_stays_closed(self) -> None:
+        spec = importlib.util.spec_from_file_location("server_source_dependency_boundary", SOURCE_CHECKER)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        manifest = tomllib.loads((ROOT / "crates/trnm-server/Cargo.toml").read_text())
+        module.validate_server_dependencies(manifest)
+        self.assertEqual(module.EXPECTED_DEPENDENCIES["base64"], "=0.22.1")
+        for value in (None, "0.22.1", "=0.22.0", {"version":"=0.22.1","features":["alloc"]},
+                      {"path":"../base64"}, {"version":"=0.22.1","package":"other"}):
+            changed = deepcopy(manifest)
+            if value is None: changed["dependencies"].pop("base64")
+            else: changed["dependencies"]["base64"] = value
+            with self.subTest(base64=value), self.assertRaises(module.ValidationError):
+                module.validate_server_dependencies(changed)
+        for section, name, value in (("dependencies","unreviewed","=1.0.0"),
+                                      ("dependencies","trnm-contracts",{"path":"../../other"}),
+                                      ("build-dependencies","base64","=0.22.1"),
+                                      ("build-dependencies","prost-build","^0.14.3")):
+            changed = deepcopy(manifest);changed[section][name] = value
+            with self.subTest(section=section,name=name), self.assertRaises(module.ValidationError):
+                module.validate_server_dependencies(changed)
+        # No persistence policy expansion accompanies the server direct edge.
+        persistence = tomllib.loads((ROOT / "crates/trnm-persistence-pg/Cargo.toml").read_text())
+        self.assertNotIn("base64", persistence["dependencies"])
+
+    def test_schema_target_is_documented_without_minting_an_app_route(self) -> None:
+        spec = importlib.util.spec_from_file_location("schema_target_documented_interface", ROOT / "scripts/engineering_readiness.py")
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        config = (ROOT / "crates/trnm-server/src/runtime/config.rs").read_text()
+        app = (ROOT / "crates/trnm-server/src/runtime/app.rs").read_text()
+        interface = module.source_interface(config, app, list_integrated=True)
+        document = (ROOT / "docs/DEVELOPMENT.md").read_text()
+        module.check_documented_interface(interface, document)
+        self.assertIn("TRNM_SERVER_SCHEMA_TARGET", interface["environment_names"])
+        self.assertNotIn(("POST","/v2/account/authenticate/device"), interface["routes"])
+        row = next(line for line in document.splitlines() if line.startswith('| `TRNM_SERVER_SCHEMA_TARGET` |'))
+        self.assertIn('`storage-v4`', row);self.assertIn('`nakama-accounts-v5`', row)
+        for changed in (document.replace(row+'\n',''), document.replace(row, row+'\n'+row),
+                        document.replace(row,row.replace('TRNM_SERVER_SCHEMA_TARGET','TRNM_SERVER_SCHEMA_UNREVIEWED'))):
+            with self.assertRaises(module.ValidationError):
+                module.check_documented_interface(interface, changed)
 
 if __name__ == "__main__":
     unittest.main()

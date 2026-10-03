@@ -49,8 +49,8 @@ The package consumes:
 ## Public contracts
 
 The candidate CLI exposes `check-config`, `migrate`, and `serve`.
-Migration uses the shared locked 0001/0002 schema runner; serve verifies existing
-schema version 2, chain/catalog identity and storage writer epoch 2 without
+The locked source chain has five revisions per profile; the default `migrate` uses
+the StorageV4 first four. Serving verifies schema 4, chain/catalog identity and writer epoch 4 without
 changing metadata or schema.
 The source includes:
 
@@ -193,3 +193,9 @@ cargo test -p trnm-persistence-pg --features diagnostic-compat-server --bin trnm
 ```
 
 The existing dependency pins, CLI, application route names, migration chain, session state transitions, receipt identity and token-comparison implementations are unchanged by this repair. Exact-object format/test/strict-lint, required live lanes and qualified non-author review remain necessary. Reverting either boundary would reintroduce the diagnostic leak or authentication-order regression; a source revert does not authorize a production rollback.
+
+The source-only legacy composition carries an explicit repository target and a typed single-lease pool outcome through the retry wrapper without generic business replay. Old constructors default to StorageV4; AccountsV5 remains blocked before I/O by the production capture gate. Native observed creation/unknown completion/cleanup remain private typed facts when deadline or shutdown prevents token delivery. This does not install legacy authority in the live App.
+
+`legacy_http_api` provides inactive Device/Refresh/Logout codecs, fixed error/WWW header values, first-object decoding and bounded Basic/JSON/query/session handling. The server reuses locked base64 0.22.1, preserves Go padding/CRLF/unused-bit and byte-password behavior, and rejects seven captured registered option names only at message scope. Variable map keys are ordinary data. Local budgets, authentication-before-business precedence, invalid UTF-8/create-overlap and whole registry/runtime boundaries are qualified separately. HTTP routes/headers, startup selection, multiworker cache and paired native compatibility are not admitted; all acceptance/full replacement flags stay false.
+
+The explicit AccountsV5 target expects 14 tables and retains storage writer epoch 4; its closed production gate prevents this source target from authorizing publication.

@@ -128,6 +128,23 @@ pub(crate) fn verify_storage_writer_epoch(
     Ok(())
 }
 
+/// Explicit serving selection only; StorageV4 retains its original exact fence.
+pub(crate) fn verify_storage_writer_epoch_target(
+    transaction: &mut postgres::Transaction<'_>,
+    profile: DatabaseProfile,
+    target: crate::AuthoritativeSchemaTarget,
+) -> Result<(), DomainError> {
+    match target {
+        crate::AuthoritativeSchemaTarget::StorageV4 => {
+            verify_storage_writer_epoch(transaction, profile)
+        }
+        crate::AuthoritativeSchemaTarget::NakamaAccountsV5 => {
+            crate::schema::verify_serving_schema_target(transaction, profile, target)?;
+            crate::storage_import::verify_storage_import_serving(transaction)
+        }
+    }
+}
+
 fn validate_batch(operations: &[BatchOperation]) -> Result<(), DomainError> {
     if operations.is_empty() || operations.len() > MAX_BATCH_OPERATIONS {
         return Err(invalid("invalid_storage_batch_size"));

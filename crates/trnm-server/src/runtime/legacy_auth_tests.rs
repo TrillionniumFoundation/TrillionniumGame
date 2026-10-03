@@ -101,7 +101,7 @@ impl LegacyUserRepository for Users {
     ) -> Result<Option<LegacyStoredUser>, LegacyRepositoryError> {
         self.calls += 1;
         assert_eq!(id, self.expected);
-        if let Some(error) = self.error {
+        if let Some(error) = self.error.clone() {
             return Err(error);
         }
         Ok(self.result.take())
@@ -615,7 +615,7 @@ impl LegacyDeviceRepository for Devices {
             assert_eq!(input.requested_username, "new-input");
         }
         assert!(input.create);
-        if let Some(e) = self.error {
+        if let Some(e) = self.error.clone() {
             return Err(e);
         }
         Ok(LegacyDeviceAccount {
@@ -1360,4 +1360,161 @@ fn public_device_call_keeps_one_repository_outcome_and_commit_truth_on_issue_fai
         .unwrap_err();
     assert!(failure.creation_commit_confirmed());
     assert_eq!(failure.committed_cleanup_failure(), None);
+}
+
+#[test]
+fn device_pool_late_creation_is_committed_failure_without_credentials_or_replay() {
+    struct Late {
+        calls: usize,
+        error: LegacyRepositoryError,
+    }
+    impl LegacyDeviceRepository for Late {
+        fn authenticate_legacy_device(
+            &mut self,
+            _: LegacyDeviceRepositoryInput<'_>,
+        ) -> Result<LegacyDeviceAccount, LegacyRepositoryError> {
+            self.calls += 1;
+            Err(self.error.clone())
+        }
+    }
+    let cleanup = LegacyCommittedCleanupFailure {
+        sqlstate: Some(*b"08006"),
+        username_collision: false,
+        transaction_closed: false,
+        reason: "private-native-cleanup",
+    };
+    let mut repository = Late {
+        calls: 0,
+        error: LegacyRepositoryError::Lease(Box::new(LegacyLeaseFailure {
+            boundary_error: trnm_contracts::DomainError::new(
+                trnm_contracts::StableCode::Unavailable,
+                "database_operation_deadline_exceeded",
+                trnm_contracts::RetryClass::SafeBackoff,
+            ),
+            setup_error: None,
+            completion: LegacyLeaseCompletion::ConfirmedCreation {
+                committed_cleanup_failure: Some(cleanup),
+            },
+            cancellation: LegacyLeaseCancellation::Deadline,
+            lease_retired: true,
+        })),
+    };
+    let s = service();
+    let before = s.blacklist_stats().unwrap();
+    let error = s
+        .authenticate_device(
+            &mut repository,
+            LegacyDeviceAuthInput {
+                account_id: Some("0123456789"),
+                username: "name",
+                create: Some(true),
+                variables: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(repository.calls, 1);
+    assert!(error.creation_commit_confirmed());
+    assert_eq!(error.committed_cleanup_failure(), Some(cleanup));
+    assert_eq!(error.code(), trnm_contracts::StableCode::Unavailable);
+    assert!(!error.retry_permitted() && !error.compensation_permitted());
+    assert_eq!(s.blacklist_stats().unwrap(), before);
+    assert!(!format!("{error:?} {error}").contains("private-native-cleanup"));
+}
+#[test]
+fn device_pool_unobserved_and_native_unknown_errors_never_confirm_creation() {
+    for completion in [
+        LegacyLeaseCompletion::NotObserved,
+        LegacyLeaseCompletion::DeviceExisting,
+        LegacyLeaseCompletion::NativeFailure(LegacyNativeAccountFailure {
+            code: trnm_contracts::StableCode::Internal,
+            phase: Some("commit"),
+            last_failure: None,
+            cleanup_failure: None,
+            attempts: Some(1),
+            exhausted: Some(false),
+            unknown_commit: Some(true),
+        }),
+    ] {
+        let record = LegacyLeaseFailure {
+            boundary_error: trnm_contracts::DomainError::new(
+                trnm_contracts::StableCode::Unavailable,
+                "database_operation_shutdown_cancelled",
+                trnm_contracts::RetryClass::Never,
+            ),
+            setup_error: None,
+            completion,
+            cancellation: LegacyLeaseCancellation::Shutdown,
+            lease_retired: true,
+        };
+        let error = device_repository_failure(LegacyRepositoryError::Lease(Box::new(record)));
+        assert!(!error.creation_commit_confirmed());
+        assert!(!error.retry_permitted() && !error.compensation_permitted());
+        assert!(
+            matches!(error.cause(),LegacyAuthError::DeviceRepository(LegacyRepositoryError::Lease(actual)) if **actual==record)
+        );
+    }
+}
+
+#[test]
+fn legacy_error_results_remain_below_large_error_threshold_with_boxed_lease() {
+    use core::mem::size_of;
+    assert!(size_of::<LegacyRepositoryError>() < 128);
+    assert!(size_of::<LegacyAuthError>() < 128);
+    assert!(size_of::<LegacyDeviceAuthError>() < 128);
+    assert!(size_of::<LegacyDevicePostCommitFailure>() < 128);
+}
+
+#[test]
+fn boxed_lease_clone_preserves_confirmed_creation_cleanup_and_unknown_facts() {
+    let cleanup = LegacyCommittedCleanupFailure {
+        sqlstate: Some(*b"08006"),
+        username_collision: false,
+        transaction_closed: true,
+        reason: "private-box-cleanup",
+    };
+    let record = LegacyLeaseFailure {
+        boundary_error: trnm_contracts::DomainError::new(
+            trnm_contracts::StableCode::Unavailable,
+            "private-box-boundary",
+            trnm_contracts::RetryClass::Never,
+        ),
+        setup_error: None,
+        completion: LegacyLeaseCompletion::ConfirmedCreation {
+            committed_cleanup_failure: Some(cleanup),
+        },
+        cancellation: LegacyLeaseCancellation::Shutdown,
+        lease_retired: true,
+    };
+    let original = LegacyRepositoryError::Lease(Box::new(record));
+    let cloned = original.clone();
+    assert_eq!(original, cloned);
+    let (LegacyRepositoryError::Lease(a), LegacyRepositoryError::Lease(b)) = (&original, &cloned)
+    else {
+        unreachable!()
+    };
+    assert!(!core::ptr::eq(a.as_ref(), b.as_ref()));
+    let device = device_repository_failure(cloned);
+    assert!(device.creation_commit_confirmed());
+    assert_eq!(device.code(), original.code());
+    assert_eq!(device.committed_cleanup_failure(), Some(cleanup));
+    assert!(!device.retry_permitted() && !device.compensation_permitted());
+    assert!(!format!("{device:?}").contains("private-box-cleanup"));
+    let unknown = LegacyRepositoryError::Lease(Box::new(LegacyLeaseFailure {
+        completion: LegacyLeaseCompletion::NativeFailure(LegacyNativeAccountFailure {
+            code: trnm_contracts::StableCode::Internal,
+            phase: Some("commit"),
+            last_failure: Some(cleanup),
+            cleanup_failure: Some(cleanup),
+            attempts: Some(5),
+            exhausted: Some(true),
+            unknown_commit: Some(true),
+        }),
+        ..record
+    }));
+    let device = device_repository_failure(unknown.clone());
+    assert!(!device.creation_commit_confirmed());
+    assert!(
+        matches!(device.cause(), LegacyAuthError::DeviceRepository(actual) if *actual==unknown)
+    );
+    assert!(!device.retry_permitted() && !device.compensation_permitted());
 }

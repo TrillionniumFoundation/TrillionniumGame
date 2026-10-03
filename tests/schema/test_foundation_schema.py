@@ -42,18 +42,36 @@ class FoundationSchemaTests(unittest.TestCase):
         self.assertEqual(result["status"], "foundation-schema-static-contract-passed")
         self.assertFalse(result["runtime_execution_verified"])
         self.assertEqual(result["schema_version"], 4)
+        self.assertEqual(result["source_schema_version"], 5)
+        self.assertEqual(result["default_runtime_schema_version"], 4)
         self.assertEqual(result["storage_writer_epoch"], 4)
         self.assertTrue(result["pg_source_contract_connected"])
         self.assertEqual([item["table_count"] for item in result["profiles"]], [10, 10])
         for item in result["profiles"]:
-            self.assertEqual(len(item["ordered_paths"]), 4)
-            self.assertEqual(item["file_count"], 4)
+            self.assertEqual(len(item["ordered_paths"]), 5)
+            self.assertEqual(item["file_count"], 5)
+            self.assertEqual(item["selected_runtime_prefix"]["file_count"], 4)
+            self.assertEqual(item["selected_runtime_prefix"]["ordered_paths"], item["ordered_paths"][:4])
+            self.assertNotEqual(item["chain_sha256"], item["selected_runtime_prefix"]["chain_sha256"])
             self.assertEqual(item["timestamp_upgrade_action_count"], 6)
             self.assertNotIn("action_count", item)
-            self.assertEqual(item["declared_action_count"], 30 if item["profile"] == "postgresql" else 34)
-            self.assertEqual(item["revision_action_counts"], {"2": 6, "3": 16, "4": 8 if item["profile"] == "postgresql" else 12})
+            self.assertEqual(item["declared_action_count"], 35 if item["profile"] == "postgresql" else 39)
+            self.assertEqual(item["revision_action_counts"], {"2": 6, "3": 16, "4": 8 if item["profile"] == "postgresql" else 12, "5": 5})
             self.assertEqual(item["digest_algorithm"], "ordered-path-git-blob-sha256.v1")
             self.assertTrue(item["historical_timestamps_remain_unknown"])
+
+    def test_source_frontier_and_selected_runtime_cannot_be_swapped_or_boolean(self) -> None:
+        root = self.copy_tree()
+        contract = json.loads((root / "contracts/database/foundation-schema.v1.json").read_text())
+        chain = module.locked_chain(root)
+        for field,value in (("schema_version",4),("schema_version",True),("schema_version",6),("default_runtime_schema_version",5),("default_runtime_schema_version",True)):
+            altered=json.loads(json.dumps(chain));altered[field]=value
+            with self.subTest(field=field,value=value), self.assertRaises(module.SchemaError):
+                module.validate_current_contracts(root,contract,altered)
+        for field in ("native_activation_allowed","default_runtime_promotion_allowed","accepted"):
+            altered=json.loads(json.dumps(contract));altered["accounts_v5_source_candidate"][field]=True
+            with self.subTest(field=field), self.assertRaises(module.SchemaError):
+                module.validate_current_contracts(root,altered,chain)
 
     def test_missing_unique_entity_revision_is_rejected(self) -> None:
         root = self.copy_tree()

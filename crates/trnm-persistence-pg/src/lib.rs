@@ -21,7 +21,10 @@ pub use nakama_account::{
     NAKAMA_DEVICE_MAX_ATTEMPTS,
 };
 pub use outbox::{OutboxClaimBatch, OutboxLease, OutboxRetryOutcome};
-pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
+pub use pool::{
+    PgAccountLeaseCancellation, PgAccountLeaseOutcome, PgPool, PgPoolConfig, PgPoolSnapshot,
+    PgTlsConfig,
+};
 pub use schema::{
     authoritative_chain_digest, authoritative_supported_chain_digest, AuthoritativeSchemaTarget,
     SchemaIdentity, SchemaMigrationReport, AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM,
@@ -191,6 +194,7 @@ pub enum CommitOutcome {
 
 pub struct PgRepository {
     profile: DatabaseProfile,
+    serving_schema_target: AuthoritativeSchemaTarget,
     client: pool::ClientHandle,
 }
 
@@ -199,18 +203,32 @@ impl fmt::Debug for PgRepository {
         formatter
             .debug_struct("PgRepository")
             .field("profile", &self.profile)
+            .field("serving_schema_target", &self.serving_schema_target)
             .finish_non_exhaustive()
     }
 }
 
 impl PgRepository {
     pub fn connect(database_url: &str, profile: DatabaseProfile) -> Result<Self, DomainError> {
+        Self::connect_for_target(database_url, profile, AuthoritativeSchemaTarget::StorageV4)
+    }
+
+    /// Select a closed serving frontier before connection establishment.
+    /// Selection is not readiness; startup and each storage transaction verify
+    /// the selected catalog and recorded metadata independently.
+    pub fn connect_for_target(
+        database_url: &str,
+        profile: DatabaseProfile,
+        target: AuthoritativeSchemaTarget,
+    ) -> Result<Self, DomainError> {
+        target.require_capture_ready()?;
         if database_url.is_empty() {
             return Err(invalid("database_url_empty"));
         }
         let client = Client::connect(database_url, NoTls).map_err(map_postgres_error)?;
         Ok(Self {
             profile,
+            serving_schema_target: target,
             client: pool::ClientHandle::direct(client),
         })
     }
@@ -218,6 +236,11 @@ impl PgRepository {
     #[must_use]
     pub const fn profile(&self) -> DatabaseProfile {
         self.profile
+    }
+
+    #[must_use]
+    pub const fn serving_schema_target(&self) -> AuthoritativeSchemaTarget {
+        self.serving_schema_target
     }
 
     pub fn table_exists(&mut self, table: &str) -> Result<bool, DomainError> {
@@ -706,6 +729,28 @@ const fn error(code: StableCode, reason: &'static str, retry: RetryClass) -> Dom
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_accounts_connection_gate_precedes_url_validation() {
+        for profile in [
+            super::DatabaseProfile::PostgreSql,
+            super::DatabaseProfile::CockroachDb,
+        ] {
+            let error = super::PgRepository::connect_for_target(
+                "",
+                profile,
+                super::AuthoritativeSchemaTarget::NakamaAccountsV5,
+            )
+            .unwrap_err();
+            assert_eq!(error.reason(), "schema5_native_catalog_capture_pending");
+            assert_eq!(
+                super::PgRepository::connect("", profile)
+                    .unwrap_err()
+                    .reason(),
+                "database_url_empty"
+            );
+        }
+    }
+
     use super::*;
 
     fn digest(value: u8) -> Digest32 {

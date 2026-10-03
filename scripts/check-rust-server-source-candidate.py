@@ -23,6 +23,8 @@ EXPECTED_RUNTIME_FILES = {
     "legacy_auth.rs",
     "legacy_auth_tests.rs",
     "legacy_device_predicates.rs",
+    "legacy_http_api.rs",
+    "legacy_http_api_tests.rs",
     "legacy_repository.rs",
     "legacy_repository_tests.rs",
     "legacy_uuid.rs",
@@ -46,6 +48,7 @@ EXPECTED_RUNTIME_FILES = {
     "websocket.rs",
 }
 EXPECTED_DEPENDENCIES: dict[str, object] = {
+    "base64": "=0.22.1",
     "postgres": "=0.19.14",
     "prost": "=0.14.3",
     "prost-types": "=0.14.3",
@@ -106,6 +109,15 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def validate_server_dependencies(manifest: dict[str, object]) -> None:
+    """Retain closed runtime/build tables; the server-only locked base64 edge is explicit."""
+    require(manifest.get("dependencies") == EXPECTED_DEPENDENCIES, "server dependency contract drift")
+    require(
+        manifest.get("build-dependencies") == EXPECTED_BUILD_DEPENDENCIES,
+        "server build-dependency contract drift",
+    )
+
+
 def main() -> int:
     try:
         manifest_path = CRATE / "Cargo.toml"
@@ -124,11 +136,7 @@ def main() -> int:
         require(package.get("rust-version", {}).get("workspace") is True, "server Rust version drift")
         require(package.get("build") == "build.rs", "server build script binding drift")
         require("workspace" not in manifest, "server must remain a root-workspace member")
-        require(manifest.get("dependencies") == EXPECTED_DEPENDENCIES, "server dependency contract drift")
-        require(
-            manifest.get("build-dependencies") == EXPECTED_BUILD_DEPENDENCIES,
-            "server build-dependency contract drift",
-        )
+        validate_server_dependencies(manifest)
         binaries = manifest.get("bin")
         require(isinstance(binaries, list) and len(binaries) == 1, "exactly one binary required")
         require(

@@ -39,10 +39,11 @@ pub fn migrate(config: &ServerConfig) -> Result<MigrationReport, ServerError> {
             }
         };
         repository
-            .migrate_authoritative_schema(
+            .migrate_authoritative_schema_target(
                 &config.schema_source_commit,
                 now_millis()?,
                 legacy_writer_role.as_deref(),
+                config.schema_target,
             )
             .map_err(ServerError::from)
     })();
@@ -64,29 +65,33 @@ pub fn open_verified_repository(config: &ServerConfig) -> Result<PooledRepositor
     let pool = build_pool(config)?;
     {
         let mut repository = pool.acquire()?;
-        repository.verify_authoritative_schema()?;
+        repository.verify_authoritative_schema_target(config.schema_target)?;
         repository.verify_storage_import_serving()?;
     }
     Ok(PooledRepository::new(pool))
 }
 
 fn build_pool(config: &ServerConfig) -> Result<PgPool, ServerError> {
+    // A closed AccountsV5 frontier fails before TLS material reads or sockets.
+    config.schema_target.require_capture_ready()?;
     match config.database_tls_mode {
-        DatabaseTlsMode::PlaintextCandidate => Ok(PgPool::connect_plain(
+        DatabaseTlsMode::PlaintextCandidate => Ok(PgPool::connect_plain_for_target(
             &config.database_url,
             config.database_profile,
             config.database_pool,
+            config.schema_target,
         )?),
         DatabaseTlsMode::VerifyFull => {
             let root_certificate = read_optional(config.database_tls_root_cert.as_deref())?;
             let identity_certificate = read_optional(config.database_tls_identity_cert.as_deref())?;
             let identity_key = read_optional(config.database_tls_identity_key.as_deref())?;
             let tls = PgTlsConfig::new(root_certificate, identity_certificate, identity_key)?;
-            Ok(PgPool::connect_tls(
+            Ok(PgPool::connect_tls_for_target(
                 &config.database_url,
                 config.database_profile,
                 config.database_pool,
                 &tls,
+                config.schema_target,
             )?)
         }
     }
@@ -108,6 +113,43 @@ fn now_millis() -> Result<u64, ServerError> {
 mod tests {
     use super::*;
     use trnm_persistence_pg::{authoritative_chain_digest, AUTHORITATIVE_SCHEMA_VERSION};
+
+    #[test]
+    fn accounts_serving_gate_precedes_tls_file_reads_and_connection_setup() {
+        use trnm_persistence_pg::{AuthoritativeSchemaTarget, PgPoolConfig};
+        for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
+            for tls_mode in [
+                DatabaseTlsMode::PlaintextCandidate,
+                DatabaseTlsMode::VerifyFull,
+            ] {
+                let config = ServerConfig {
+                    bind: "127.0.0.1:7350".parse().unwrap(),
+                    grpc_bind: None,
+                    database_url: String::new(),
+                    database_profile: profile,
+                    database_tls_mode: tls_mode,
+                    database_tls_root_cert: Some("/unopened/accounts-gate/root.pem".into()),
+                    database_tls_identity_cert: Some("/unopened/accounts-gate/cert.pem".into()),
+                    database_tls_identity_key: Some("/unopened/accounts-gate/key.pem".into()),
+                    database_pool: PgPoolConfig {
+                        max_size: 0,
+                        ..PgPoolConfig::default()
+                    },
+                    schema_source_commit: "a".repeat(40),
+                    schema_target: AuthoritativeSchemaTarget::NakamaAccountsV5,
+                    admin_token: "not-used".to_owned(),
+                    session_auth: None,
+                    max_request_bytes: 128 * 1024,
+                    read_timeout: std::time::Duration::from_secs(5),
+                    write_timeout: std::time::Duration::from_secs(10),
+                };
+                assert!(matches!(
+                    build_pool(&config),
+                    Err(ServerError::Domain(error)) if error.reason() == "schema5_native_catalog_capture_pending"
+                ));
+            }
+        }
+    }
 
     #[test]
     fn both_authoritative_profiles_embed_the_twelve_table_chain() {
