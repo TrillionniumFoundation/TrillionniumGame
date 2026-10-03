@@ -112,6 +112,17 @@ impl<R: super::legacy_auth::LegacyDeviceRepository> super::legacy_auth::LegacyDe
         self.inner.authenticate_legacy_device(input)
     }
 }
+impl<R: super::legacy_auth::LegacyCustomRepository> super::legacy_auth::LegacyCustomRepository
+    for RetryingRepository<R>
+{
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: super::legacy_auth::LegacyCustomRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyCustomAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        self.inner.authenticate_legacy_custom(input)
+    }
+}
 impl<R: super::legacy_repository::LegacyNativeFailureObservation>
     super::legacy_repository::LegacyNativeFailureObservation for RetryingRepository<R>
 {
@@ -136,6 +147,14 @@ impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
     ) -> Result<super::legacy_auth::LegacyDeviceAccount, super::legacy_auth::LegacyRepositoryError>
     {
         Repository::authenticate_legacy_device(&mut self.inner, input)
+    }
+
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: super::legacy_auth::LegacyCustomRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyCustomAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        Repository::authenticate_legacy_custom(&mut self.inner, input)
     }
 
     fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
@@ -832,5 +851,193 @@ mod legacy_forwarding_tests {
         assert_eq!(repository.inner.calls, 2);
         assert_eq!(repository.metrics.attempts.load(Ordering::Relaxed), 0);
         assert_eq!(repository.metrics.retries.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(test)]
+mod custom_forwarding_tests {
+    use super::*;
+    use crate::runtime::legacy_auth::*;
+
+    #[derive(Debug)]
+    struct CustomCall {
+        calls: usize,
+        expected: LegacyCustomRepositoryInput<'static>,
+        outcome: Option<Result<LegacyCustomAccount, LegacyRepositoryError>>,
+    }
+    impl LegacyCustomRepository for CustomCall {
+        fn authenticate_legacy_custom(
+            &mut self,
+            input: LegacyCustomRepositoryInput<'_>,
+        ) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+            self.calls += 1;
+            assert_eq!(input.custom_id, self.expected.custom_id);
+            assert_eq!(input.requested_username, self.expected.requested_username);
+            assert_eq!(input.create, self.expected.create);
+            self.outcome
+                .take()
+                .expect("Custom effect called more than once")
+        }
+    }
+    impl Repository for CustomCall {
+        fn bootstrap_entity(
+            &mut self,
+            _: EntityId,
+            _: u64,
+            _: Digest32,
+            _: u64,
+        ) -> Result<EntityHead, DomainError> {
+            panic!("Custom must not bootstrap authority commands")
+        }
+        fn commit_command(&mut self, _: &CommitRequest) -> Result<CommitOutcome, DomainError> {
+            panic!("Custom must not enter authority command commit")
+        }
+        fn authenticate_legacy_custom(
+            &mut self,
+            input: LegacyCustomRepositoryInput<'_>,
+        ) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+            LegacyCustomRepository::authenticate_legacy_custom(self, input)
+        }
+    }
+    impl BudgetedRepository for CustomCall {
+        fn commit_command_with_budget(
+            &mut self,
+            _: &CommitRequest,
+            _: Duration,
+        ) -> Result<CommitOutcome, DomainError> {
+            panic!("Custom must not enter command retry supervision")
+        }
+    }
+    fn forward(
+        repository: &mut RetryingRepository<CustomCall>,
+        input: LegacyCustomRepositoryInput<'_>,
+        via_app_repository: bool,
+    ) -> Result<LegacyCustomAccount, LegacyRepositoryError> {
+        if via_app_repository {
+            Repository::authenticate_legacy_custom(repository, input)
+        } else {
+            LegacyCustomRepository::authenticate_legacy_custom(repository, input)
+        }
+    }
+    fn assert_one_effect_no_retry(repository: &RetryingRepository<CustomCall>) {
+        assert_eq!(repository.inner.calls, 1);
+        assert!(repository.inner.outcome.is_none());
+        assert_eq!(repository.metrics.attempts.load(Ordering::Relaxed), 0);
+        assert_eq!(repository.metrics.retries.load(Ordering::Relaxed), 0);
+        assert_eq!(repository.metrics.exhausted.load(Ordering::Relaxed), 0);
+        assert_eq!(repository.metrics.sleep_nanos.load(Ordering::Relaxed), 0);
+    }
+    #[test]
+    fn custom_both_dispatch_paths_preserve_committed_account_once_without_retry() {
+        for via_app_repository in [false, true] {
+            for created in [false, true] {
+                let input = LegacyCustomRepositoryInput {
+                    custom_id: "source_custom_id",
+                    requested_username: "ignored_query_username",
+                    create: created,
+                };
+                let mut repository = RetryingRepository::new(
+                    CustomCall {
+                        calls: 0,
+                        expected: input,
+                        outcome: Some(Ok(LegacyCustomAccount {
+                            user_id: UserId::new([7; 16]),
+                            stored_username: "native_stored_username".to_owned(),
+                            created,
+                        })),
+                    },
+                    RetryPolicy::candidate_default(),
+                )
+                .unwrap();
+                let account = forward(&mut repository, input, via_app_repository).unwrap();
+                assert_eq!(account.user_id, UserId::new([7; 16]));
+                assert_eq!(account.stored_username, "native_stored_username");
+                assert_eq!(account.created, created);
+                assert_one_effect_no_retry(&repository);
+            }
+        }
+    }
+    #[test]
+    fn custom_both_dispatch_paths_preserve_errors_late_and_unknown_completion_once() {
+        let native = LegacyNativeAccountFailure {
+            code: StableCode::Internal,
+            phase: Some("custom_insert"),
+            last_failure: Some(LegacyCommittedCleanupFailure {
+                sqlstate: Some(*b"23505"),
+                username_collision: false,
+                transaction_closed: false,
+                reason: "source_custom_unique_insert_failed",
+            }),
+            cleanup_failure: None,
+            attempts: Some(1),
+            exhausted: Some(false),
+            unknown_commit: Some(true),
+        };
+        let late = |completion, cancellation| {
+            LegacyRepositoryError::Lease(Box::new(LegacyLeaseFailure {
+                boundary_error: DomainError::new(
+                    StableCode::Unavailable,
+                    "database_operation_deadline_exceeded",
+                    RetryClass::SafeBackoff,
+                ),
+                setup_error: None,
+                completion,
+                cancellation,
+                lease_retired: true,
+            }))
+        };
+        for via_app_repository in [false, true] {
+            for error in [
+                LegacyRepositoryError::UserNotFound,
+                LegacyRepositoryError::UserBanned,
+                LegacyRepositoryError::UsernameAlreadyInUse,
+                LegacyRepositoryError::CustomLookupFailed(native),
+                LegacyRepositoryError::NativeFailure(native),
+                late(
+                    LegacyLeaseCompletion::ConfirmedCreation {
+                        committed_cleanup_failure: None,
+                    },
+                    LegacyLeaseCancellation::Deadline,
+                ),
+                late(
+                    LegacyLeaseCompletion::NativeFailure(native),
+                    LegacyLeaseCancellation::Shutdown,
+                ),
+                late(
+                    LegacyLeaseCompletion::NotObserved,
+                    LegacyLeaseCancellation::Deadline,
+                ),
+            ] {
+                let expected = error.clone();
+                let lease_address = match &error {
+                    LegacyRepositoryError::Lease(record) => {
+                        Some(record.as_ref() as *const LegacyLeaseFailure)
+                    }
+                    _ => None,
+                };
+                let input = LegacyCustomRepositoryInput {
+                    custom_id: "source_custom_id",
+                    requested_username: "requested_name",
+                    create: false,
+                };
+                let mut repository = RetryingRepository::new(
+                    CustomCall {
+                        calls: 0,
+                        expected: input,
+                        outcome: Some(Err(error)),
+                    },
+                    RetryPolicy::candidate_default(),
+                )
+                .unwrap();
+                let returned = forward(&mut repository, input, via_app_repository).unwrap_err();
+                assert_eq!(returned, expected);
+                if let (Some(address), LegacyRepositoryError::Lease(record)) =
+                    (lease_address, &returned)
+                {
+                    assert_eq!(record.as_ref() as *const LegacyLeaseFailure, address);
+                }
+                assert_one_effect_no_retry(&repository);
+            }
+        }
     }
 }
