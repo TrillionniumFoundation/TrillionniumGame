@@ -286,7 +286,9 @@ pub fn decode_refresh_http_request(
     let object = parse_message(body, limits)?;
     Ok(LegacyRefreshHttpRequest {
         token: scalar(object.field(&["token"])?)?,
-        variables: variables(object.field(&["vars"])?, limits)?,
+        // The pinned HTTP gateway's empty map inherits the refresh token vars.
+        // Validate every map first; direct typed Some(empty) still clears.
+        variables: variables(object.field(&["vars"])?, limits)?.filter(|vars| !vars.is_empty()),
     })
 }
 

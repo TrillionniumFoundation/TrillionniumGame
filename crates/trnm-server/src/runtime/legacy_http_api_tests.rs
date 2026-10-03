@@ -234,7 +234,7 @@ fn empty_body_eof_first_json_value_and_message_root_type() {
 }
 
 #[test]
-fn absent_null_empty_and_filled_vars_remain_distinct() {
+fn refresh_absent_null_empty_vars_inherit_and_filled_vars_replace() {
     for body in [br#"{"token":null}"#.as_slice(), br#"{"vars":null}"#, b"{}"] {
         let request = refresh(body).unwrap();
         assert_eq!(request.token(), b"");
@@ -242,10 +242,36 @@ fn absent_null_empty_and_filled_vars_remain_distinct() {
     }
     let request = refresh(br#"{"token":"credential","vars":{}}"#).unwrap();
     assert_eq!(request.token(), b"credential");
-    assert!(request.variables().unwrap().is_empty());
+    assert!(request.variables().is_none());
     let request = refresh(br#"{"vars":{"":"","name":"value"}}"#).unwrap();
     assert_eq!(request.variables().unwrap().len(), 2);
     assert!(!format!("{request:?}").contains("value"));
+}
+
+#[test]
+fn refresh_empty_map_inheritance_does_not_change_device_empty_map_input() {
+    let device = device(br#"{"id":"validdevice01234","vars":{}}"#, "").unwrap();
+    assert!(device.auth_input().variables.unwrap().is_empty());
+    let refresh = refresh(br#"{"token":"credential","vars":{}}"#).unwrap();
+    assert!(refresh.variables().is_none());
+}
+
+#[test]
+fn refresh_empty_map_inheritance_still_rejects_invalid_and_duplicate_maps() {
+    for body in [
+        br#"{"vars":[]}"#.as_slice(),
+        br#"{"vars":false}"#,
+        br#"{"vars":1}"#,
+        br#"{"vars":{"x":null}}"#,
+        br#"{"vars":{"x":1}}"#,
+        br#"{"vars":{"x":"a","x":"b"}}"#,
+        br#"{"vars":{},"vars":{}}"#,
+    ] {
+        assert_eq!(
+            refresh(body).unwrap_err().code(),
+            StableCode::InvalidArgument
+        );
+    }
 }
 
 #[test]

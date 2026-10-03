@@ -321,17 +321,83 @@ fn legacy_refresh_reads_once_and_invalid_logout_second_token_changes_no_cache() 
     );
     assert_eq!(initial, service.blacklist_stats().unwrap());
     let refresh = serde_json::json!({"token":tokens["refresh_token"],"vars":{}});
+    let response = app.handle(&req(
+        "/v2/account/session/refresh?ignored=x",
+        Some(&basic()),
+        &serde_json::to_vec(&refresh).unwrap(),
+    ));
+    assert_eq!(response.status, 200);
+    let refreshed: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    let principal = service
+        .verify_access(refreshed["token"].as_str().unwrap().as_bytes())
+        .unwrap();
     assert_eq!(
-        app.handle(&req(
-            "/v2/account/session/refresh?ignored=x",
-            Some(&basic()),
-            &serde_json::to_vec(&refresh).unwrap()
-        ))
-        .status,
-        200
+        principal.variables().unwrap().get("secret").unwrap(),
+        "privateVars"
     );
     let c = counts.lock().unwrap();
     assert_eq!((c.device, c.user, c.durable), (1, 1, 0));
+}
+
+#[test]
+fn legacy_http_refresh_inherits_missing_null_empty_and_replaces_nonempty_vars() {
+    // Root Cargo only: legacy() constructs the real owned sweeper.
+    let fake = Fake::default();
+    let counts = fake.counts.clone();
+    let authority = legacy();
+    let AuthAuthorityRuntime::NakamaLegacy { service, .. } = &authority else {
+        unreachable!()
+    };
+    let service = service.clone();
+    let mut app = app(fake, authority, SharedDrain::default());
+    let initial = session(&mut app);
+    let initial_refresh = initial["refresh_token"].as_str().unwrap();
+    for (vars, expected_key, expected_value) in [
+        (None, "secret", "privateVars"),
+        (Some(serde_json::Value::Null), "secret", "privateVars"),
+        (Some(serde_json::json!({})), "secret", "privateVars"),
+        (
+            Some(serde_json::json!({"replacement":"new"})),
+            "replacement",
+            "new",
+        ),
+    ] {
+        let mut body = serde_json::json!({"token":initial_refresh});
+        if let Some(vars) = vars {
+            body["vars"] = vars;
+        }
+        let response = app.handle(&req(
+            "/v2/account/session/refresh",
+            Some(&basic()),
+            &serde_json::to_vec(&body).unwrap(),
+        ));
+        assert_eq!(response.status, 200);
+        let pair: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+        let principal = service
+            .verify_access(pair["token"].as_str().unwrap().as_bytes())
+            .unwrap();
+        assert_eq!(
+            principal.variables().unwrap(),
+            &BTreeMap::from([(expected_key.to_owned(), expected_value.to_owned())])
+        );
+        for name in ["token", "refresh_token"] {
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(pair[name].as_str().unwrap().split('.').nth(1).unwrap())
+                .unwrap();
+            let claims: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+            assert_eq!(
+                claims["vrs"],
+                serde_json::to_value(BTreeMap::from([(
+                    expected_key.to_owned(),
+                    expected_value.to_owned(),
+                )]))
+                .unwrap()
+            );
+            assert_eq!(claims["usn"], "StoredName");
+        }
+    }
+    let c = counts.lock().unwrap();
+    assert_eq!((c.device, c.user, c.durable), (1, 4, 0));
 }
 
 #[test]
