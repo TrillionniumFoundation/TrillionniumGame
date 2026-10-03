@@ -12,6 +12,7 @@
 
 mod runtime;
 
+pub use runtime::legacy_service_exports::*;
 pub use runtime::ServerError;
 
 pub fn run(arguments: &[String]) -> Result<(), ServerError> {

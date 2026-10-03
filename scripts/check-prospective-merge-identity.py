@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -298,8 +299,17 @@ def validate_identity(
         "prospective merge checkout has staged or tracked changes",
     )
 
+    # Exact parent/tree qualification above is separate from source-byte proof.
+    # Full current source5 is verified before selecting the unchanged runtime4.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import schema_evidence_binding as binding
+    capture_spec=importlib.util.spec_from_file_location("prospective_schema_source_capture",Path(__file__).with_name("capture-schema-source-selection.py"))
+    capture=importlib.util.module_from_spec(capture_spec);capture_spec.loader.exec_module(capture)
+    source_fields={profile:binding.identity_fields(capture.verified_head_binding(root,profile,actual_merge,merge_tree))
+                   for profile in binding.PROFILES}
     return {
-        "schema": "trillionnium.prospective-merge-identity.v1",
+        "schema": "trillionnium.prospective-merge-identity.v2",
+        "schema_source_selection": source_fields,
         "status": "verified",
         "repository": repository,
         "merge_commit": actual_merge,

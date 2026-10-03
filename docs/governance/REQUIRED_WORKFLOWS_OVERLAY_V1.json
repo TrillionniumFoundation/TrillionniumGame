@@ -24,18 +24,18 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "24ff147a2253697dc130a595c5828fc40265763c",
+      "git_blob_sha1": "90fe7c996f901317670585433836c0d723f4fc47",
       "minimum_successful_execution_jobs": 2,
       "name": "cockroach-serialization-retry",
       "path": ".github/workflows/cockroach-serialization-retry.yml",
       "workflow_id": 350047412
     }
   ],
-  "base_manifest_blob_sha1": "1808d9c67c25917e8ff94ed4416b3920cf65c92e",
+  "base_manifest_blob_sha1": "b1c69f73fe1b44f320067ed5dafea70e4c78af01",
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "45231f91227ded9f8b992addcc6e7fd4231cd5f7168a2f760f49896294136d1e",
+  "overlay_sha256": "3189c472f307f682dcd2762f75b66a8b1ad6979d204c82949028604d6fed2ab1",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -312,7 +312,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "a07f08e5803c29f4f36f62be8d5248372ed0819e",
+      "git_blob_sha1": "a9c2bc0cb651d2267ed50bc255ccf9455db4f8b1",
       "minimum_successful_execution_jobs": 1,
       "name": "database-backup-restore",
       "path": ".github/workflows/database-backup-restore.yml",
@@ -322,7 +322,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "3f29b5ce392c1cfe69085e844c1059540f0c84a8",
+      "git_blob_sha1": "2f7660985f9f79221dc101805f06e511fd0e0e75",
       "minimum_successful_execution_jobs": 1,
       "name": "trnm-server-live",
       "path": ".github/workflows/trnm-server-live.yml",
@@ -362,7 +362,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "935be6868a86770115556b4ed2d17bcede4ee7ae",
+      "git_blob_sha1": "3a737294007972b74f2d44aa8daf26a6da344d9e",
       "minimum_successful_execution_jobs": 1,
       "name": "rust-server-process-smoke",
       "path": ".github/workflows/rust-server-process-smoke.yml",
@@ -472,7 +472,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "bfe9fb8ea0574b03adb1fb59ede6446036b7d07d",
+      "git_blob_sha1": "382ec6ee9e00ebf2138962b430109b2e40fa910b",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-spool-worker",
       "path": ".github/workflows/outbox-spool-worker.yml",
@@ -482,7 +482,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "7c7d01894e3de41f414be7fde0818853a57f903e",
+      "git_blob_sha1": "a25e3731188c4f17459317a756877682843bd99f",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-final-attempt-reaper",
       "path": ".github/workflows/outbox-final-attempt-reaper.yml",
@@ -497,6 +497,16 @@
       "name": "grpc-health-source",
       "path": ".github/workflows/grpc-health-source.yml",
       "workflow_id": 346245276
+    },
+    {
+      "allowed_events": [
+        "pull_request"
+      ],
+      "git_blob_sha1": "0023ac6fb948fc999cabde7aceee0fc5cc4aa21d",
+      "minimum_successful_execution_jobs": 1,
+      "name": "prospective-merge-gate",
+      "path": ".github/workflows/prospective-merge-gate.yml",
+      "workflow_id": 347178559
     }
   ],
   "repository": "TrillionniumFoundation/TrillionniumGame",

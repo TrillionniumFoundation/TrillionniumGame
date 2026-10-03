@@ -8,10 +8,13 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use super::app::{App, Repository, SharedAppMetrics, SharedDrain};
+use super::auth::require_installed_http_authority;
+use super::auth_runtime::AuthAuthorityRuntime;
 use super::config::ServerConfig;
 use super::error::ServerError;
 use super::grpc;
 use super::http::{read_request, Request, Response};
+use super::legacy_http_api::legacy_auth_http_route;
 use super::pool::InflightCancellation;
 use super::retry::{BudgetedRepository, RetryPolicy, RetryingRepository};
 use super::websocket;
@@ -69,10 +72,23 @@ impl ConnectionRegistry {
     }
 }
 
-pub fn serve<R>(config: &ServerConfig, repository: R) -> Result<(), ServerError>
+pub fn serve<R>(config: &ServerConfig, mut repository: R) -> Result<(), ServerError>
 where
     R: Repository + BudgetedRepository + InflightCancellation + Clone + Send + 'static,
 {
+    require_installed_http_authority(&config.auth_authority)?;
+    if matches!(
+        config.auth_authority,
+        super::config::AuthAuthorityConfig::NakamaLegacy(_)
+    ) && config.schema_target != trnm_persistence_pg::AuthoritativeSchemaTarget::NakamaAccountsV5
+    {
+        return Err(ServerError::Configuration(
+            "legacy_auth_requires_accounts_v5_target",
+        ));
+    }
+    config.schema_target.require_capture_ready()?;
+    repository.verify_storage_import_serving()?;
+    let authority = AuthAuthorityRuntime::install(&config.auth_authority)?;
     let listener = TcpListener::bind(config.bind)?;
     listener.set_nonblocking(true)?;
     let (worker_count, queue_capacity) = connection_policy(config.database_pool.max_size);
@@ -82,56 +98,62 @@ where
     let draining = SharedDrain::default();
     let worker_failed = Arc::new(AtomicBool::new(false));
     let metrics = SharedAppMetrics::default();
-    let grpc_worker = grpc::spawn(
-        config.grpc_bind,
-        draining.clone(),
-        Arc::clone(&worker_failed),
-    )?;
+    let mut grpc_worker = None;
     let mut workers = Vec::with_capacity(worker_count);
+    let accept_result = (|| {
+        grpc_worker = grpc::spawn(
+            config.grpc_bind,
+            draining.clone(),
+            Arc::clone(&worker_failed),
+        )?;
 
-    for worker_index in 0..worker_count {
-        let worker_repository =
-            RetryingRepository::new(repository.clone(), RetryPolicy::candidate_default())?;
-        let worker_config = config.clone();
-        let worker_receiver = Arc::clone(&receiver);
-        let worker_draining = draining.clone();
-        let worker_failed = Arc::clone(&worker_failed);
-        let worker_metrics = metrics.clone();
-        let worker_connections = connections.clone();
-        workers.push(
-            thread::Builder::new()
-                .name(format!("trnm-connection-{worker_index}"))
-                .spawn(move || {
-                    let worker_drain_for_loop = worker_draining.clone();
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        worker_loop(
-                            worker_config,
-                            worker_repository,
-                            worker_receiver,
-                            worker_drain_for_loop,
-                            worker_metrics,
-                            worker_connections,
-                        );
-                    }));
-                    if result.is_err() {
-                        worker_failed.store(true, Ordering::Release);
-                        worker_draining.begin();
-                    }
-                })?,
-        );
-    }
+        for worker_index in 0..worker_count {
+            let worker_repository =
+                RetryingRepository::new(repository.clone(), RetryPolicy::candidate_default())?;
+            let worker_config = config.clone();
+            let worker_authority = authority.clone();
+            let worker_receiver = Arc::clone(&receiver);
+            let worker_draining = draining.clone();
+            let worker_failed = Arc::clone(&worker_failed);
+            let worker_metrics = metrics.clone();
+            let worker_connections = connections.clone();
+            workers.push(
+                thread::Builder::new()
+                    .name(format!("trnm-connection-{worker_index}"))
+                    .spawn(move || {
+                        let worker_drain_for_loop = worker_draining.clone();
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            worker_loop(
+                                worker_config,
+                                worker_repository,
+                                worker_receiver,
+                                worker_drain_for_loop,
+                                worker_metrics,
+                                worker_connections,
+                                worker_authority,
+                            );
+                        }));
+                        if result.is_err() {
+                            worker_failed.store(true, Ordering::Release);
+                            worker_draining.begin();
+                        }
+                    })?,
+            );
+        }
 
-    eprintln!("{STARTUP_MESSAGE}");
+        eprintln!("{STARTUP_MESSAGE}");
 
-    let accept_result = accept_loop(
-        &listener,
-        &sender,
-        config,
-        &draining,
-        &worker_failed,
-        &connections,
-    );
+        accept_loop(
+            &listener,
+            &sender,
+            config,
+            &draining,
+            &worker_failed,
+            &connections,
+        )
+    })();
     draining.begin();
+    drop(listener);
     let closed_connections = connections.shutdown_all();
     if closed_connections > 0 {
         eprintln!(
@@ -147,6 +169,7 @@ where
     drop(sender);
     let join_result = join_workers(workers);
     let grpc_join_result = grpc::join(grpc_worker);
+    drop(authority);
     accept_result?;
     join_result?;
     grpc_join_result?;
@@ -208,6 +231,7 @@ fn worker_loop<R>(
     draining: SharedDrain,
     metrics: SharedAppMetrics,
     connections: ConnectionRegistry,
+    authority: AuthAuthorityRuntime,
 ) where
     R: BudgetedRepository,
 {
@@ -216,20 +240,8 @@ fn worker_loop<R>(
         config.admin_token.clone(),
         metrics,
         draining.clone(),
-    );
-    if let Some(session_auth) = &config.session_auth {
-        match session_auth.verifier() {
-            Ok(verifier) => app = app.with_access_token_verifier(verifier),
-            Err(error) => {
-                eprintln!(
-                    "trnm-server connection worker session verifier failed: {}",
-                    error.code().as_str()
-                );
-                draining.begin();
-                return;
-            }
-        }
-    }
+    )
+    .with_auth_authority(authority);
 
     while let Some(mut connection) = receive_connection(&receiver) {
         if let Err(error) = handle_connection(&mut connection.stream, &mut app, &config, &draining)
@@ -273,7 +285,7 @@ fn handle_connection<R: Repository>(
     if draining.is_draining()
         && (is_readiness(&request) || request_rejected_while_draining(&request))
     {
-        write_response(stream, &draining_response());
+        write_response(stream, &request_draining_response(&request));
         return Ok(());
     }
 
@@ -360,6 +372,13 @@ fn unavailable() -> Response {
     )
 }
 
+fn request_draining_response(request: &Request) -> Response {
+    if legacy_auth_http_route(&request.method, &request.target).is_some() {
+        return super::storage_api::gateway_error(503, 14, "Service is draining.");
+    }
+    draining_response()
+}
+
 fn draining_response() -> Response {
     Response::json(
         503,
@@ -424,6 +443,38 @@ mod tests {
         assert!(matches!(client.read(&mut byte), Ok(0) | Err(_)));
         registry.remove(id);
         assert_eq!(registry.shutdown_all(), 0);
+    }
+
+    #[test]
+    fn legacy_transport_drain_preserves_gateway_code_for_every_post_query_variant() {
+        for path in [
+            "/v2/account/authenticate/device",
+            "/v2/account/session/refresh",
+            "/v2/session/logout",
+        ] {
+            for query in ["", "?create=false", "?create=false&unknown=x"] {
+                let request = Request::new(
+                    "POST",
+                    format!("{path}{query}"),
+                    BTreeMap::new(),
+                    b"invalid body must remain unparsed".to_vec(),
+                );
+                assert!(request_rejected_while_draining(&request));
+                let response = request_draining_response(&request);
+                assert_eq!(response.status, 503);
+                let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+                assert_eq!(body["code"], 14);
+                assert_eq!(body["message"], "Service is draining.");
+                assert!(body.get("retry").is_none());
+                assert_eq!(body.as_object().unwrap().len(), 2);
+            }
+            let request = Request::new("GET", path, BTreeMap::new(), Vec::new());
+            assert!(!request_rejected_while_draining(&request));
+            let response = request_draining_response(&request);
+            let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(body["code"], "unavailable");
+            assert_eq!(body["retry"], "backoff");
+        }
     }
 
     #[test]

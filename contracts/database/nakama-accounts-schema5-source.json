@@ -1,0 +1,60 @@
+{
+  "status": "isolated-unpromotable-source-frontier5",
+  "supported_source_schema_version": 5,
+  "default_runtime_schema_version": 4,
+  "storage_writer_epoch": 4,
+  "native_tables": [
+    "users",
+    "user_device"
+  ],
+  "field_counts": {
+    "users": 23,
+    "user_device": 8
+  },
+  "typed_target": "AuthoritativeSchemaTarget::NakamaAccountsV5",
+  "gate_reason": "schema5_native_catalog_capture_pending",
+  "gate_precedes_namespace_and_DDL": true,
+  "native_catalog_observations_bound": false,
+  "native_migration_executed": false,
+  "default_runtime_promoted": false,
+  "account_repository_implemented": false,
+  "account_service_HTTP_gRPC_implemented": false,
+  "account_transfer_implemented": false,
+  "schema5_storage_transfer_admitted": false,
+  "schema5_backup_restore_qualified": false,
+  "existing_eight_SQL_unchanged": true,
+  "existing_storage_transfer_guard_frame_unchanged": true,
+  "preserved_source_publishers": [
+    "source_commit",
+    "v2_apply_source_commit",
+    "v3_apply_source_commit"
+  ],
+  "new_source_publisher": "v4_apply_source_commit records actual prior4 publisher only when publishing5",
+  "full_Nakama_schema_or_account_parity_claimed": false,
+  "accepted": false,
+  "compatibility_credit": false,
+  "claims_boundary": "Complete current two-table fields/defaults/constraints are declared; source-display-name GIN/search, full other Nakama tables, account service/import/runtime and native qualification remain open.",
+  "schema": "trillionnium.nakama-accounts-schema5-source.v1",
+  "project_id": "trillionnium-game",
+  "upstream_commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+  "source_migrations": {
+    "initial": "e046424f0bcd47030e4a93fce0c0623657224550",
+    "facebook-instant-games": "7e8770a9545de896d5e0f2aa4d1e9da817380a28",
+    "apple": "61527332e3905b475dd1fd0726d75086bcae4749",
+    "console-device-fields": "c7c12df414ef656738b677ac6f2932fd8f3f68af"
+  },
+  "current_native_catalog_status": {
+    "postgresql": "unobserved",
+    "cockroachdb": "unobserved"
+  },
+  "activation_requires": [
+    "Exact raw native table/default/unique/check/FK/index/catalog tuples for each profile",
+    "Source bound capture registry plus negative altered-predicate/type/constraint/key/default tests",
+    "Fresh4->5 and interrupted CR prefix/PG rollback with preserved v4 publisher",
+    "Schema5 storage-only target/ownership/trigger/import fence and backup/restoration concrete separate contract",
+    "Conflict-free independent native/database/security review"
+  ],
+  "rollback": "Default schema4 service cannot admit5 or downgrade metadata. Root must use forward fix/owned scratch reset and later approved migration policy; no production DROP rollback.",
+  "current_evidence_binding_supports_fullfrontier5_HEAD": false,
+  "blocking_source_boundary": "Existing v4 live, backup, retry and outbox evidence require full locked4 source; fullfrontier5 with selected runtime4 needs distinct typed source-prefix binding before merge."
+}

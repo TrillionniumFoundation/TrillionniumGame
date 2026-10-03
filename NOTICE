@@ -36,7 +36,49 @@ Any future copied or modified upstream source or protocol file must retain its
 applicable copyright and license header, carry a prominent modification notice,
 and be registered in the repository's machine-readable source manifest.
 
+The independently implemented Rust storage HTTP mutation adapter studies
+pinned server/api_storage.go, server/core_storage.go, server/api.go and
+apigrpc/apigrpc.proto plus nakama-common api/api.proto. Its protocol and public
+storage rejection strings follow those Apache-2.0 definitions; exact blobs and
+remaining differences are registered in contracts/storage/nakama-http-storage-v1.json.
+No upstream Go implementation is compiled or copied by this adapter.
+
 "Nakama", "Heroic Labs", and related names and marks are the property of their
 respective owners. The Apache License does not grant trademark rights. This
 project is not represented as endorsed by, sponsored by, or affiliated with
 Heroic Labs or BluGe Labs.
+
+The bounded Rust storage occurrence sorter is a modified translation of Go
+1.26.5 sort.Sort and its generated interface sorter, Copyright 2009 and 2022
+The Go Authors. All rights reserved. Original source at golang/go commit
+c19862e5f8415b4f24b189d065ed739517c548ba is governed by the BSD license
+reproduced in third_party/go-sort/LICENSE. Modification: Rust ordinal sorting
+with a 100-operation bound for canonical-owner batches. Source identities are
+registered in contracts/storage/nakama-sort-source-lock-v1.json. No Go sorter
+executable is a target-service dependency.
+
+Nakama account schema contract
+The source-only 0005 account migration declares users/user_device fields, defaults
+and constraints studied from Nakama 3.40.0 d4d92f93 initial, provider and Console
+migrations. Copyright 2018 The Nakama Authors, Apache License 2.0. This does not
+grant full Nakama schema, account service, data migration or compatibility credit.
+
+Nakama legacy authentication source study
+The independent Rust legacy issuer, RawURL/header/claims/verifier, blacklist,
+Device predicates, owned service and native account adapter study selected
+regions of the exact Nakama 3.40.0 sources recorded in
+contracts/session/nakama-v340-token-source-lock.json. Nakama source is
+Copyright The Nakama Authors & Contributors, Apache License 2.0. Complete-file
+identity verification and the derived-region records are separate scopes.
+No Go authentication implementation is compiled into the target, and these
+source candidates grant no HTTP/native/production/acceptance compatibility.
+
+The independent Rust AuthenticateCustom source candidate derives its validation,
+lookup/autocommit ordering and public rejection strings from pinned Nakama
+server/api_authenticate.go (blob 1f938603160ef1dc7f6546926de5481622139dd2),
+server/core_authenticate.go (blob 5ec2f5c00ef875d11fc79865a30059d1147ac7e1),
+apigrpc/apigrpc.proto and apigrpc/apigrpc.pb.gw.go, with AccountCustom/Session
+definitions from nakama-common api/api.proto. The Nakama Authors & Contributors
+retain their Apache-2.0 copyright. No upstream Go implementation or bcrypt
+primitive is compiled into this Custom adapter. Its source status grants no
+native, HTTP, cryptographic, compatibility or production acceptance.

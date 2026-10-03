@@ -1,6 +1,7 @@
 //! Live, test-only commit-boundary fault injection through the production
 //! RetryingRepository -> PooledRepository -> PgRepository transaction path.
 //! CockroachDB's session fault is disabled before the next whole-command attempt.
+use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +13,7 @@ use postgres::{Client, Config, NoTls};
 use trnm_contracts::{CommandId, Digest32, DomainError, RetryClass, StableCode};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, DatabaseProfile, EntityHead, EntityId, EventId, EventInput,
-    IntentId, IntentKind, OutboxInput, PgPool, PgPoolConfig,
+    IntentId, IntentKind, OutboxInput, PgPool, PgPoolConfig, SchemaMigrationReport,
 };
 
 use super::super::app::{Repository, RepositoryOperationalMetrics};
@@ -20,11 +21,21 @@ use super::super::pool::PooledRepository;
 use super::super::retry::{BudgetedRepository, RetryPolicy, RetryingRepository};
 
 const BUDGET: Duration = Duration::from_secs(10);
-const MIGRATION: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../migrations/cockroachdb/0001_foundation_up.sql"
-));
 
+fn emit_schema_report(marker: &str, report: &SchemaMigrationReport) {
+    // Test evidence is emitted only after the migration/verification transaction
+    // has ended. The report contains no connection URL or credentials.
+    let mut digest = String::with_capacity(64);
+    for byte in report.identity.chain_digest.get().as_bytes() {
+        write!(digest, "{byte:02x}").expect("String write");
+    }
+    // Profile/algorithm are static names, provenance is checked hexadecimal
+    // and the digest is hexadecimal: no unescaped external text enters JSON.
+    println!("\n{marker}={{\"schema\":\"trillionnium.authoritative-schema-report.v1\",\"profile\":\"{}\",\"schema_version\":{},\"chain_digest\":\"{}\",\"digest_algorithm\":\"{}\",\"storage_writer_epoch\":{},\"source_commit\":\"{}\",\"upgrade_source_commit\":\"{}\",\"v2_apply_source_commit\":\"{}\",\"v3_apply_source_commit\":\"{}\",\"migration_applied\":{},\"table_count\":{},\"applied_steps\":{},\"compatibility_credit\":false}}",
+        report.identity.profile.metadata_value(), report.identity.schema_version, digest, report.identity.digest_algorithm,
+        report.identity.storage_writer_epoch, report.identity.source_commit, report.identity.upgrade_source_commit, report.identity.v2_apply_source_commit, report.identity.v3_apply_source_commit,
+        report.migration_applied, report.table_count, report.applied_steps);
+}
 struct InjectedRepository {
     inner: PooledRepository,
     pool: PgPool,
@@ -192,7 +203,6 @@ pub fn prove(database_url: &str) {
         .unwrap();
     config.dbname(&database);
     let mut inspector = config.connect(NoTls).unwrap();
-    inspector.batch_execute(MIGRATION).unwrap();
     let port = config.get_ports().first().copied().unwrap_or(26257);
     // Preserve credentials/options from the caller for real connections. The
     // lab only accepts its existing insecure root loopback profile.
@@ -201,6 +211,15 @@ pub fn prove(database_url: &str) {
     let url = format!("postgresql://root@127.0.0.1:{port}/{database}?sslmode=disable");
     assert_eq!(host, "127.0.0.1");
     let pool = PgPool::connect_plain(&url, DatabaseProfile::CockroachDb, pool_config()).unwrap();
+    {
+        let mut migrator = pool.acquire().unwrap();
+        let source_commit = std::env::var("TRNM_SCHEMA_SOURCE_COMMIT")
+            .expect("atomicity fixture requires actual schema apply source commit");
+        let report = migrator
+            .migrate_authoritative_schema(&source_commit, 1, None)
+            .unwrap();
+        emit_schema_report("retry_schema_apply_report", &report);
+    }
     let original = request(0x61);
     let mut actual = PooledRepository::new(pool.clone());
     actual
@@ -279,6 +298,29 @@ pub fn prove(database_url: &str) {
     assert_eq!(metrics.retry_attempts, 2);
     assert_eq!(metrics.retry_exhausted, 1);
     assert_counts(&mut inspector, exhausted.entity, 0);
+    let identity = reconnected
+        .acquire()
+        .unwrap()
+        .verify_authoritative_schema()
+        .unwrap();
+    let table_count: i64 = inspector
+        .query_one(
+            "SELECT count(*)::BIGINT FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'trnm_%' AND table_type='BASE TABLE'",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    let table_count = usize::try_from(table_count).unwrap();
+    assert_eq!(table_count, 12);
+    emit_schema_report(
+        "retry_schema_verify_report",
+        &SchemaMigrationReport {
+            identity,
+            migration_applied: false,
+            table_count,
+            applied_steps: 0,
+        },
+    );
     drop(retrying);
     drop(reconnected);
     drop(inspector);

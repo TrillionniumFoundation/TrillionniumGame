@@ -78,6 +78,10 @@ impl PgRepository {
             .isolation_level(postgres::IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
 
         // A process can die after taking the final permitted attempt and before
         // acknowledging or retrying it. Such a row is no longer claimable
@@ -92,7 +96,7 @@ impl PgRepository {
                 .query_opt(
                     "SELECT intent_id, entity_id, command_id, kind, payload_digest, \
                      attempt, lease_generation, state \
-                     FROM trnm_outbox \
+                     FROM public.trnm_outbox \
                      WHERE state IN (0, 1) AND available_at_ms <= $1 AND attempt < $2 \
                      ORDER BY available_at_ms, intent_id LIMIT 1 FOR UPDATE",
                     &[&now_ms_i64, &max_attempts_i64],
@@ -130,7 +134,7 @@ impl PgRepository {
             let prior_generation_i64 = to_i64(prior_generation)?;
             let updated = transaction
                 .execute(
-                    "UPDATE trnm_outbox SET state = 1, owner_node = $2, attempt = $3, \
+                    "UPDATE public.trnm_outbox SET state = 1, owner_node = $2, attempt = $3, \
                      lease_generation = $4, available_at_ms = $5, updated_at_ms = $1 \
                      WHERE intent_id = $6 AND state = $7 AND lease_generation = $8",
                     &[
@@ -183,10 +187,19 @@ impl PgRepository {
         }
         let generation = to_i64(lease.lease_generation)?;
         let completed_at_ms = to_i64(completed_at_ms)?;
-        let updated = self
+        let mut transaction = self
             .client
+            .build_transaction()
+            .isolation_level(postgres::IsolationLevel::Serializable)
+            .start()
+            .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
+        let updated = transaction
             .execute(
-                "UPDATE trnm_outbox SET state = 2, owner_node = NULL, \
+                "UPDATE public.trnm_outbox SET state = 2, owner_node = NULL, \
                  receipt_digest = $4, dead_reason_digest = NULL, updated_at_ms = $5 \
                  WHERE intent_id = $1 AND state = 1 AND owner_node = $2 \
                  AND lease_generation = $3",
@@ -199,7 +212,8 @@ impl PgRepository {
                 ],
             )
             .map_err(map_postgres_error)?;
-        require_one_fenced_update(updated, "outbox_complete_stale_lease")
+        require_one_fenced_update(updated, "outbox_complete_stale_lease")?;
+        transaction.commit().map_err(map_postgres_error)
     }
 
     pub fn retry_or_dead_letter_outbox(
@@ -229,11 +243,15 @@ impl PgRepository {
             .isolation_level(postgres::IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
         let attempt = load_fenced_attempt(&mut transaction, lease, generation)?;
         let outcome = if attempt >= max_attempts_i64 {
             let updated = transaction
                 .execute(
-                    "UPDATE trnm_outbox SET state = 3, owner_node = NULL, \
+                    "UPDATE public.trnm_outbox SET state = 3, owner_node = NULL, \
                      receipt_digest = NULL, dead_reason_digest = $4, updated_at_ms = $5 \
                      WHERE intent_id = $1 AND state = 1 AND owner_node = $2 \
                      AND lease_generation = $3",
@@ -254,7 +272,7 @@ impl PgRepository {
         } else {
             let updated = transaction
                 .execute(
-                    "UPDATE trnm_outbox SET state = 0, owner_node = NULL, \
+                    "UPDATE public.trnm_outbox SET state = 0, owner_node = NULL, \
                      receipt_digest = NULL, dead_reason_digest = NULL, \
                      available_at_ms = $4, updated_at_ms = $5 \
                      WHERE intent_id = $1 AND state = 1 AND owner_node = $2 \
@@ -289,7 +307,7 @@ fn reap_expired_exhausted(
     for _ in 0..limit {
         let Some(row) = transaction
             .query_opt(
-                "SELECT intent_id, lease_generation, attempt FROM trnm_outbox \
+                "SELECT intent_id, lease_generation, attempt FROM public.trnm_outbox \
                  WHERE state = 1 AND available_at_ms <= $1 AND attempt >= $2 \
                  ORDER BY available_at_ms, intent_id LIMIT 1 FOR UPDATE",
                 &[&now_ms, &max_attempts],
@@ -309,7 +327,7 @@ fn reap_expired_exhausted(
         let generation = to_i64(generation)?;
         let updated = transaction
             .execute(
-                "UPDATE trnm_outbox SET state = 3, owner_node = NULL, \
+                "UPDATE public.trnm_outbox SET state = 3, owner_node = NULL, \
                  receipt_digest = NULL, dead_reason_digest = $2, updated_at_ms = $1 \
                  WHERE intent_id = $3 AND state = 1 AND available_at_ms <= $1 \
                  AND lease_generation = $4 AND attempt = $5 AND attempt >= $6",
@@ -374,7 +392,7 @@ fn load_fenced_attempt(
 ) -> Result<i64, DomainError> {
     let row = transaction
         .query_opt(
-            "SELECT attempt FROM trnm_outbox WHERE intent_id = $1 AND state = 1 \
+            "SELECT attempt FROM public.trnm_outbox WHERE intent_id = $1 AND state = 1 \
              AND owner_node = $2 AND lease_generation = $3 FOR UPDATE",
             &[
                 &lease.id.as_bytes().as_slice(),

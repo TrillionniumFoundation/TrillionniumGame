@@ -373,7 +373,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "3f29b5ce392c1cfe69085e844c1059540f0c84a8",
+      "git_blob_sha1": "8f4661edda6425c9ccfd6d044053c7062d55b13c",
       "minimum_successful_execution_jobs": 1,
       "name": "trnm-server-live",
       "path": ".github/workflows/trnm-server-live.yml",

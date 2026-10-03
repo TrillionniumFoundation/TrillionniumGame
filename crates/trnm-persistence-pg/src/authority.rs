@@ -27,7 +27,7 @@ impl PgRepository {
         self.client
             .query_opt(
                 "SELECT owner_node, lease_generation, authority_generation, \
-                 expires_at_ms, updated_at_ms FROM trnm_authority_leases \
+                 expires_at_ms, updated_at_ms FROM public.trnm_authority_leases \
                  WHERE entity_id = $1",
                 &[&entity.as_bytes().as_slice()],
             )
@@ -60,10 +60,14 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
 
         let head = transaction
             .query_opt(
-                "SELECT authority_generation, updated_at_ms FROM trnm_entity_heads \
+                "SELECT authority_generation, updated_at_ms FROM public.trnm_entity_heads \
                  WHERE entity_id = $1 FOR UPDATE",
                 &[&entity.as_bytes().as_slice()],
             )
@@ -91,7 +95,7 @@ impl PgRepository {
         let existing = transaction
             .query_opt(
                 "SELECT owner_node, lease_generation, authority_generation, \
-                 expires_at_ms, updated_at_ms FROM trnm_authority_leases \
+                 expires_at_ms, updated_at_ms FROM public.trnm_authority_leases \
                  WHERE entity_id = $1 FOR UPDATE",
                 &[&entity.as_bytes().as_slice()],
             )
@@ -103,7 +107,7 @@ impl PgRepository {
             None => {
                 transaction
                     .execute(
-                        "INSERT INTO trnm_authority_leases \
+                        "INSERT INTO public.trnm_authority_leases \
                          (entity_id, owner_node, lease_generation, authority_generation, \
                           expires_at_ms, updated_at_ms) \
                          VALUES ($1, $2, 1, $3, $4, $5)",
@@ -150,7 +154,7 @@ impl PgRepository {
                 let next_authority_i64 = to_i64(next_authority_generation)?;
                 let updated_head = transaction
                     .execute(
-                        "UPDATE trnm_entity_heads \
+                        "UPDATE public.trnm_entity_heads \
                          SET authority_generation = $2, updated_at_ms = $3 \
                          WHERE entity_id = $1 AND authority_generation = $4",
                         &[
@@ -171,7 +175,7 @@ impl PgRepository {
                 let previous_lease_i64 = to_i64(previous.lease_generation)?;
                 let updated_lease = transaction
                     .execute(
-                        "UPDATE trnm_authority_leases \
+                        "UPDATE public.trnm_authority_leases \
                          SET owner_node = $2, lease_generation = $3, \
                              authority_generation = $4, expires_at_ms = $5, \
                              updated_at_ms = $6 \
@@ -236,10 +240,14 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
         let current = transaction
             .query_opt(
                 "SELECT owner_node, lease_generation, authority_generation, \
-                 expires_at_ms, updated_at_ms FROM trnm_authority_leases \
+                 expires_at_ms, updated_at_ms FROM public.trnm_authority_leases \
                  WHERE entity_id = $1 FOR UPDATE",
                 &[&lease.entity.as_bytes().as_slice()],
             )
@@ -275,7 +283,7 @@ impl PgRepository {
         }
         let head_generation: i64 = transaction
             .query_one(
-                "SELECT authority_generation FROM trnm_entity_heads \
+                "SELECT authority_generation FROM public.trnm_entity_heads \
                  WHERE entity_id = $1 FOR UPDATE",
                 &[&lease.entity.as_bytes().as_slice()],
             )
@@ -287,7 +295,7 @@ impl PgRepository {
         }
         let updated = transaction
             .execute(
-                "UPDATE trnm_authority_leases \
+                "UPDATE public.trnm_authority_leases \
                  SET expires_at_ms = $5, updated_at_ms = $6 \
                  WHERE entity_id = $1 AND owner_node = $2 \
                    AND lease_generation = $3 AND authority_generation = $4",
@@ -327,10 +335,19 @@ impl PgRepository {
         let released_i64 = to_i64(released_at_ms)?;
         let lease_generation_i64 = to_i64(lease.lease_generation)?;
         let authority_generation_i64 = to_i64(lease.authority_generation)?;
-        let updated = self
+        let mut transaction = self
             .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .start()
+            .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
+        let updated = transaction
             .execute(
-                "UPDATE trnm_authority_leases \
+                "UPDATE public.trnm_authority_leases \
                  SET expires_at_ms = $5, updated_at_ms = $5 \
                  WHERE entity_id = $1 AND owner_node = $2 \
                    AND lease_generation = $3 AND authority_generation = $4 \
@@ -351,6 +368,7 @@ impl PgRepository {
                 RetryClass::ResyncRequired,
             ));
         }
+        transaction.commit().map_err(map_postgres_error)?;
         Ok(AuthorityLease {
             expires_at_ms: released_at_ms,
             updated_at_ms: released_at_ms,

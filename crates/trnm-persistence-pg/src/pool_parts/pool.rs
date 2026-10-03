@@ -1,6 +1,78 @@
+/// Account operation observation remains separate from the outer lease boundary.
+/// An interrupted observed success is not permission to acknowledge or retry it.
+/// `None` means no operation result was observed, not proof of no durable effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PgAccountLeaseCancellation {
+    None,
+    Deadline,
+    Shutdown,
+}
+
+pub struct PgAccountLeaseOutcome<T> {
+    pub observed: Option<Result<T, crate::NakamaAccountError>>,
+    pub boundary_error: Option<DomainError>,
+    pub setup_error: Option<DomainError>,
+    pub cancellation: PgAccountLeaseCancellation,
+    /// Actual retirement flag; retirement prevents recycling, not commit proof.
+    pub lease_retired: bool,
+}
+impl<T> fmt::Debug for PgAccountLeaseOutcome<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PgAccountLeaseOutcome")
+            .field("operation_result_observed", &self.observed.is_some())
+            .field(
+                "observed_success",
+                &self.observed.as_ref().map(Result::is_ok),
+            )
+            .field("boundary_code", &self.boundary_error.map(DomainError::code))
+            .field("cancellation", &self.cancellation)
+            .field("lease_retired", &self.lease_retired)
+            .finish()
+    }
+}
+impl<T> PgAccountLeaseOutcome<T> {
+    fn not_observed(error: DomainError) -> Self {
+        Self {
+            observed: None,
+            boundary_error: Some(error),
+            setup_error: Some(error),
+            cancellation: PgAccountLeaseCancellation::None,
+            lease_retired: false,
+        }
+    }
+}
+fn account_lease_outcome<T>(
+    observed: Option<Result<T, crate::NakamaAccountError>>,
+    setup_error: Option<DomainError>,
+    cancellation_reason: u8,
+    expired: bool,
+    lease_retired: bool,
+) -> PgAccountLeaseOutcome<T> {
+    let boundary_error = match cancellation_reason {
+        CANCEL_DEADLINE => Some(operation_deadline_exceeded()),
+        CANCEL_SHUTDOWN => Some(operation_shutdown_cancelled()),
+        _ if expired => Some(operation_deadline_exceeded()),
+        _ => setup_error,
+    };
+    let cancellation = match cancellation_reason {
+        CANCEL_DEADLINE => PgAccountLeaseCancellation::Deadline,
+        CANCEL_SHUTDOWN => PgAccountLeaseCancellation::Shutdown,
+        _ => PgAccountLeaseCancellation::None,
+    };
+    PgAccountLeaseOutcome {
+        observed,
+        boundary_error,
+        setup_error,
+        cancellation,
+        lease_retired,
+    }
+}
+
 #[derive(Clone)]
 pub struct PgPool {
     profile: DatabaseProfile,
+    serving_schema_target: crate::AuthoritativeSchemaTarget,
     policy: PgPoolConfig,
     inner: PoolInner,
     metrics: Arc<PgPoolMetrics>,
@@ -13,6 +85,21 @@ impl PgPool {
         profile: DatabaseProfile,
         policy: PgPoolConfig,
     ) -> Result<Self, DomainError> {
+        Self::connect_plain_for_target(
+            database_url,
+            profile,
+            policy,
+            crate::AuthoritativeSchemaTarget::StorageV4,
+        )
+    }
+
+    pub fn connect_plain_for_target(
+        database_url: &str,
+        profile: DatabaseProfile,
+        policy: PgPoolConfig,
+        target: crate::AuthoritativeSchemaTarget,
+    ) -> Result<Self, DomainError> {
+        target.require_capture_ready()?;
         let policy = policy.validate()?;
         let mut database = Config::from_str(database_url).map_err(super::map_postgres_error)?;
         database.ssl_mode(SslMode::Disable);
@@ -25,6 +112,7 @@ impl PgPool {
         let cancellations = Arc::new(CancelState::new(Arc::clone(&metrics)));
         Ok(Self {
             profile,
+            serving_schema_target: target,
             policy,
             inner: PoolInner::Plain(pool),
             metrics,
@@ -38,6 +126,23 @@ impl PgPool {
         policy: PgPoolConfig,
         tls: &PgTlsConfig,
     ) -> Result<Self, DomainError> {
+        Self::connect_tls_for_target(
+            database_url,
+            profile,
+            policy,
+            tls,
+            crate::AuthoritativeSchemaTarget::StorageV4,
+        )
+    }
+
+    pub fn connect_tls_for_target(
+        database_url: &str,
+        profile: DatabaseProfile,
+        policy: PgPoolConfig,
+        tls: &PgTlsConfig,
+        target: crate::AuthoritativeSchemaTarget,
+    ) -> Result<Self, DomainError> {
+        target.require_capture_ready()?;
         let policy = policy.validate()?;
         let mut database = Config::from_str(database_url).map_err(super::map_postgres_error)?;
         database.ssl_mode(SslMode::Require);
@@ -52,6 +157,7 @@ impl PgPool {
         let cancellations = Arc::new(CancelState::new(Arc::clone(&metrics)));
         Ok(Self {
             profile,
+            serving_schema_target: target,
             policy,
             inner: PoolInner::Tls {
                 pool,
@@ -105,20 +211,16 @@ impl PgPool {
             repository.client.retirement_flag(),
         );
         let deadline = DeadlineGuard::start(Arc::clone(&self.cancellations), remaining, action)?;
-        let result = match configure_session(
-            &mut repository.client,
-            self.profile,
-            self.policy,
-            remaining,
-        ) {
-            Ok(()) => operation(&mut repository),
-            Err(error) => {
-                self.metrics
-                    .session_policy_failures
-                    .fetch_add(1, Ordering::Relaxed);
-                Err(error)
-            }
-        };
+        let result =
+            match configure_session(&mut repository.client, self.profile, self.policy, remaining) {
+                Ok(()) => operation(&mut repository),
+                Err(error) => {
+                    self.metrics
+                        .session_policy_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    Err(error)
+                }
+            };
         let cancellation_reason = deadline.finish();
         let elapsed = started.elapsed();
         if cancellation_reason != CANCEL_NONE || elapsed >= total_budget {
@@ -130,6 +232,79 @@ impl PgPool {
             _ if elapsed >= total_budget => Err(operation_deadline_exceeded()),
             _ => result,
         }
+    }
+
+    /// One lease, one native account call, no generic retry. The native account
+    /// engine alone owns its bounded attempts. Keep late commit/cleanup/error
+    /// observations while the outer deadline prevents a successful wire reply.
+    pub fn run_account_with_deadline<T>(
+        &self,
+        total_budget: Duration,
+        operation: impl FnOnce(&mut PgRepository) -> Result<T, crate::NakamaAccountError>,
+    ) -> PgAccountLeaseOutcome<T> {
+        if total_budget < MINIMUM_OPERATION_BUDGET {
+            return PgAccountLeaseOutcome::not_observed(operation_deadline_exceeded());
+        }
+        let started = Instant::now();
+        let acquire_budget = total_budget.min(self.policy.acquire_timeout);
+        let mut repository = match self.acquire_unconfigured(acquire_budget) {
+            Ok(repository) => repository,
+            Err(error) => {
+                return account_lease_outcome(
+                    None,
+                    Some(error),
+                    CANCEL_NONE,
+                    started.elapsed() >= total_budget,
+                    false,
+                );
+            }
+        };
+        let remaining = total_budget.saturating_sub(started.elapsed());
+        if remaining < MINIMUM_OPERATION_BUDGET {
+            return PgAccountLeaseOutcome::not_observed(operation_deadline_exceeded());
+        }
+        let action = self.cancellation_action(
+            repository.client.cancel_token(),
+            repository.client.retirement_flag(),
+        );
+        let deadline =
+            match DeadlineGuard::start(Arc::clone(&self.cancellations), remaining, action) {
+                Ok(deadline) => deadline,
+                Err(error) => return PgAccountLeaseOutcome::not_observed(error),
+            };
+        let (observed, setup_error) =
+            match configure_session(&mut repository.client, self.profile, self.policy, remaining) {
+                Ok(()) => (Some(operation(&mut repository)), None),
+                Err(error) => {
+                    self.metrics
+                        .session_policy_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    // The native session policy is not confirmed on this lease.
+                    repository.client.retire();
+                    (None, Some(error))
+                }
+            };
+        let cancellation_reason = deadline.finish();
+        let expired = started.elapsed() >= total_budget;
+        if cancellation_reason != CANCEL_NONE || expired {
+            repository.client.retire();
+        }
+        if observed.as_ref().is_some_and(|result| matches!(result,
+            Err(crate::NakamaAccountError::Internal(failure) | crate::NakamaAccountError::UsernameAlreadyExists(failure))
+                if failure.unknown_commit || failure.cleanup_failure.is_some())) {
+            repository.client.retire();
+        }
+        let lease_retired = repository
+            .client
+            .retirement_flag()
+            .is_some_and(|flag| flag.load(Ordering::Acquire));
+        account_lease_outcome(
+            observed,
+            setup_error,
+            cancellation_reason,
+            expired,
+            lease_retired,
+        )
     }
 
     #[must_use]
@@ -149,33 +324,23 @@ impl PgPool {
             idle_connections: state.idle_connections,
             acquire_attempts: self.metrics.acquire_attempts.load(Ordering::Relaxed),
             acquire_failures: self.metrics.acquire_failures.load(Ordering::Relaxed),
-            session_policy_failures: self
-                .metrics
-                .session_policy_failures
-                .load(Ordering::Relaxed),
+            session_policy_failures: self.metrics.session_policy_failures.load(Ordering::Relaxed),
             inflight_operations: self.metrics.inflight_operations.load(Ordering::Relaxed),
-            deadline_cancellations: self
-                .metrics
-                .deadline_cancellations
-                .load(Ordering::Relaxed),
-            shutdown_cancellations: self
-                .metrics
-                .shutdown_cancellations
-                .load(Ordering::Relaxed),
-            cancellation_deliveries: self
-                .metrics
-                .cancellation_deliveries
-                .load(Ordering::Relaxed),
-            cancellation_failures: self
-                .metrics
-                .cancellation_failures
-                .load(Ordering::Relaxed),
+            deadline_cancellations: self.metrics.deadline_cancellations.load(Ordering::Relaxed),
+            shutdown_cancellations: self.metrics.shutdown_cancellations.load(Ordering::Relaxed),
+            cancellation_deliveries: self.metrics.cancellation_deliveries.load(Ordering::Relaxed),
+            cancellation_failures: self.metrics.cancellation_failures.load(Ordering::Relaxed),
         }
     }
 
     #[must_use]
     pub const fn profile(&self) -> DatabaseProfile {
         self.profile
+    }
+
+    #[must_use]
+    pub const fn serving_schema_target(&self) -> crate::AuthoritativeSchemaTarget {
+        self.serving_schema_target
     }
 
     #[must_use]
@@ -199,6 +364,7 @@ impl PgPool {
         })?;
         Ok(PgRepository {
             profile: self.profile,
+            serving_schema_target: self.serving_schema_target,
             client: handle,
         })
     }

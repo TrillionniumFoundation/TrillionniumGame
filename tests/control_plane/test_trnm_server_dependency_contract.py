@@ -228,5 +228,49 @@ class ServerDependencyContractTests(unittest.TestCase):
             self.assertIs(report[field], False)
 
 
+
+class ServerDirectDependencyContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = load(CHECKER, "trnm_server_direct_dependency_test")
+        cls.foundation = load(FOUNDATION, "trnm_server_direct_foundation_test")
+        cls.manifest = tomllib.loads((ROOT / "crates/trnm-server/Cargo.toml").read_text())
+
+    def test_server_direct_base64_is_exact_shared_policy_without_persistence_expansion(self):
+        self.server.validate_server_dependency_boundary(deepcopy(self.manifest))
+        expected = self.server.expected_server_dependencies()
+        self.assertEqual(expected, self.foundation.EXPECTED_DEPENDENCIES["crates/trnm-server"])
+        self.assertEqual(expected["base64"], "=0.22.1")
+        persistence = tomllib.loads(MANIFEST.read_text())
+        self.assertNotIn("base64", persistence["dependencies"])
+        changed = deepcopy(persistence); changed["dependencies"]["base64"] = "=0.22.1"
+        with self.assertRaises(SystemExit):
+            self.server.validate_dependency_boundary(changed)
+
+    def test_server_direct_base64_missing_range_source_alias_or_features_fail_closed(self):
+        for value in (None, "0.22.1", "=0.22.0", {"version":"=0.22.1","features":["alloc"]},
+                      {"path":"../base64"}, {"version":"=0.22.1","package":"alternate"}):
+            changed = deepcopy(self.manifest)
+            if value is None: changed["dependencies"].pop("base64")
+            else: changed["dependencies"]["base64"] = value
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                self.server.validate_server_dependency_boundary(changed)
+
+    def test_server_runtime_and_protobuf_build_boundaries_remain_distinct_and_closed(self):
+        for section, name, value in (
+            ("dependencies","foreign","=1.0.0"),
+            ("dependencies","trnm-contracts", {"path":"../../foreign"}),
+            ("build-dependencies","openssl","=0.10.81"),
+            ("build-dependencies","prost-build","^0.14.3"),
+        ):
+            changed = deepcopy(self.manifest); changed[section][name] = value
+            with self.subTest(section=section, name=name), self.assertRaises(SystemExit):
+                self.server.validate_server_dependency_boundary(changed)
+        changed = deepcopy(self.manifest); changed["build-dependencies"].pop("tonic-build")
+        with self.assertRaises(SystemExit):
+            self.server.validate_server_dependency_boundary(changed)
+        first = self.server.expected_server_dependencies(); first["tokio"]["features"].append("full")
+        self.assertEqual(self.server.expected_server_dependencies(), self.manifest["dependencies"])
+
 if __name__ == "__main__":
     unittest.main()

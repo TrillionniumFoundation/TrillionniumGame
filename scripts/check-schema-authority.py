@@ -2,8 +2,10 @@
 """Enforce the single production-authoritative database schema chain."""
 from __future__ import annotations
 
+import importlib.util
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -65,6 +67,8 @@ REQUIRED_TABLES = {
     "trnm_session_families",
     "trnm_refresh_tokens",
     "trnm_storage_objects",
+    "trnm_storage_import_jobs",
+    "trnm_storage_import_pages",
 }
 
 
@@ -99,20 +103,124 @@ def files_under(path: Path) -> list[Path]:
     return sorted(item for item in path.rglob("*") if item.is_file())
 
 
-def migration_digest(relative_root: str) -> tuple[str, list[Path]]:
-    root = ROOT / relative_root
-    files = [path for path in files_under(root) if path.suffix == ".sql"]
-    require(files, f"{relative_root}: no SQL migrations")
-    digest = hashlib.sha256()
-    for path in files:
-        relative = path.relative_to(ROOT).as_posix().encode("utf-8")
-        content = path.read_bytes()
-        require(content.strip(), f"{path.relative_to(ROOT)}: empty migration")
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest(), files
+def validated_migration_chain() -> dict[str, Any]:
+    # One source validator supplies order, complete inventory and the same
+    # algorithm as the Rust runner. Historical raw-content digests are records,
+    # never an alternative current migration identity.
+    script = Path(__file__).with_name("check-migration-lock.py")
+    spec = importlib.util.spec_from_file_location("schema_authority_migration_lock", script)
+    require(spec is not None and spec.loader is not None, "migration-lock checker unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        return module.validate(ROOT)
+    except (module.ValidationError, OSError, ValueError) as error:
+        fail(f"authoritative migration lock: {error}")
+
+
+def migration_digest(relative_root: str, selection=None) -> tuple[str, list[Path]]:
+    require(relative_root in ("migrations/postgresql", "migrations/cockroachdb"), "authoritative profile path")
+    import sys
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    import schema_source_selection as source
+    profile=relative_root.rsplit("/",1)[1]
+    token=source.verify_current_source_selection(ROOT,profile=profile) if selection is None else selection
+    proof=source.current_selection_document(token)
+    require(proof["profile"]==profile,"selected source profile mismatch")
+    selected=proof["selection"]
+    return selected["execution_chain_digest"], [ROOT/row["path"] for row in selected["ordered_files"]]
+
+
+def validate_schema_consumer(harness: str, profile: str | None, *, mode: str = "migrate",
+                             metadata_negative: bool = False) -> None:
+    """Static wiring checks; only native execution can prove these effects."""
+    require("apply-authoritative-schema.sh" in harness and
+            re.search(r'apply-authoritative-schema\.sh["\']?\s+' + re.escape(mode) + r'\b', harness) is not None,
+            f"shared Rust schema {mode} consumer missing")
+    require("schema-identity.json" in harness, "actual schema identity is not retained")
+    for marker in ("MIGRATION_CHAIN.lock.json", "migration-lock.json", "check-migration-lock.py",
+                   "migration-chain-validation.json", "check-authoritative-schema-identity.py",
+                   "schema-identity-check.json"):
+        require(marker in harness, f"complete schema chain evidence missing {marker}")
+    if profile is not None:
+        require(re.search(r'TRNM_DATABASE_PROFILE=["\']?' + re.escape(profile) + r'\b', harness) is not None,
+                "schema consumer profile binding missing")
+    for obsolete in ('cat "${migrations[@]}"', 'mapfile -t migrations', '< "$migration"', '<"$migration"'):
+        require(obsolete not in harness, "direct unvalidated migration executor introduced")
+    require(re.search(r'INSERT\s+INTO\s+trnm_storage_objects\s+VALUES\b', harness, re.I) is None,
+            "positional storage INSERT introduced")
+    metadata = list(re.finditer(r'INSERT\s+INTO\s+trnm_schema_metadata\b', harness, re.I))
+    if metadata_negative:
+        require(len(metadata) == 1 and re.search(
+            r'INSERT\s+INTO\s+trnm_schema_metadata\s*\([^)]*\)\s*VALUES\s*\(2\s*,', harness, re.I),
+            "only the explicit-column singleton negative may insert schema metadata")
+    else:
+        require(not metadata, "consumer bypasses Rust schema metadata publication")
+
+
+def validate_storage_snapshot(data: str) -> None:
+    for name in ("chain_digest", "digest_algorithm", "storage_writer_epoch", "upgrade_source_commit",
+                 "v2_apply_source_commit", "v3_apply_source_commit"):
+        require(re.search(r"['\"]" + name + r"['\"]\s*,\s*" + name + r"\b", data) is not None,
+                f"semantic snapshot omits schema identity field {name}")
+    for name in ("create_time", "update_time"):
+        require(re.search(r'extract\s*\(\s*epoch\s+FROM\s+' + name + r'\s*\)', data, re.I) is not None,
+                f"semantic snapshot omits exact epoch projection {name}")
+    require("updated_at_ms" in data, "legacy timestamp provenance disappeared")
+
+
+def validate_pinned_database_image(harness: str, profile: str) -> None:
+    variable = {"postgresql": "POSTGRES_IMAGE", "cockroachdb": "COCKROACH_IMAGE"}[profile]
+    require("config/database-test-images.json" in harness and re.search(
+        r"\[['\"]profiles['\"]\]\[['\"]" + profile + r"['\"]\]\[['\"]image['\"]\]", harness) is not None,
+        "native database image must come from the current pinned profile")
+    require(re.search(r'\[\[\s+["\']?\$' + variable +
+                      r'["\']?\s+!=\s+["\']?\$expected_image["\']?\s+\]\]', harness) is not None and
+            "exit 64" in harness,
+            "native database image override is not rejected when the pinned profile differs")
+
+
+def validate_known_timestamp_fixtures(harness: str) -> None:
+    for marker in ("known-time", "1969-12-31 23:59:59.999999+00", "2024-02-29 00:00:00.123456+00",
+                   "create_time", "update_time"):
+        require(marker in harness, f"restore fixture omits {marker}")
+    require(re.search(r'updated_at_ms\s*\)\s*VALUES\b', harness, re.I) is not None,
+            "unknown-history fixture must omit nullable real timestamps explicitly")
+
+
+def validate_semantic_negative_probes(harness: str, profile: str) -> None:
+    require("check-sql-error.py" in harness, "SQL errors are not checked by the shared verifier")
+    require('--sqlstate "$expected_state" --constraint "$expected_constraint"' in harness,
+            "constraint probes do not verify intended SQLSTATE and constraint")
+    probes = re.findall(r'^negative_constraint\s+([a-z-]+)\s+([0-9A-Z]{5})\s+"([a-z0-9_]+)"', harness, re.M)
+    expected = {
+        "metadata-singleton": ("23514", "trnm_schema_metadata_singleton_check", "check_singleton"),
+        "entity-id-width": ("23514", "trnm_entity_heads_entity_id_check", "check_entity_id"),
+        "receipt-event-range": ("23514", "trnm_command_receipts_check", "check_event_count_first_event_sequence_event_count_first_event_sequence_first_event_sequence_last_event_sequence_first_event_sequence_event_count"),
+        "event-foreign-key": ("23503", "trnm_events_entity_id_command_id_fkey", "trnm_events_entity_id_command_id_fkey"),
+        "outbox-state-shape": ("23514", "trnm_outbox_check", "check_state_owner_node_receipt_digest_dead_reason_digest_state_owner_node_receipt_digest_dead_reason_digest_state_owner_node_receipt_digest_dead_reason_digest_state_owner_node_receipt_digest_dead_reason_digest"),
+        "command-outbox-position": ("23514", "trnm_command_outbox_position_check", "check_position_position"),
+        "lease-generation": ("23514", "trnm_authority_leases_lease_generation_check", "check_lease_generation"),
+        "session-state-shape": ("23514", "trnm_session_families_check1", "check_revoked_reason_active_token_id_revoked_reason_active_token_id"),
+        "refresh-consumed-shape": ("23514", "trnm_refresh_tokens_check", "check_state_consumed_at_ms_state_consumed_at_ms_consumed_at_ms_issued_at_ms"),
+        "storage-collection": ("23514", "trnm_storage_objects_collection_check", "check_collection"),
+    }
+    require(len(probes) == len(expected) and len({row[0] for row in probes}) == len(expected),
+            "ten distinct intended constraint probes are required")
+    for label, state, constraint in probes:
+        require(label in expected, "unexpected constraint probe")
+        row = expected[label]
+        require((state, constraint) == (row[0], row[1 if profile == "postgresql" else 2]),
+                f"{label}: SQLSTATE/constraint target differs")
+    require("SELECT repeat('x',129), 'bad', user_id, value_bytes" in harness,
+            "current storage collection probe must reject129 characters; empty is legal in schema4")
+    require("SELECT '', 'bad', user_id, value_bytes" not in harness,
+            "empty stored collection is lawful and cannot be a negative probe")
+    require("--sqlstate 42P07" in harness, "raw immutable foundation replay must assert duplicate-table SQLSTATE")
+    require("repeat-schema-identity.json" in harness and
+            re.search(r"\[['\"]migration_applied['\"]\]\s+is\s+False", harness) is not None and
+            re.search(r"\[['\"]applied_steps['\"]\]\s*==\s*0", harness) is not None,
+            "shared migrator repeated no-op is not checked")
 
 
 def validate_authority() -> dict[str, str]:
@@ -120,6 +228,9 @@ def validate_authority() -> dict[str, str]:
     require(document.get("schema") == "trillionnium.schema-authority.v1", "schema authority schema")
     authority = document.get("authority", {})
     require(authority.get("migration_root") == "migrations", "authoritative migration root")
+    chain = validated_migration_chain()
+    require(authority.get("latest_supported_schema_version") == chain["schema_version"] == 5, "supported schema frontier differs from lock")
+    require(authority.get("schema_version") == authority.get("default_runtime_schema_version") == chain["default_runtime_schema_version"] == 4, "default runtime schema authority drift")
     profiles = authority.get("profiles", [])
     require([row.get("id") for row in profiles] == ["postgresql", "cockroachdb"], "database profiles")
     digests: dict[str, str] = {}
@@ -213,11 +324,11 @@ def validate_sql_abi() -> None:
     missing_owned = sorted(table for table in adapter_owned if table not in adapter)
     require(not missing_owned, f"adapter missing core table references {missing_owned}")
 
+    chain = validated_migration_chain()
     for profile in ("postgresql", "cockroachdb"):
         sql = "\n".join(
             path.read_text(encoding="utf-8")
-            for path in files_under(ROOT / f"migrations/{profile}")
-            if path.suffix == ".sql"
+            for path in migration_digest(f"migrations/{profile}")[1]
         )
         missing = sorted(table for table in REQUIRED_TABLES if table not in sql)
         require(not missing, f"{profile}: missing authoritative tables {missing}")
@@ -227,17 +338,110 @@ def validate_sql_abi() -> None:
     )
 
 
+def validate_schema_upgrade_fixtures(source: str, extension: str) -> None:
+    """Require the native fixture wiring; source presence proves no DB outcome."""
+    expected_tests = {
+        "authoritative_fresh_repeat_and_readonly_verification",
+        "authoritative_v1_preserves_history_and_observes_actual_legacy_writer_revocation",
+        "authoritative_populated_unbound_and_catalog_drift_fail_closed",
+        "authoritative_declared_partial_prefix_resumes_and_malformed_prefixes_reject",
+        "authoritative_existing_empty_v1_requires_a_real_unprivileged_writer_barrier",
+        "authoritative_inherited_storage_privileges_are_not_a_writer_barrier",
+    }
+    actual_tests = re.findall(r"#\[test\]\s*fn\s+(\w+)\s*\(", source)
+    require(len(actual_tests) == 6 and set(actual_tests) == expected_tests,
+            "six original native schema lifecycle tests must remain")
+    require("#[test]" not in extension, "schema scenario helpers must not change the six-test lane")
+    require('include!("schema_upgrade_parts/v3.rs")' in source,
+            "native v3 schema scenarios are not registered")
+    for field in ("schema_version", "storage_writer_epoch"):
+        require(re.search(r'assert_eq!\(identity\.' + field + r',\s*4\)', source) is not None,
+                f"native schema fixture must require current {field} 4")
+    for marker in ("schema_writer_destructive_barrier_executed",
+                   "schema_writer_set_only_barrier_executed", "schema_writer_admin_barrier_executed"):
+        require(marker in source, f"native writer barrier marker removed: {marker}")
+    families = {
+        "v3_preserves_native_legacy_shapes_and_v2_history": ("SHAPE", "shapes", 8),
+        "v3_illegal_legacy_preflight_cases": ("ILLEGAL", "illegal_legacy", 9),
+        "v3_ready_catalog_drift_cases": ("CATALOG_DRIFT", "catalog_drift", 6),
+        "v3_partial_prefix_and_real_backfill_resume": ("PARTIAL", "partial_resume", 3),
+        "v3_recorded_metadata_negative_cases": ("METADATA", "metadata_validation", 9),
+        "v3_unknown_opaque_native_history": ("OPAQUE", "opaque_history", 6),
+    }
+    for function, (constant, marker, count) in families.items():
+        require(re.search(r'\b' + function + r'\(&environment\)', source) is not None,
+                f"native v3 schema scenario family is not executed: {function}")
+        require(re.search(r'const V3_' + constant + r'_CASES:\s*usize\s*=\s*' + str(count) + r';', extension) is not None,
+                f"native v3 schema scenario count differs: {function}")
+        require(f"schema_v3_{marker}_executed profile={{}} extra_cases={{V3_{constant}_CASES}}" in extension,
+                f"profile-bound native v3 schema marker missing: {marker}")
+
+    def body(function: str) -> str:
+        match = re.search(r'\bfn\s+' + function + r'\([^)]*\)[^{]*\{', extension)
+        require(match is not None, f"native v3 fixture function missing: {function}")
+        end = re.search(r'\nfn\s+\w+\(', extension[match.end():])
+        return re.sub(r'\s+', '', extension[match.start():match.end() + end.start()] if end else extension[match.start():])
+
+    illegal = body("v3_illegal_legacy_preflight_cases")
+    for label in ("empty", "binary", "non_utf8", "malformed", "native_number_range",
+                  "wrong_raw_digest", "native_projection_budget", "infinity", "protobuf_range"):
+        require(f'"{label}"' in illegal, f"illegal legacy case missing: {label}")
+    require('letbefore=entire_database_snapshot(&mutinspector)' in illegal and
+            'assert_eq!(entire_database_snapshot(&mutinspector),before,' in illegal,
+            "illegal legacy preflight must compare entire database before and after real runner")
+    require('migrate_authoritative_schema(UPGRADE_SOURCE,23,Some(&legacy)).unwrap_err()' in illegal and
+            'rejected.code(),expected_code' in illegal and
+            'let expected_code = if label == \"native_projection_budget\"'.replace(' ', '') in illegal and
+            'StableCode::ResourceExhausted' in illegal and
+            '}else{StableCode::DataLoss}' in illegal and
+            'octet_length($1::TEXT::JSONB::TEXT)::BIGINT' in illegal and
+            'row.get::<_,i64>(0)>16*1024*1024' in illegal,
+            "illegal legacy must fail closed through the real migration runner")
+    partial = body("v3_partial_prefix_and_real_backfill_resume")
+    for marker in ('forearlyin[true,false]', 'fixture_stop_backfill',
+                   'rejected.reason(),"database_constraint_violation"',
+                   'assert_eq!(first,fixture.profile==DatabaseProfile::CockroachDb)',
+                   'assert_eq!(after,before)', 'assert_eq!(after.catalog,before.catalog)',
+                   'assert_eq!(after.constraints,before.constraints)',
+                   'DROP CONSTRAINT fixture_stop_backfill', 'assert_published_v3(&report,fixture.profile)'):
+        require(marker.replace(" ", "") in partial, f"real native backfill interruption/resume proof missing: {marker}")
+    metadata = body("v3_recorded_metadata_negative_cases")
+    for field in ("schema_version", "profile", "source_commit", "applied_at_ms", "chain_digest",
+                  "digest_algorithm", "storage_writer_epoch", "upgrade_source_commit", "v2_apply_source_commit"):
+        require(f'"{field}"' in metadata, f"persisted metadata invariant case missing: {field}")
+    require("not a concurrency proof" in extension,
+            "persisted-input fixtures must preserve the unverified concurrent CAS boundary")
+    for profile in ("postgresql", "cockroachdb"):
+        for file in ("0002_storage_timestamps_up.sql", "0003_storage_jsonb_up.sql"):
+            require(f"migrations/{profile}/{file}" in extension,
+                    f"historical/current profile fixture source missing: {profile}/{file}")
+    digest_body = body("historical_v2_digest")
+    lock = load_json(ROOT / "migrations/MIGRATION_CHAIN.lock.json")
+    for profile in ("postgresql", "cockroachdb"):
+        entries = lock["profiles"][profile]["ordered_files"][:2]
+        digest = hashlib.sha256()
+        for index, row in enumerate(entries):
+            digest.update(index.to_bytes(8, "big"))
+            digest.update(row["path"].encode("utf-8") + b"\0")
+            digest.update(bytes.fromhex(row["git_blob_sha1"]))
+        require(digest.hexdigest() in digest_body, f"{profile}: fixture historical v2 chain digest is stale")
+
+
 def main() -> int:
     try:
         digests = validate_authority()
         validate_quarantine()
         scan_forbidden_consumers()
         validate_sql_abi()
+        validate_schema_upgrade_fixtures(
+            (ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade.rs").read_text(encoding="utf-8"),
+            (ROOT / "crates/trnm-persistence-pg/tests/schema_upgrade_parts/v3.rs").read_text(encoding="utf-8"),
+        )
     except (ValidationError, OSError) as exc:
         print(f"schema authority validation failed: {exc}", file=sys.stderr)
         return 1
     for profile, digest in digests.items():
-        print(f"{profile} migration-chain sha256={digest}")
+        print(f"{profile} migration-chain sha256={digest} algorithm=ordered-path-git-blob-sha256.v1")
     print("TrillionniumGame schema authority: OK")
     return 0
 

@@ -38,7 +38,8 @@ def apply_case(case: dict) -> tuple[dict, str | None]:
                 user = actor.split(":", 1)[1]
                 if user == "00" or user != owner_from_key(key):
                     raise ValueError("storage_write_permission_denied")
-                if existing is not None and existing["write"] != 1:
+                insert_only = operation["op"] == "write" and operation["expected"] == "*"
+                if not insert_only and existing is not None and existing["write"] != 1:
                     raise ValueError("storage_write_permission_denied")
             if operation["op"] == "write":
                 expected = operation["expected"]

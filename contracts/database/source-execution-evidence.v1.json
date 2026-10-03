@@ -1,0 +1,78 @@
+{
+  "account_target": {
+    "account_transfer_admitted": false,
+    "before_io_pending": true,
+    "old_storage4_packet_target5_allowed": false,
+    "runtime_activation_allowed": false,
+    "table_count": 14,
+    "target": "NakamaAccountsV5"
+  },
+  "caller_dictionary_as_authority_allowed": false,
+  "claims": {
+    "accepted": false,
+    "compatibility_credit": false,
+    "full_nakama_replacement": false,
+    "native_catalog_verified": false,
+    "production_ready": false,
+    "runtime_execution_verified": false
+  },
+  "composite_receipts": {
+    "complete_source_checksum_inventory_required": true,
+    "full_source_files_per_profile": 18,
+    "git_and_execution_credit_from_pure_validator": false,
+    "issuer_token_tuple_profiles": 2,
+    "required_external_workflow_rows": 55,
+    "source_profile_namespace_closed": true,
+    "validator": "schema_evidence_binding.validate_composite_directory",
+    "versions": [
+      "trillionnium.required-workflow-retained-collection.v2",
+      "trillionnium.merge-gate-retained-receipt.v2",
+      "trillionnium.prospective-merge-retained-gate.v2"
+    ]
+  },
+  "current_consumers_require_issued_tokens": true,
+  "execution": {
+    "digest_algorithm": "ordered-path-git-blob-sha256.v1",
+    "executed_migration_file_count": 4,
+    "original4_prefix_only": true,
+    "publisher_v2_v3_preserved": true,
+    "schema_version": 4,
+    "storage_writer_epoch": 4,
+    "table_count": 12,
+    "target": "StorageV4"
+  },
+  "historical": {
+    "current_head_eligible": false,
+    "current_lock4_fabrication_allowed": false,
+    "genuine_original4_validator_authority_all8_SQL_required": true,
+    "scope": "historical-source4-only"
+  },
+  "producer_Git": {
+    "actual_HEAD_tree_required": true,
+    "all18_source_blob_preimages_against_actual_HEAD_required": true,
+    "kernel_alone_grants_exact_HEAD_or_native_credit": false
+  },
+  "schema": "trillionnium.source-execution-evidence-contract.v1",
+  "source_authority": {
+    "SQL_profile_directory_entries_max": 16,
+    "all10_SQL_required": true,
+    "annex": "full-schema-source",
+    "annex_bytes_max": 2097152,
+    "annex_entries_max": 64,
+    "closed_inventory_files": 18,
+    "file_bytes_max": 524288,
+    "file_count_per_profile": 5,
+    "frontier_schema_version": 5,
+    "head_custody": "schema-source-head.json",
+    "listdir_materialization_forbidden": true,
+    "only_chain": "migrations/MIGRATION_CHAIN.lock.json",
+    "profiles": [
+      "postgresql",
+      "cockroachdb"
+    ],
+    "real_streaming_scandir_required": true,
+    "sidecar": "schema-source-selection.json",
+    "unchanged_original_validator_first": true
+  },
+  "status": "isolated-source-and-mock-candidate-unexecuted"
+}

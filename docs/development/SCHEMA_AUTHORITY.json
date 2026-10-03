@@ -6,7 +6,7 @@
   "migration_lock": {
     "path": "migrations/MIGRATION_CHAIN.lock.json",
     "validator": "python3 scripts/check-migration-lock.py",
-    "identity": "ordered path plus Git blob SHA-1 per profile; exact chain SHA-256 emitted by validation",
+    "identity": "ordered-path-git-blob-sha256.v1: each zero-based u64 big-endian position, UTF-8 repository path, NUL, and 20-byte Git blob SHA-1; hash the concatenation with SHA-256",
     "runtime_execution_credit": false
   },
   "authority": {
@@ -42,8 +42,215 @@
       }
     ],
     "metadata_table": "trnm_schema_metadata",
-    "schema_version": 1,
-    "identity_rule": "Every build, migration, adapter test, backup and restore artifact must record the complete ordered migration-chain SHA-256 and candidate commit/tree."
+    "schema_version": 4,
+    "identity_rule": "Every build, migration, adapter test, backup and restore artifact binds the complete source-frontier ordered chain plus candidate commit/tree. A separately verified typed execution selection binds the exact initial migration prefix, its schema version/digest/table count/writer epoch and actual provenance. Current fullsource5 requires all five SQL proofs/profile even when StorageV4 executes only the original four; historical source4 is explicitly legacy and ineligible as a current source5 binding.",
+    "postgresql_connection_fault_source_candidate": {
+      "harness": "scripts/ci-postgresql-connection-faults.sh",
+      "source_contract": "python3 scripts/check-postgresql-connection-faults.py",
+      "covers": [
+        "eighty fresh connection churn cycles",
+        "role-level connection exhaustion rejection",
+        "active transaction query cancellation rollback",
+        "active transaction backend termination rollback",
+        "statement timeout",
+        "fresh connection after all injected faults"
+      ],
+      "accepted": false
+    },
+    "postgresql_pitr_source_candidate": {
+      "harness": "scripts/ci-postgresql-pitr.sh",
+      "source_contract": "python3 scripts/check-postgresql-pitr.py",
+      "semantics": [
+        "continuous WAL archive configuration",
+        "physical base backup",
+        "exact recovery target LSN",
+        "target commit included",
+        "later commit excluded",
+        "automatic promotion at recovery target",
+        "canonical target/restored state equality"
+      ],
+      "accepted": false
+    },
+    "postgresql_primary_failover_source_candidate": {
+      "harness": "scripts/ci-postgresql-primary-failover.sh",
+      "source_contract": "python3 scripts/check-postgresql-primary-failover.py",
+      "semantics": [
+        "streaming physical standby from pg_basebackup",
+        "synchronous remote_apply acknowledged command",
+        "standby replay covers acknowledged WAL LSN",
+        "primary stopped before promotion",
+        "canonical state equal after promotion",
+        "post-promotion write succeeds"
+      ],
+      "accepted": false
+    },
+    "postgresql_recovery_barrier_source_candidate": {
+      "quarantine_transaction": "scripts/postgresql-recovery-quarantine.sql",
+      "harness": "scripts/ci-postgresql-recovery-barrier.sh",
+      "source_contract": "python3 scripts/check-postgresql-recovery-barrier.py",
+      "semantics": [
+        "active leases reject quarantine",
+        "ready intents exported while an exclusive table lock is held",
+        "ready intents atomically become terminal quarantine records",
+        "new runtime-role sessions default to read-only",
+        "runtime reads remain available for verification"
+      ],
+      "accepted": false
+    },
+    "postgresql_semantic_recovery_source_candidate": {
+      "harness": "scripts/ci-postgresql-semantic-recovery.sh",
+      "data_snapshot": "scripts/postgresql-semantic-snapshot.sql",
+      "catalog_snapshot": "scripts/postgresql-catalog-snapshot.sql",
+      "source_contract": "python3 scripts/check-postgresql-semantic-recovery.py",
+      "covers": [
+        "repeat migration rejection without catalog drift",
+        "ten critical negative-constraint probes",
+        "custom-format logical backup",
+        "empty-database restore",
+        "exact canonical data comparison",
+        "column constraint and index semantic comparison",
+        "migration-lock and artifact digests"
+      ],
+      "accepted": false
+    },
+    "cockroachdb_node_failover_source_candidate": {
+      "harness": "scripts/ci-cockroachdb-node-failover.sh",
+      "source_contract": "python3 scripts/check-cockroachdb-node-failover.py",
+      "semantics": [
+        "three-node cluster and three voting replicas",
+        "known range lease relocated to node one",
+        "leaseholder network isolation with acknowledged-state equality",
+        "quorum write during leaseholder isolation",
+        "separate non-leaseholder node stop and write",
+        "isolated and stopped nodes rejoin and observe committed writes"
+      ],
+      "accepted": false
+    },
+    "cockroachdb_semantic_recovery_source_candidate": {
+      "harness": "scripts/ci-cockroachdb-semantic-recovery.sh",
+      "data_snapshot": "scripts/cockroachdb-semantic-snapshot.sql",
+      "source_contract": "python3 scripts/check-cockroachdb-semantic-recovery.py",
+      "covers": [
+        "repeat migration rejection without catalog drift",
+        "ten critical negative-constraint probes",
+        "CockroachDB native BACKUP to nodelocal",
+        "empty-database RESTORE under a new database name",
+        "exact canonical data comparison",
+        "SHOW CREATE ALL TABLES semantic comparison",
+        "migration-lock backup-tree and image digests"
+      ],
+      "accepted": false
+    },
+    "storage_timestamp_upgrade_source_candidate": {
+      "migration": "0002_storage_timestamps_up.sql",
+      "schema_version": 2,
+      "storage_writer_epoch": 2,
+      "engine": "crates/trnm-persistence-pg/src/schema.rs",
+      "cli": "trnm-schema",
+      "catalog": "Exact expected table/column type, nullability and default catalog plus ordered partial action prefix; readonly serve verification.",
+      "upgrade_barrier": "An explicit drained legacy_writer_role must be non-admin, non-owner and lack all storage CRUD/column privileges before v1 upgrade. Existing old sessions are tested independently. Fresh databases need no old role.",
+      "history": "Original foundation source_commit/applied_at_ms are preserved; upgrade_source_commit and full-chain digest are separate. Unknown original timestamps stay NULL.",
+      "postgresql": "Append DDL and metadata publish in one serializable transaction.",
+      "cockroachdb": "Explicit ordered action blocks, catalog visibility check after each; legal completed prefix may resume, metadata publishes last.",
+      "rollback": "No drop or mixed v1/v2 writer rollback; forward repair only after re-establishing the exclusive writer barrier.",
+      "accepted": false,
+      "compatibility_credit": false
+    },
+    "storage_jsonb_upgrade_source_candidate": {
+      "adr": "NAKAMA-STORAGE-NATIVE-JSONB-V3",
+      "migration": "0003_storage_jsonb_up.sql",
+      "schema_version": 3,
+      "storage_writer_epoch": 3,
+      "engine": "crates/trnm-persistence-pg/src/schema.rs",
+      "backfill": "crates/trnm-persistence-pg/src/schema_parts/jsonb_backfill.rs",
+      "value_authority": "One native JSONB value; object, array, string, number, boolean and JSON null history remains legal. HTTP writes retain object validation. No raw-byte read fallback.",
+      "public_version": "Independent native VARCHAR(32) token; generated ACK MD5 is over request bytes, never native rendering. Historical empty/opaque/Unicode versions remain literal.",
+      "witness": "Legacy Rust v2 bytes and new request bytes retain SHA256/MD5/native-render binding; unknown Nakama request origin has NULL raw pair and nonzero32-byte source-manifest binding. A real source-bound Nakama importer remains separate work.",
+      "catalog": "Closed typed actions, exact nullability/default/type/character typmod, named validated CHECK deparsers and primary-key order. No SQL splitter or silent repair.",
+      "preflight": "Entire keyset source scan before any persistent action; bounded 1MiB raw witness and 16MiB native projection. Reject illegal binary/UTF8/JSON/native numbers without data or metadata conversion.",
+      "postgresql": "SERIALIZABLE metadata lock and ACCESS EXCLUSIVE storage lock; native preflight, DDL, row backfill, complete postcondition and full-old-tuple CAS publish share transaction.",
+      "cockroachdb": "Native global preflight, exact ordered DDL prefixes, one-row SERIALIZABLE backfill transactions fenced by old metadata/row tuple, complete global postcondition, metadata publication last.",
+      "history": "Foundation source/time and all known/NULL storage timestamps unchanged; v2_apply_source_commit permanently retains actual prior v2 publisher, upgrade_source_commit records v3 publisher.",
+      "rollback": "Forward repair under exclusive writer barrier; no schema2 writer or destructive down migration after epoch3 publication.",
+      "accepted": false,
+      "compatibility_credit": false,
+      "migration_compatible": false
+    },
+    "storage_source_import_upgrade_source_candidate": {
+      "adr": "NAKAMA-STORAGE-SOURCE-IMPORT-V4",
+      "migration": "0004_storage_source_import_up.sql",
+      "schema_version": 4,
+      "storage_writer_epoch": 4,
+      "engine": "crates/trnm-persistence-pg/src/schema.rs",
+      "packet": "crates/trnm-persistence-pg/src/storage_import.rs",
+      "row_abi": "Stored collection/key permit0..128 Unicode characters. Checked native SMALLINT permissions preserve0..32767. Batch read, own list, foreign/global list, public-all list, client write and client delete remain distinct predicates.",
+      "custody": "Complete bounded offline inventory and externally supplied manifest/receipt/producer identity anchors precede mutable target transactions. Native exported text is never original request bytes. Whole source capture/signature trust require separate qualification.",
+      "journal": "Single target authority trnm_storage_objects, manifest-bound import jobs/pages, atomic page receipt and prefix, completion gate blocks normal storage transactions while any import is incomplete. Candidate source wiring requires actual native resume/tamper/readiness proof before evidence credit.",
+      "history": "Original source_commit/applied_at_ms remain unchanged; actual previousv2 and previousv3 publishers are preserved in v2_apply_source_commit and v3_apply_source_commit; upgrade_source_commit is the current revision publisher.",
+      "rollback": "Forward repair under exclusive writer barrier only; no schema3 writer rollback, destructive down migration or second payload authority.",
+      "accepted": false,
+      "compatibility_credit": false,
+      "migration_compatible": false,
+      "production_ready": false
+    },
+    "default_runtime_schema_version": 4,
+    "latest_supported_schema_version": 5,
+    "accounts_v5_source_candidate": {
+      "target": "NakamaAccountsV5",
+      "storage_writer_epoch": 4,
+      "migration": "0005_nakama_accounts_up.sql",
+      "tables": [
+        "users",
+        "user_device"
+      ],
+      "full_current_two_table_fields_defaults_constraints": true,
+      "native_catalog_observations_bound": false,
+      "native_activation_allowed": false,
+      "default_runtime_promotion_allowed": false,
+      "repository_service_routes_implemented": false,
+      "account_transfer_implemented": false,
+      "accounts_v5_backups_restores_qualified": false,
+      "blocked_before_ddl": "schema5_native_catalog_capture_pending",
+      "accepted": false,
+      "boundary": "Default serve/migrate/import remains strict schema4 prefix. Schema5 source frontier is explicit and cannot borrow epoch4, storage packet or old catalog observations."
+    },
+    "source_execution_selection_policy": {
+      "schema": "trillionnium.schema-execution-selection-policy.v1",
+      "full_source_frontier_schema_version": 5,
+      "default_target": "StorageV4",
+      "full_source_validation_required": true,
+      "selected_prefix_must_be_initial_contiguous": true,
+      "profiles_are_separate": true,
+      "targets": {
+        "StorageV4": {
+          "selected_schema_version": 4,
+          "executed_migration_file_count": 4,
+          "storage_writer_epoch": 4,
+          "table_count": 12,
+          "source_binding_allowed": true
+        },
+        "NakamaAccountsV5": {
+          "selected_schema_version": 5,
+          "executed_migration_file_count": 5,
+          "storage_writer_epoch": 4,
+          "table_count": 14,
+          "source_binding_allowed": false,
+          "blocked_before_io": "schema5_native_catalog_capture_pending"
+        }
+      },
+      "historical_source4": {
+        "envelope": "trillionnium.historical-schema4-source-selection.v1",
+        "current_head_eligible": false,
+        "must_use_genuine_historical_validator_and_source": true
+      },
+      "claims": {
+        "runtime_execution_verified": false,
+        "accepted": false,
+        "compatibility_credit": false,
+        "production_ready": false,
+        "account_transfer_admitted": false
+      }
+    }
   },
   "non_authoritative": [
     {
@@ -78,7 +285,9 @@
       "trnm_authority_leases",
       "trnm_session_families",
       "trnm_refresh_tokens",
-      "trnm_storage_objects"
+      "trnm_storage_objects",
+      "trnm_storage_import_jobs",
+      "trnm_storage_import_pages"
     ],
     "required_semantics": [
       "entity revision compare-and-swap",
@@ -102,15 +311,58 @@
       "crates/trnm-persistence-pg/src/authority.rs",
       "crates/trnm-persistence-pg/src/session.rs",
       "crates/trnm-persistence-pg/src/storage.rs",
-      "crates/trnm-persistence-pg/src/outbox.rs"
+      "crates/trnm-persistence-pg/src/outbox.rs",
+      "crates/trnm-persistence-pg/src/schema.rs",
+      "crates/trnm-persistence-pg/src/storage_metadata.rs",
+      "crates/trnm-persistence-pg/src/schema_parts/jsonb_backfill.rs",
+      "crates/trnm-persistence-pg/src/storage_parts/06_native_projection.rs",
+      "crates/trnm-persistence-pg/src/storage_import.rs",
+      "crates/trnm-persistence-pg/src/storage_import_parts/packet.rs",
+      "crates/trnm-persistence-pg/src/storage_import_parts/repository.rs"
     ],
     "source_coverage_candidate": {
       "all_required_tables_referenced": true,
       "authority_lease_takeover_fences_entity_generation": true,
       "session_family_and_refresh_rotation_transactional": true,
       "storage_occ_acl_batch_transactional": true,
-      "independently_accepted": false
-    }
+      "independently_accepted": false,
+      "storage_client_list_sql_projection": true
+    },
+    "storage_client_list_projection_source_candidate": {
+      "table": "trnm_storage_objects",
+      "method": "PgRepository::list_storage_objects_nakama",
+      "schema_changed": true,
+      "row_identifier_constraint": "Append-only v4 stored collection/object_key length0..128 Unicode characters; stored decoder preserves legal empty, dot and control text. Internal/client request admission remains a separate policy.",
+      "query_semantics": [
+        "nonzero authenticated user actor; optional zero owner remains global",
+        "ACL before bounded limit+1 sentinel",
+        "SQL text ordering for public-all, own and foreign/global owner modes",
+        "readonly serializable query; decode returned rows only; no automatic retry",
+        "Raw stored permission predicates: public-all>=2; own>=1; foreign/global==2; public continuation retains pinned constant read2 and literal cursor equality handling."
+      ],
+      "accepted": false,
+      "compatibility_credit": false
+    },
+    "explicit_profile_exceptions": [
+      {
+        "id": "NAKAMA-STORAGE-DATABASE-TIME-V2",
+        "fields": [
+          "trnm_storage_objects.create_time",
+          "trnm_storage_objects.update_time"
+        ],
+        "semantics": "Nakama storage only uses the database transaction clock, explicit INSERT/UPDATE values and RETURNING receipts. Nullable v1 history remains unknown; no defaults or backfill. Other public contract clocks remain explicit caller inputs.",
+        "accepted": false
+      },
+      {
+        "id": "NAKAMA-STORAGE-NATIVE-JSONB-V3",
+        "fields": [
+          "trnm_storage_objects.value_jsonb",
+          "trnm_storage_objects.public_version"
+        ],
+        "semantics": "Native JSONB rendering is separate from original-request MD5. Candidate limits request1MiB/native16MiB/staged and read32MiB/encoded HTTP32MiB need independent profile qualification. Legal projection overflow is ResourceExhausted, never DataLoss. Unknown original request and timestamp import remain unresolved.",
+        "accepted": false
+      }
+    ]
   },
   "change_control": {
     "required_for_semantic_change": [
@@ -139,6 +391,13 @@
     "ha_proven": false,
     "sg4_complete": false,
     "production_ready": false,
-    "adapter_table_surface_source_candidate": true
+    "adapter_table_surface_source_candidate": true,
+    "postgresql_connection_fault_source_candidate": true,
+    "postgresql_pitr_source_candidate": true,
+    "postgresql_primary_failover_source_candidate": true,
+    "postgresql_recovery_barrier_source_candidate": true,
+    "postgresql_semantic_restore_source_candidate": true,
+    "cockroachdb_node_failover_source_candidate": true,
+    "cockroachdb_semantic_restore_source_candidate": true
   }
 }

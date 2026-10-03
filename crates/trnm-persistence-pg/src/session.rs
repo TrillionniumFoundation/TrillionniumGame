@@ -75,9 +75,13 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
         transaction
             .execute(
-                "INSERT INTO trnm_session_families \
+                "INSERT INTO public.trnm_session_families \
                  (family_id, user_id, generation, active_token_id, revoked_reason, \
                   created_at_ms, updated_at_ms) \
                  VALUES ($1, $2, 0, $3, NULL, $4, $4)",
@@ -91,7 +95,7 @@ impl PgRepository {
             .map_err(map_postgres_error)?;
         transaction
             .execute(
-                "INSERT INTO trnm_refresh_tokens \
+                "INSERT INTO public.trnm_refresh_tokens \
                  (family_id, token_id, token_digest, generation, state, issued_at_ms, \
                   consumed_at_ms) VALUES ($1, $2, $3, 0, 0, $4, NULL)",
                 &[
@@ -124,7 +128,7 @@ impl PgRepository {
         self.client
             .query_opt(
                 "SELECT user_id, generation, active_token_id, revoked_reason, \
-                 created_at_ms, updated_at_ms FROM trnm_session_families \
+                 created_at_ms, updated_at_ms FROM public.trnm_session_families \
                  WHERE family_id = $1",
                 &[&family.as_bytes().as_slice()],
             )
@@ -142,9 +146,21 @@ impl PgRepository {
         if family.is_zero() || user.is_zero() {
             return Err(unauthenticated());
         }
-        let record = self
-            .load_session_family(family)?
-            .ok_or_else(unauthenticated)?;
+        let mut transaction = self
+            .client
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .start()
+            .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
+        let row = transaction.query_opt(
+            "SELECT user_id, generation, active_token_id, revoked_reason, created_at_ms, updated_at_ms \
+             FROM public.trnm_session_families WHERE family_id = $1", &[&family.as_bytes().as_slice()],
+        ).map_err(map_postgres_error)?.ok_or_else(unauthenticated)?;
+        let record = decode_family(family, &row)?;
         if record.user != user
             || record.generation != generation
             || record.active_token.is_none()
@@ -152,6 +168,7 @@ impl PgRepository {
         {
             return Err(unauthenticated());
         }
+        transaction.commit().map_err(map_postgres_error)?;
         Ok(record)
     }
 
@@ -184,6 +201,10 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
 
         // Credential lookup discovers an immutable family identity only. Every
         // session-family mutation then locks the family row before any token row,
@@ -193,7 +214,7 @@ impl PgRepository {
         // unlocked credential snapshot.
         let family_identity_row = transaction
             .query_opt(
-                "SELECT family_id FROM trnm_refresh_tokens \
+                "SELECT family_id FROM public.trnm_refresh_tokens \
                  WHERE token_id = $1 AND token_digest = $2",
                 &[
                     &request.presented.id.as_bytes().as_slice(),
@@ -208,7 +229,7 @@ impl PgRepository {
         let family_row = transaction
             .query_opt(
                 "SELECT user_id, generation, active_token_id, revoked_reason, \
-                 created_at_ms, updated_at_ms FROM trnm_session_families \
+                 created_at_ms, updated_at_ms FROM public.trnm_session_families \
                  WHERE family_id = $1 FOR UPDATE",
                 &[&family.as_bytes().as_slice()],
             )
@@ -219,7 +240,7 @@ impl PgRepository {
         let token_row = transaction
             .query_opt(
                 "SELECT generation, state, issued_at_ms, consumed_at_ms \
-                 FROM trnm_refresh_tokens \
+                 FROM public.trnm_refresh_tokens \
                  WHERE family_id = $1 AND token_id = $2 AND token_digest = $3 \
                  FOR UPDATE",
                 &[
@@ -249,7 +270,7 @@ impl PgRepository {
             transaction
                 .query_opt(
                     "SELECT generation, state, issued_at_ms, consumed_at_ms \
-                     FROM trnm_refresh_tokens \
+                     FROM public.trnm_refresh_tokens \
                      WHERE family_id = $1 AND token_id = $2 AND token_digest = $3",
                     &[
                         &family.as_bytes().as_slice(),
@@ -337,7 +358,7 @@ impl PgRepository {
         let next_generation_i64 = to_i64(next_generation)?;
         let consumed = transaction
             .execute(
-                "UPDATE trnm_refresh_tokens SET state = 1, consumed_at_ms = $3 \
+                "UPDATE public.trnm_refresh_tokens SET state = 1, consumed_at_ms = $3 \
                  WHERE family_id = $1 AND token_id = $2 AND state = 0",
                 &[
                     &family.as_bytes().as_slice(),
@@ -355,7 +376,7 @@ impl PgRepository {
         }
         transaction
             .execute(
-                "INSERT INTO trnm_refresh_tokens \
+                "INSERT INTO public.trnm_refresh_tokens \
                  (family_id, token_id, token_digest, generation, state, issued_at_ms, \
                   consumed_at_ms) VALUES ($1, $2, $3, $4, 0, $5, NULL)",
                 &[
@@ -369,7 +390,7 @@ impl PgRepository {
             .map_err(map_postgres_error)?;
         let updated = transaction
             .execute(
-                "UPDATE trnm_session_families \
+                "UPDATE public.trnm_session_families \
                  SET generation = $2, active_token_id = $3, updated_at_ms = $4 \
                  WHERE family_id = $1 AND generation = $5 AND revoked_reason IS NULL \
                  AND active_token_id = $6",
@@ -421,10 +442,14 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
         let row = transaction
             .query_opt(
                 "SELECT user_id, generation, active_token_id, revoked_reason, \
-                 created_at_ms, updated_at_ms FROM trnm_session_families \
+                 created_at_ms, updated_at_ms FROM public.trnm_session_families \
                  WHERE family_id = $1 FOR UPDATE",
                 &[&family.as_bytes().as_slice()],
             )
@@ -441,7 +466,7 @@ impl PgRepository {
         if let Some(active) = record.active_token {
             transaction
                 .execute(
-                    "UPDATE trnm_refresh_tokens SET state = 1, consumed_at_ms = $3 \
+                    "UPDATE public.trnm_refresh_tokens SET state = 1, consumed_at_ms = $3 \
                      WHERE family_id = $1 AND token_id = $2 AND state = 0",
                     &[
                         &family.as_bytes().as_slice(),
@@ -453,7 +478,7 @@ impl PgRepository {
         }
         transaction
             .execute(
-                "UPDATE trnm_session_families SET active_token_id = NULL, \
+                "UPDATE public.trnm_session_families SET active_token_id = NULL, \
                  revoked_reason = $2, updated_at_ms = $3 WHERE family_id = $1",
                 &[&family.as_bytes().as_slice(), &reason_code, &revoked_at_i64],
             )
@@ -525,7 +550,7 @@ fn revoke_for_replay(
     if let Some(active) = record.active_token {
         transaction
             .execute(
-                "UPDATE trnm_refresh_tokens SET state = 1, \
+                "UPDATE public.trnm_refresh_tokens SET state = 1, \
                  consumed_at_ms = COALESCE(consumed_at_ms, $3) \
                  WHERE family_id = $1 AND token_id = $2",
                 &[
@@ -538,7 +563,7 @@ fn revoke_for_replay(
     }
     transaction
         .execute(
-            "UPDATE trnm_session_families SET active_token_id = NULL, \
+            "UPDATE public.trnm_session_families SET active_token_id = NULL, \
              revoked_reason = 2, updated_at_ms = $2 WHERE family_id = $1",
             &[&record.family.as_bytes().as_slice(), &revoked_at_i64],
         )

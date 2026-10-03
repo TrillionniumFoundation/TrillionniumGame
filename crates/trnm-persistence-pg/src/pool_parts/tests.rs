@@ -12,6 +12,34 @@ mod tests {
     }
 
     #[test]
+    fn selected_accounts_pool_gate_precedes_configuration_and_connectors() {
+        let target = crate::AuthoritativeSchemaTarget::NakamaAccountsV5;
+        let invalid_policy = PgPoolConfig {
+            max_size: 0,
+            ..PgPoolConfig::default()
+        };
+        for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
+            // Invalid URL/policy/TLS intentionally cannot reach a connector.
+            let plain = PgPool::connect_plain_for_target("", profile, invalid_policy, target);
+            assert_eq!(
+                plain.err().unwrap().reason(),
+                "schema5_native_catalog_capture_pending"
+            );
+            let tls = PgPool::connect_tls_for_target(
+                "",
+                profile,
+                invalid_policy,
+                &PgTlsConfig::default(),
+                target,
+            );
+            assert_eq!(
+                tls.err().unwrap().reason(),
+                "schema5_native_catalog_capture_pending"
+            );
+        }
+    }
+
+    #[test]
     fn default_pool_policy_is_bounded_and_valid() {
         let policy = PgPoolConfig::default().validate().unwrap();
         assert_eq!(policy.max_size, 8);
@@ -198,9 +226,8 @@ mod tests {
         let Some(database_url) = live_database_url() else {
             return;
         };
-        let pool =
-            PgPool::connect_plain(&database_url, DatabaseProfile::PostgreSql, live_policy())
-                .unwrap();
+        let pool = PgPool::connect_plain(&database_url, DatabaseProfile::PostgreSql, live_policy())
+            .unwrap();
         let initial_backend = backend_pid(&pool);
         let started = Instant::now();
         let returned = pool
@@ -239,14 +266,15 @@ mod tests {
         let Some(database_url) = live_database_url() else {
             return;
         };
-        let pool =
-            PgPool::connect_plain(&database_url, DatabaseProfile::PostgreSql, live_policy())
-                .unwrap();
+        let pool = PgPool::connect_plain(&database_url, DatabaseProfile::PostgreSql, live_policy())
+            .unwrap();
         let initial_backend = backend_pid(&pool);
         let mut observer_config = Config::from_str(&database_url).unwrap();
         observer_config.connect_timeout(Duration::from_secs(2));
         let mut observer = observer_config.connect(NoTls).unwrap();
-        observer.batch_execute("SET statement_timeout = '1s'").unwrap();
+        observer
+            .batch_execute("SET statement_timeout = '1s'")
+            .unwrap();
         let worker_pool = pool.clone();
         let worker = thread::spawn(move || {
             worker_pool.run_with_deadline(Duration::from_secs(30), |repository| {
@@ -295,5 +323,85 @@ mod tests {
                 .map_err(super::super::map_postgres_error)
         })
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod account_lease_observation_tests {
+    use super::*;
+    use crate::{AccountFailure, AccountPhase, AccountSqlFailure, NakamaAccountError};
+    fn unknown() -> NakamaAccountError {
+        NakamaAccountError::Internal(AccountFailure {
+            phase: AccountPhase::Commit,
+            last_failure: AccountSqlFailure {
+                sqlstate: Some(*b"08006"),
+                username_collision: false,
+                transaction_closed: false,
+                reason: "bounded-commit-failure",
+            },
+            cleanup_failure: None,
+            attempts: 1,
+            exhausted: false,
+            unknown_commit: true,
+        })
+    }
+    #[test]
+    fn account_late_success_is_retained_but_boundary_prevents_acknowledgement() {
+        let result = account_lease_outcome(
+            Some(Ok("private-device-username")),
+            None,
+            CANCEL_DEADLINE,
+            false,
+            true,
+        );
+        assert_eq!(result.observed, Some(Ok("private-device-username")));
+        assert_eq!(
+            result.boundary_error.unwrap().reason(),
+            "database_operation_deadline_exceeded"
+        );
+        assert_eq!(result.cancellation, PgAccountLeaseCancellation::Deadline);
+        assert!(result.lease_retired);
+        assert!(!format!("{result:?}").contains("private-device-username"));
+    }
+    #[test]
+    fn account_unknown_commit_survives_shutdown_override() {
+        let error = unknown();
+        let result =
+            account_lease_outcome::<()>(Some(Err(error)), None, CANCEL_SHUTDOWN, false, true);
+        assert_eq!(result.observed, Some(Err(error)));
+        assert_eq!(
+            result.boundary_error.unwrap().reason(),
+            "database_operation_shutdown_cancelled"
+        );
+        assert_eq!(result.cancellation, PgAccountLeaseCancellation::Shutdown);
+    }
+    #[test]
+    fn account_setup_error_and_unobserved_completion_survive_deadline() {
+        let original = operational_error("bounded-setup-failure");
+        let result = account_lease_outcome::<()>(None, Some(original), CANCEL_DEADLINE, true, true);
+        assert!(result.observed.is_none());
+        assert_eq!(result.setup_error, Some(original));
+        assert_ne!(result.boundary_error, result.setup_error);
+        assert!(result.lease_retired);
+    }
+    #[test]
+    fn account_elapsed_boundary_does_not_invent_delivered_cancellation() {
+        let result = account_lease_outcome(Some(Ok(7_u8)), None, CANCEL_NONE, true, true);
+        assert_eq!(result.observed, Some(Ok(7)));
+        assert!(result.boundary_error.is_some());
+        assert_eq!(result.cancellation, PgAccountLeaseCancellation::None);
+    }
+    #[test]
+    fn account_timely_business_result_has_no_outer_failure() {
+        let result = account_lease_outcome::<()>(
+            Some(Err(NakamaAccountError::Banned)),
+            None,
+            CANCEL_NONE,
+            false,
+            false,
+        );
+        assert_eq!(result.observed, Some(Err(NakamaAccountError::Banned)));
+        assert!(result.boundary_error.is_none());
+        assert!(!result.lease_retired);
     }
 }

@@ -1108,6 +1108,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1161,6 +1167,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -1181,6 +1188,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.145"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
+dependencies = [
+ "itoa",
+ "memchr",
+ "ryu",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1551,6 +1571,7 @@ dependencies = [
 name = "trnm-persistence-pg"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "native-tls",
  "openssl",
  "postgres",
@@ -1561,6 +1582,9 @@ dependencies = [
  "protoc-bin-vendored",
  "r2d2",
  "r2d2_postgres",
+ "rustix",
+ "serde",
+ "serde_json",
  "tokio",
  "tonic",
  "tonic-build",
@@ -1608,11 +1632,14 @@ version = "0.1.0"
 name = "trnm-server"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "postgres",
  "prost",
  "prost-build",
  "prost-types",
  "protoc-bin-vendored",
+ "serde",
+ "serde_json",
  "tokio",
  "tonic",
  "tonic-build",
@@ -1622,6 +1649,7 @@ dependencies = [
  "trnm-persistence-pg",
  "trnm-realtime-wire",
  "trnm-session-core",
+ "trnm-token-crypto-provider",
  "trnm-token-jwt-adapter",
 ]
 
@@ -1675,6 +1703,7 @@ dependencies = [
  "hmac",
  "sha2",
  "subtle",
+ "trnm-token-crypto-provider",
 ]
 
 [[package]]

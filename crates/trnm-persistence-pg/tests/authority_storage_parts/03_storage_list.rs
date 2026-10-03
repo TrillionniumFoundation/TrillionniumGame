@@ -17,11 +17,19 @@ fn storage_listing_acl_owner_scope_and_cursor_are_stable() {
     let mut repository = PgRepository::connect(&database_url, profile).unwrap();
 
     let writes = [
-        (&key_a, ReadPermission::Owner, b"a-private".as_slice()),
-        (&key_b_a, ReadPermission::Public, b"b-a-public".as_slice()),
-        (&key_b_b, ReadPermission::Public, b"b-b-public".as_slice()),
-        (&key_c, ReadPermission::Owner, b"c-private".as_slice()),
-        (&key_d, ReadPermission::Public, b"d-public".as_slice()),
+        (&key_a, ReadPermission::OWNER, br#""a-private""#.as_slice()),
+        (
+            &key_b_a,
+            ReadPermission::PUBLIC,
+            br#""b-a-public""#.as_slice(),
+        ),
+        (
+            &key_b_b,
+            ReadPermission::PUBLIC,
+            br#""b-b-public""#.as_slice(),
+        ),
+        (&key_c, ReadPermission::OWNER, br#""c-private""#.as_slice()),
+        (&key_d, ReadPermission::PUBLIC, br#""d-public""#.as_slice()),
     ]
     .into_iter()
     .map(|(key, read_permission, value)| {
@@ -30,7 +38,7 @@ fn storage_listing_acl_owner_scope_and_cursor_are_stable() {
             value: value.to_vec(),
             expected: VersionCheck::MustNotExist,
             read_permission,
-            write_permission: WritePermission::Owner,
+            write_permission: WritePermission::OWNER,
         })
     })
     .collect::<Vec<_>>();
@@ -171,11 +179,7 @@ fn storage_listing_acl_owner_scope_and_cursor_are_stable() {
         "storage_cursor_scope_mismatch"
     );
 
-    let foreign_owner_scope = (
-        StorageActor::User(owner_a),
-        Some(owner_b),
-        key_b_b.clone(),
-    );
+    let foreign_owner_scope = (StorageActor::User(owner_a), Some(owner_b), key_b_b.clone());
     assert_eq!(
         repository
             .list_storage_objects(
@@ -238,10 +242,10 @@ fn storage_listing_unicode_order_matches_canonical_utf8_bytes() {
         .map(|(index, key)| {
             StorageBatchOperation::Write(StorageWriteOperation {
                 key: key.clone(),
-                value: format!("canonical-byte-order-{index}").into_bytes(),
+                value: format!(r#""canonical-byte-order-{index}""#).into_bytes(),
                 expected: VersionCheck::MustNotExist,
-                read_permission: ReadPermission::Public,
-                write_permission: WritePermission::Owner,
+                read_permission: ReadPermission::PUBLIC,
+                write_permission: WritePermission::OWNER,
             })
         })
         .collect::<Vec<_>>();
@@ -265,13 +269,7 @@ fn storage_listing_unicode_order_matches_canonical_utf8_bytes() {
         page_count += 1;
         assert!(page_count <= 4, "cursor failed to make bounded progress");
         let (page, next) = repository
-            .list_storage_objects(
-                StorageActor::Server,
-                collection,
-                None,
-                cursor.as_ref(),
-                3,
-            )
+            .list_storage_objects(StorageActor::Server, collection, None, cursor.as_ref(), 3)
             .unwrap();
         observed.extend(page.into_iter().map(|object| object.key));
         cursor = next;
@@ -298,5 +296,574 @@ fn storage_listing_unicode_order_matches_canonical_utf8_bytes() {
             ("中", 6),
             ("😀", 1),
         ]
+    );
+}
+
+#[test]
+fn nakama_client_listing_modes_cursors_and_integrity_are_database_projected() {
+    let Some((database_url, profile)) = live_database_environment("Nakama client list projection")
+    else {
+        eprintln!("nakama_client_list_projection_skipped: optional database is absent");
+        return;
+    };
+    let owner = UserId::new([0xb1; 16]);
+    let other = UserId::new([0xb2; 16]);
+    let global = UserId::new([0; 16]);
+    let collection = "nakama-client-list-contract";
+    let text_collection = "nakama-client-list-text-contract";
+    let wide_collection = format!("nakama-list-wide-{}", "界".repeat(111));
+    let control_collection = ".nakama-list-control-\n";
+    let mut control = postgres::Client::connect(&database_url, postgres::NoTls)
+        .unwrap_or_else(|_| panic!("Nakama client list fixture: control connection failed"));
+    let cleanup = |control: &mut postgres::Client| {
+        control
+            .execute(
+                "DELETE FROM trnm_storage_objects \
+                 WHERE collection IN ($1, $2, $3, $4) AND user_id IN ($5, $6, $7)",
+                &[
+                    &collection,
+                    &text_collection,
+                    &wide_collection,
+                    &control_collection,
+                    &owner.as_bytes().as_slice(),
+                    &other.as_bytes().as_slice(),
+                    &global.as_bytes().as_slice(),
+                ],
+            )
+            .unwrap_or_else(|_| panic!("Nakama client list fixture: scoped cleanup failed"));
+    };
+    cleanup(&mut control);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let engine = control
+            .query_one("SELECT version()", &[])
+            .unwrap_or_else(|_| panic!("Nakama client list fixture: engine query failed"))
+            .get::<_, String>(0);
+        match profile {
+            DatabaseProfile::PostgreSql => assert!(engine.starts_with("PostgreSQL ")),
+            DatabaseProfile::CockroachDb => assert!(engine.contains("CockroachDB")),
+        }
+        let mut repository = PgRepository::connect(&database_url, profile)
+            .unwrap_or_else(|_| panic!("Nakama client list fixture: repository connection failed"));
+        let key = |name, user| StorageObjectKey::new(collection, name, user).unwrap();
+        let own_private = key("z-own-private", owner);
+        let own_public = key("a-public", owner);
+        let own_hidden = key("00-own-hidden", owner);
+        let other_public = key("a-public", other);
+        let other_last = key("y-other-public", other);
+        let other_private = key("00-other-private", other);
+        let global_public = key("g-global", global);
+        let global_private = key("00-global-private", global);
+        let entries = [
+            (&own_private, ReadPermission::OWNER),
+            (&own_public, ReadPermission::PUBLIC),
+            (&own_hidden, ReadPermission::NONE),
+            (&other_public, ReadPermission::PUBLIC),
+            (&other_last, ReadPermission::PUBLIC),
+            (&other_private, ReadPermission::OWNER),
+            (&global_public, ReadPermission::PUBLIC),
+            (&global_private, ReadPermission::OWNER),
+        ];
+        let value = br#"{"list":true}"#;
+        let writes = entries
+            .iter()
+            .map(|(key, read_permission)| {
+                StorageBatchOperation::Write(StorageWriteOperation {
+                    key: (*key).clone(),
+                    value: value.to_vec(),
+                    expected: VersionCheck::MustNotExist,
+                    read_permission: *read_permission,
+                    write_permission: WritePermission::OWNER,
+                })
+            })
+            .collect::<Vec<_>>();
+        repository
+            .apply_storage_batch(StorageActor::Server, &writes, 120)
+            .unwrap();
+        let page_keys = |page: &trnm_persistence_pg::StorageClientListPage| {
+            page.objects
+                .iter()
+                .map(|object| object.key.clone())
+                .collect::<Vec<_>>()
+        };
+        let position = |key: &StorageObjectKey, read| trnm_persistence_pg::StorageListPosition {
+            key: key.key().to_owned(),
+            user_id: key.user_id(),
+            read,
+        };
+        let public_first = repository
+            .list_storage_objects_nakama(StorageActor::User(owner), collection, None, None, 1)
+            .unwrap();
+        assert_eq!(page_keys(&public_first), vec![own_public.clone()]);
+        assert_eq!(public_first.next, Some(position(&own_public, 2)));
+        let mut public_offset = public_first.next.unwrap();
+        public_offset.read = i32::MAX;
+        let public_second = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                None,
+                Some(&public_offset),
+                1,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&public_second), vec![other_public.clone()]);
+        assert_eq!(public_second.next, Some(position(&other_public, 2)));
+        let public_terminal = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                None,
+                public_second.next.as_ref(),
+                2,
+            )
+            .unwrap();
+        assert_eq!(
+            page_keys(&public_terminal),
+            vec![global_public.clone(), other_last.clone()]
+        );
+        assert_eq!(public_terminal.next, None);
+
+        let own_first = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(owner),
+                None,
+                1,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&own_first), vec![own_private.clone()]);
+        assert_eq!(own_first.next, Some(position(&own_private, 1)));
+        let mut own_offset = own_first.next.unwrap();
+        own_offset.user_id = other;
+        let own_terminal = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(owner),
+                Some(&own_offset),
+                1,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&own_terminal), vec![own_public.clone()]);
+        assert_eq!(own_terminal.next, None);
+        let empty_offset = trnm_persistence_pg::StorageListPosition {
+            key: String::new(),
+            user_id: other,
+            read: i32::MIN,
+        };
+        let own_all = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(owner),
+                Some(&empty_offset),
+                100,
+            )
+            .unwrap();
+        assert_eq!(
+            page_keys(&own_all),
+            vec![own_private.clone(), own_public.clone()]
+        );
+        let past_read_offset = trnm_persistence_pg::StorageListPosition {
+            read: i32::MAX,
+            ..empty_offset.clone()
+        };
+        let empty_page = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(owner),
+                Some(&past_read_offset),
+                100,
+            )
+            .unwrap();
+        assert!(empty_page.objects.is_empty());
+        assert_eq!(empty_page.next, None);
+
+        let foreign_first = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(other),
+                None,
+                1,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&foreign_first), vec![other_public.clone()]);
+        assert_eq!(foreign_first.next, Some(position(&other_public, 2)));
+        let foreign_offset = trnm_persistence_pg::StorageListPosition {
+            key: other_public.key().to_owned(),
+            user_id: global,
+            read: i32::MIN,
+        };
+        let foreign_terminal = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(other),
+                Some(&foreign_offset),
+                1,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&foreign_terminal), vec![other_last.clone()]);
+        assert_eq!(foreign_terminal.next, None);
+        let global_page = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(global),
+                Some(&foreign_offset),
+                1,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&global_page), vec![global_public.clone()]);
+        assert_eq!(global_page.next, None);
+
+        // Corrupt inaccessible objects through the independent control client.
+        // They sort before visible rows but must neither consume capacity nor fail decoding.
+        let corrupt = |control: &mut postgres::Client, key: &StorageObjectKey| {
+            assert_eq!(
+                control
+                    .execute(
+                        "UPDATE trnm_storage_objects SET version_digest = $4 \
+                     WHERE collection = $1 AND object_key = $2 AND user_id = $3",
+                        &[
+                            &key.collection(),
+                            &key.key(),
+                            &key.user_id().as_bytes().as_slice(),
+                            &vec![0x44_u8; 32],
+                        ],
+                    )
+                    .unwrap(),
+                1,
+            );
+        };
+        for key in [&own_hidden, &other_private, &global_private] {
+            corrupt(&mut control, key);
+        }
+        let visible = repository
+            .list_storage_objects_nakama(StorageActor::User(owner), collection, None, None, 100)
+            .unwrap();
+        assert_eq!(
+            page_keys(&visible),
+            vec![
+                own_public.clone(),
+                other_public.clone(),
+                global_public.clone(),
+                other_last.clone()
+            ]
+        );
+        let own_visible = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(owner),
+                None,
+                100,
+            )
+            .unwrap();
+        assert_eq!(
+            page_keys(&own_visible),
+            vec![own_private.clone(), own_public.clone()]
+        );
+        let global_visible = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(global),
+                None,
+                100,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&global_visible), vec![global_public.clone()]);
+
+        // A damaged public row beyond the returned page may serve as a sentinel.
+        // Its bytes are decoded only once that row becomes part of the response.
+        corrupt(&mut control, &other_last);
+        let before_bad_sentinel = repository
+            .list_storage_objects_nakama(StorageActor::User(owner), collection, None, None, 3)
+            .unwrap();
+        assert_eq!(
+            page_keys(&before_bad_sentinel),
+            vec![
+                own_public.clone(),
+                other_public.clone(),
+                global_public.clone()
+            ]
+        );
+        assert_eq!(before_bad_sentinel.next, Some(position(&global_public, 2)));
+        let visible_error = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                None,
+                before_bad_sentinel.next.as_ref(),
+                1,
+            )
+            .unwrap_err();
+        assert_eq!(visible_error.code(), StableCode::DataLoss);
+        assert_eq!(visible_error.reason(), "storage_request_witness_mismatch");
+        let beyond_sentinel = repository
+            .list_storage_objects_nakama(StorageActor::User(owner), collection, None, None, 1)
+            .unwrap();
+        assert_eq!(page_keys(&beyond_sentinel), vec![own_public.clone()]);
+        let foreign_bad_sentinel = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(other),
+                None,
+                1,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&foreign_bad_sentinel), vec![other_public.clone()]);
+        assert_eq!(foreign_bad_sentinel.next, Some(position(&other_public, 2)));
+        assert_eq!(
+            repository
+                .list_storage_objects_nakama(
+                    StorageActor::User(owner),
+                    collection,
+                    Some(other),
+                    foreign_bad_sentinel.next.as_ref(),
+                    1,
+                )
+                .unwrap_err()
+                .code(),
+            StableCode::DataLoss,
+        );
+        corrupt(&mut control, &own_public);
+        let own_bad_sentinel = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                collection,
+                Some(owner),
+                None,
+                1,
+            )
+            .unwrap();
+        assert_eq!(page_keys(&own_bad_sentinel), vec![own_private.clone()]);
+        assert_eq!(own_bad_sentinel.next, Some(position(&own_private, 1)));
+        assert_eq!(
+            repository
+                .list_storage_objects_nakama(
+                    StorageActor::User(owner),
+                    collection,
+                    Some(owner),
+                    own_bad_sentinel.next.as_ref(),
+                    1,
+                )
+                .unwrap_err()
+                .code(),
+            StableCode::DataLoss,
+        );
+
+        // Derive the text ordering from the actual database, retaining its locale.
+        let text_keys = ["é", "A", "中", "a", "e\u{301}", "~", "_", "😀"];
+        let text_writes = text_keys
+            .into_iter()
+            .map(|name| {
+                StorageBatchOperation::Write(StorageWriteOperation {
+                    key: StorageObjectKey::new(text_collection, name, other).unwrap(),
+                    value: value.to_vec(),
+                    expected: VersionCheck::MustNotExist,
+                    read_permission: ReadPermission::PUBLIC,
+                    write_permission: WritePermission::OWNER,
+                })
+            })
+            .collect::<Vec<_>>();
+        repository
+            .apply_storage_batch(StorageActor::Server, &text_writes, 130)
+            .unwrap();
+        let expected_text = control
+            .query(
+                "SELECT object_key FROM trnm_storage_objects \
+             WHERE collection = $1 AND user_id = $2 ORDER BY object_key ASC",
+                &[&text_collection, &other.as_bytes().as_slice()],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>();
+        let text_page = repository
+            .list_storage_objects_nakama(
+                StorageActor::User(owner),
+                text_collection,
+                Some(other),
+                None,
+                100,
+            )
+            .unwrap();
+        assert_eq!(
+            text_page
+                .objects
+                .iter()
+                .map(|object| object.key.key().to_owned())
+                .collect::<Vec<_>>(),
+            expected_text,
+        );
+        assert_eq!(text_page.next, None);
+        let native_value = native_fixture_value(&mut control, value);
+        assert!(text_page.objects.iter().all(|object| {
+            object.version.as_str()
+                == trnm_persistence_pg::ContentVersion::from_value(value).as_str()
+                && object.integrity_digest.matches_value(&native_value)
+                && object.value == native_value
+                && object.key.user_id() == other
+        }));
+
+        // Authoritative schema length is in Unicode characters. Seed valid
+        // rows that the existing typed key's byte/character policy cannot express.
+        let wide_key = "界".repeat(128);
+        assert_eq!(wide_collection.chars().count(), 128);
+        assert_eq!(wide_key.chars().count(), 128);
+        assert!(StorageObjectKey::new(&wide_collection, &wide_key, other).is_err());
+        assert!(StorageObjectKey::new(control_collection, ".control-\n", other).is_err());
+        let integrity = trnm_persistence_pg::IntegrityDigest::from_value(value);
+        let projected_integrity = trnm_persistence_pg::IntegrityDigest::from_value(&native_value);
+        let public_version = trnm_persistence_pg::ContentVersion::from_value(value);
+        for (seed_collection, seed_key) in [
+            (wide_collection.as_str(), wide_key.as_str()),
+            (control_collection, ".control-\n"),
+        ] {
+            assert_eq!(
+                control
+                    .execute(
+                        "INSERT INTO trnm_storage_objects \
+                 (collection, object_key, user_id, value_bytes, version_digest, \
+                  value_jsonb, public_version, value_projection_digest, value_origin, \
+                  read_permission, write_permission, updated_at_ms) \
+                 VALUES ($1, $2, $3, $4, $5, $6::TEXT::JSONB, $7, $8, 'legacy-rust-v2-bytes', 2, 1, 140)",
+                        &[
+                            &seed_collection,
+                            &seed_key,
+                            &other.as_bytes().as_slice(),
+                            &value.as_slice(),
+                            &integrity.get().as_bytes().as_slice(),
+                            &std::str::from_utf8(value).unwrap(),
+                            &public_version.as_str(),
+                            &projected_integrity.get().as_bytes().as_slice(),
+                        ],
+                    )
+                    .unwrap(),
+                1
+            );
+            let seeded_page = repository
+                .list_storage_objects_nakama(
+                    StorageActor::User(owner),
+                    seed_collection,
+                    Some(other),
+                    None,
+                    1,
+                )
+                .unwrap();
+            assert_eq!(seeded_page.objects.len(), 1);
+            assert_eq!(seeded_page.objects[0].key.collection(), seed_collection);
+            assert_eq!(seeded_page.objects[0].key.key(), seed_key);
+            assert_eq!(seeded_page.objects[0].key.user_id(), other);
+            assert_eq!(seeded_page.objects[0].value, native_value);
+            assert_eq!(seeded_page.objects[0].integrity_digest, projected_integrity);
+            assert_eq!(seeded_page.next, None);
+        }
+
+        for invalid_actor in [StorageActor::Server, StorageActor::User(global)] {
+            assert_eq!(
+                repository
+                    .list_storage_objects_nakama(invalid_actor, collection, None, None, 1,)
+                    .unwrap_err()
+                    .reason(),
+                "invalid_storage_actor"
+            );
+        }
+        for invalid_limit in [0, 101] {
+            assert_eq!(
+                repository
+                    .list_storage_objects_nakama(
+                        StorageActor::User(owner),
+                        collection,
+                        None,
+                        None,
+                        invalid_limit,
+                    )
+                    .unwrap_err()
+                    .reason(),
+                "invalid_storage_list_limit"
+            );
+        }
+        let long_offset = trnm_persistence_pg::StorageListPosition {
+            key: "x".repeat(4097),
+            user_id: global,
+            read: i32::MIN,
+        };
+        assert_eq!(
+            repository
+                .list_storage_objects_nakama(
+                    StorageActor::User(owner),
+                    collection,
+                    None,
+                    Some(&long_offset),
+                    1,
+                )
+                .unwrap_err()
+                .reason(),
+            "invalid_storage_list_position"
+        );
+        assert_eq!(
+            repository
+                .list_storage_objects_nakama(
+                    StorageActor::User(owner),
+                    &"x".repeat(4097),
+                    None,
+                    None,
+                    1,
+                )
+                .unwrap_err()
+                .reason(),
+            "invalid_storage_collection"
+        );
+        for empty_collection in [
+            String::new(),
+            "x".repeat(129),
+            ".reserved".to_owned(),
+            "bad\nname".to_owned(),
+            "x".repeat(4096),
+        ] {
+            let empty_result = repository
+                .list_storage_objects_nakama(
+                    StorageActor::User(owner),
+                    &empty_collection,
+                    None,
+                    None,
+                    1,
+                )
+                .unwrap();
+            assert!(empty_result.objects.is_empty());
+            assert_eq!(empty_result.next, None);
+        }
+    }));
+    cleanup(&mut control);
+    let remaining = control
+        .query_one(
+            "SELECT count(*) FROM trnm_storage_objects \
+         WHERE collection IN ($1, $2, $3, $4) AND user_id IN ($5, $6, $7)",
+            &[
+                &collection,
+                &text_collection,
+                &wide_collection,
+                &control_collection,
+                &owner.as_bytes().as_slice(),
+                &other.as_bytes().as_slice(),
+                &global.as_bytes().as_slice(),
+            ],
+        )
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(remaining, 0);
+    if let Err(payload) = outcome {
+        std::panic::resume_unwind(payload);
+    }
+    eprintln!(
+        "\nnakama_client_list_projection_executed profile={}",
+        profile.metadata_value()
     );
 }

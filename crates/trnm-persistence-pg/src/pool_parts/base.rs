@@ -41,7 +41,9 @@ pub(crate) struct RetirableConnection<C> {
 
 impl<M> fmt::Debug for RetirementManager<M> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("RetirementManager").finish_non_exhaustive()
+        formatter
+            .debug_struct("RetirementManager")
+            .finish_non_exhaustive()
     }
 }
 
@@ -99,7 +101,12 @@ impl ClientHandle {
         }
     }
 
-    fn retire(&self) {
+    pub(crate) fn is_retired(&self) -> bool {
+        self.retirement_flag()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn retire(&self) {
         if let Some(retired) = self.retirement_flag() {
             retired.store(true, Ordering::Release);
         }
@@ -249,8 +256,14 @@ impl fmt::Debug for PgTlsConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PgTlsConfig")
-            .field("custom_root_certificate", &self.root_certificate_pem.is_some())
-            .field("client_identity", &self.identity_certificate_chain_pem.is_some())
+            .field(
+                "custom_root_certificate",
+                &self.root_certificate_pem.is_some(),
+            )
+            .field(
+                "client_identity",
+                &self.identity_certificate_chain_pem.is_some(),
+            )
             .field("private_key", &"<redacted>")
             .finish()
     }

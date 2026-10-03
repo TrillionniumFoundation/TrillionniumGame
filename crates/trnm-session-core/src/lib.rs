@@ -1,5 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod nakama_legacy_blacklist;
+pub use nakama_legacy_blacklist::{
+    NakamaLegacyBlacklist, NakamaLegacyBlacklistError, NakamaLegacyBlacklistLimits,
+    NakamaLegacyBlacklistPolicy, NakamaLegacyBlacklistStats, NakamaLegacyBlacklistSweep,
+    NakamaLegacyCacheTokenId, NakamaLegacyCacheUserId, NakamaLegacyTokenRemoval,
+};
+
 use std::collections::BTreeSet;
 
 use trnm_contracts::{

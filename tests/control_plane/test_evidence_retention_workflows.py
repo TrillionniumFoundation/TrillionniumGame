@@ -71,8 +71,11 @@ class EvidenceRetentionWorkflowTests(unittest.TestCase):
 
     def test_source_collection_binds_runs_jobs_attempts_and_definition_blobs(self) -> None:
         source = WORKFLOWS["merge_gate"].read_text(encoding="utf-8")
-        self.assertIn("required-workflow-retained-collection.v1", source)
+        self.assertIn("required-workflow-retained-collection.v2", source)
         self.assertIn("definition_blob_sha1", source)
+        self.assertIn("schema_source_selection:$schema_source_selection", source)
+        self.assertIn("scripts/capture-schema-source-selection.py", source)
+        self.assertIn("source-selection", source)
         self.assertIn(".run_attempt > 0", source)
         self.assertIn(".jobs > 0", source)
         self.assertIn("--stable-polls 3", source)
@@ -81,7 +84,9 @@ class EvidenceRetentionWorkflowTests(unittest.TestCase):
         prospective = WORKFLOWS["prospective"].read_text(encoding="utf-8")
         server = WORKFLOWS["server_live"].read_text(encoding="utf-8")
         self.assertIn("prospective-merge-${{ matrix.profile }}", prospective)
-        self.assertIn("prospective-merge-retained-gate.v1", prospective)
+        self.assertIn("prospective-merge-retained-gate.v2", prospective)
+        self.assertIn("final-source-selection", prospective)
+        self.assertIn("scripts/capture-schema-source-selection.py", prospective)
         self.assertIn("trnm-server-live-${{ matrix.profile }}", server)
         self.assertIn("matrix:\n        profile: [postgresql, cockroachdb]", server)
 

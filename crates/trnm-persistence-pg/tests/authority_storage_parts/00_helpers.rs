@@ -41,3 +41,16 @@ fn live_database_environment(label: &str) -> Option<(String, DatabaseProfile)> {
         .unwrap_or_else(|_| panic!("{label}: TRNM_DATABASE_PROFILE is required"));
     Some((database_url, profile(&profile_value)))
 }
+
+// Expected native text is obtained from the actual fixture database, never from
+// a Rust JSON normalizer or a guessed whitespace/key ordering convention.
+fn native_fixture_value(control: &mut postgres::Client, value: &[u8]) -> Vec<u8> {
+    control
+        .query_one(
+            "SELECT $1::TEXT::JSONB::TEXT",
+            &[&std::str::from_utf8(value).unwrap()],
+        )
+        .unwrap_or_else(|_| panic!("native storage fixture projection failed"))
+        .get::<_, String>(0)
+        .into_bytes()
+}

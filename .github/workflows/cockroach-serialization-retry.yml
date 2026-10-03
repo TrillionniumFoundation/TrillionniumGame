@@ -5,6 +5,19 @@ on:
   push:
     branches: [main]
     paths:
+      - 'tests/control_plane/test_schema_source_selection.py'
+      - 'tests/control_plane/test_schema_evidence_binding.py'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - 'migrations/**'
+      - 'scripts/check-migration-lock.py'
+      - 'scripts/schema_source_selection.py'
+      - 'scripts/schema_evidence_binding.py'
+      - 'scripts/capture-schema-source-selection.py'
+      - 'contracts/database/source-execution-evidence.v1.json'
+      - 'scripts/seal-outbox-final-attempt.py'
+      - 'scripts/verify-actions-log-artifact.py'
       - 'crates/trnm-persistence-pg/src/lib.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/app.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/retry.rs'
@@ -17,6 +30,10 @@ on:
       - 'migrations/cockroachdb/**'
       - 'Cargo.lock'
       - 'config/database-test-images.json'
+      - 'scripts/check-authoritative-schema-identity.py'
+      - 'scripts/upload-actions-artifact.py'
+      - 'tests/control_plane/test_cockroach_retry_contract.py'
+      - '.github/actions/upload-evidence/**'
       - '.github/workflows/cockroach-serialization-retry.yml'
   workflow_dispatch:
 
@@ -60,12 +77,14 @@ jobs:
           rustup override set "$RUST_TOOLCHAIN"
       - name: Verify formatting
         run: cargo fmt --all -- --check
+      - name: Verify retained retry packet control contract
+        run: python3 -m unittest discover -s tests/control_plane -p 'test_cockroach_retry_contract.py' -v
       - name: Run server retry tests without a live database
         run: cargo test -p trnm-persistence-pg --features diagnostic-compat-server --locked --bin trnm-pg-compat-server retry
       - name: Strict lint server retry targets
         run: >-
           cargo clippy -p trnm-persistence-pg --locked
-          --features diagnostic-compat-server --bin trnm-pg-compat-server -- -D warnings
+          --features diagnostic-compat-server --all-targets -- -D warnings
 
   live-cockroach-serialization-retry:
     runs-on: ubuntu-24.04
@@ -94,6 +113,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p run/cockroach-retry
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          configured = json.loads(Path('config/database-test-images.json').read_text())
+          assert os.environ['COCKROACH_IMAGE'] == configured['profiles']['cockroachdb']['image']
+          PY
           docker rm -f trnm-crdb-retry >/dev/null 2>&1 || true
           docker run --detach \
             --name trnm-crdb-retry \
@@ -122,17 +148,32 @@ jobs:
             docker logs trnm-crdb-retry >&2 || true
             exit 1
           fi
-          docker exec trnm-crdb-retry cockroach version
+          docker exec trnm-crdb-retry cockroach version | tee run/cockroach-retry/database-version.txt
+          docker image inspect "$COCKROACH_IMAGE" > run/cockroach-retry/image-inspect.json
+          docker inspect trnm-crdb-retry > run/cockroach-retry/container-inspect.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('run/cockroach-retry')
+          image, = json.loads((root / 'image-inspect.json').read_text())
+          container, = json.loads((root / 'container-inspect.json').read_text())
+          assert os.environ['COCKROACH_IMAGE'] in image['RepoDigests']
+          assert container['Config']['Image'] == os.environ['COCKROACH_IMAGE']
+          assert container['Image'] == image['Id']
+          assert container['State']['Running'] is True
+          assert 'v26.2.6' in (root / 'database-version.txt').read_text()
+          PY
       - name: Force SQLSTATE 40001 and prove whole-command retry
         shell: bash
         env:
           TRNM_REQUIRE_LIVE_CRDB_RETRY: '1'
           TRNM_TEST_COCKROACH_URL: postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable
+          TRNM_SCHEMA_SOURCE_COMMIT: ${{ env.CANDIDATE_SHA }}
         run: |
           set -euo pipefail
           cargo test -p trnm-persistence-pg --features diagnostic-compat-server --locked --bin trnm-pg-compat-server \
             live_cockroach_serialization_failure_retries_entire_command \
-            -- --nocapture | tee run-cockroach-retry.log
+            -- --nocapture 2>&1 | tee run-cockroach-retry.log
           grep -Eq '^test result: ok[.] 1 passed; 0 failed; 0 ignored;' \
             run-cockroach-retry.log
           grep -qx 'assertion=production_commit_boundary_40001_was_not_acknowledged' run-cockroach-retry.log
@@ -144,6 +185,29 @@ jobs:
           grep -qx 'assertion=retry_exhaustion_left_no_partial_durable_effect' run-cockroach-retry.log
           grep -qx 'fault_mode=cockroach_session_commit_error_injection' run-cockroach-retry.log
           grep -qx 'network_response_loss_injected=false' run-cockroach-retry.log
+          python3 - <<'PY'
+          import importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('retry_schema_checker', 'scripts/check-authoritative-schema-identity.py')
+          checker = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(checker)
+          selection = checker.validated_source('cockroachdb')
+          reports = {}
+          lines = Path('run-cockroach-retry.log').read_text().splitlines()
+          for label, mode in [('apply', 'fresh'), ('verify', 'verify')]:
+              marker = 'retry_schema_' + label + '_report='
+              matches = [line[len(marker):] for line in lines if line.startswith(marker)]
+              assert len(matches) == 1, ('missing or ambiguous executed schema report', label)
+              raw = matches[0].encode()
+              report = checker.decode_identity_document(raw)
+              checker.validate_identity(report, profile='cockroachdb', selection=selection, mode=mode,
+                                        source_commit=os.environ['CANDIDATE_SHA'] if label == 'apply' else None)
+              (Path('run/cockroach-retry') / ('schema-' + label + '.json')).write_bytes(raw + b'\n')
+              reports[label] = report
+          for field in ['profile', 'schema_version', 'chain_digest', 'digest_algorithm',
+                        'storage_writer_epoch', 'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit']:
+              assert reports['apply'][field] == reports['verify'][field], ('schema changed during retry', field)
+          PY
       - name: Seal exact execution receipt in immutable job log
         shell: bash
         run: |
@@ -161,6 +225,178 @@ jobs:
             'production_atomicity_scope=real_repository_with_commit_boundary_fault' \
             'multi_node_evidence=false' \
             'production_ready=false'
+          cp run-cockroach-retry.log run/cockroach-retry/execution.log
+          cp migrations/MIGRATION_CHAIN.lock.json run/cockroach-retry/migration-chain.lock.json
+          python3 scripts/check-migration-lock.py > run/cockroach-retry/migration-chain-validation.json
+          python3 - <<'PY'
+          import hashlib, importlib.util, json, os, subprocess
+          from pathlib import Path
+          root = Path('run/cockroach-retry')
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          assert commit == os.environ['CANDIDATE_SHA']
+          lock = json.loads((root / 'migration-chain.lock.json').read_text())
+          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 5
+          applied = json.loads((root / 'schema-apply.json').read_text())
+          verified = json.loads((root / 'schema-verify.json').read_text())
+          assert applied['schema_version'] == applied['storage_writer_epoch'] == 4
+          for field in ('profile', 'schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm',
+                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
+              assert applied[field] == verified[field]
+          for field in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
+              assert applied[field] == commit
+          import sys
+          sys.path.insert(0, 'scripts')
+          import schema_evidence_binding as binding
+          token = binding.verify_binding(Path('.'), profile='cockroachdb')
+          for entry in binding.binding_document(token)['full_source_inventory']:
+              assert subprocess.check_output(['git', 'rev-parse', 'HEAD:' + entry['path']], text=True).strip() == entry['git_blob_sha1']
+          binding.write_annex(token, Path('.'), root, commit=commit, tree=tree)
+          selected = binding.operational_binding(token)['ordered_files']
+          for entry in selected:
+              source = Path(entry['path'])
+              assert subprocess.check_output(['git', 'hash-object', str(source)], text=True).strip() == entry['git_blob_sha1']
+              target = root / source
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(source.read_bytes())
+          identity = {'repository': os.environ['CANDIDATE_REPOSITORY'], 'commit': commit, 'tree': tree,
+                      'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                      'workflow': 'cockroach-serialization-retry', 'job_key': 'live-cockroach-serialization-retry',
+                      'job_name': 'live-cockroach-serialization-retry',
+                      'workflow_repository': os.environ['GITHUB_REPOSITORY'],
+                      'workflow_ref': os.environ['GITHUB_WORKFLOW_REF'], 'workflow_sha': os.environ['GITHUB_WORKFLOW_SHA'],
+                      'profile': 'cockroachdb', 'image': os.environ['COCKROACH_IMAGE'],
+                      'fault_mode': 'cockroach_session_commit_error_injection', 'network_response_loss_injected': False,
+                      'compatibility_credit': False, 'production_ready': False}
+          for field in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm',
+                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
+              identity[field] = applied[field]
+          identity['authoritative_migration_file_count'] = len(selected)
+          identity['source_selection'] = binding.identity_fields(token)
+          identity['accepted_evidence'] = False
+          (root / 'identity.json').write_text(json.dumps(identity, sort_keys=True, separators=(',', ':')) + '\n')
+          spec = importlib.util.spec_from_file_location('retry_sealer', 'scripts/seal-outbox-final-attempt.py')
+          sealer = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(sealer)
+          files = sealer.retained_files(root)
+          (root / 'files.sha256').write_text(''.join(hashlib.sha256(path.read_bytes()).hexdigest() +
+                                                 '  ./' + path.relative_to(root).as_posix() + '\n' for path in files))
+          sealer.retained_files(root)
+          PY
+          (cd run/cockroach-retry && sha256sum --check files.sha256)
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf run/cockroach-retry.tar.gz -C run/cockroach-retry .
+          sha256sum run/cockroach-retry.tar.gz
+          python3 - <<'PY_RETRY_ARCHIVE'
+          import hashlib, importlib.util, json, os, re, subprocess
+          from pathlib import Path
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          assert re.fullmatch(r'[0-9a-f]{40}', commit) and re.fullmatch(r'[0-9a-f]{40}', tree)
+          assert commit == os.environ['CANDIDATE_SHA'], 'retry checkout differs from current candidate'
+          for field in ('CANDIDATE_REPOSITORY', 'GITHUB_REPOSITORY'):
+              assert len(os.environ[field]) <= 200 and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', os.environ[field])
+          for field in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):
+              assert re.fullmatch(r'[1-9][0-9]{0,18}', os.environ[field])
+          assert os.environ['GITHUB_JOB'] == 'live-cockroach-serialization-retry'
+          assert re.fullmatch(r'[0-9a-f]{40}', os.environ['GITHUB_WORKFLOW_SHA'])
+          workflow_ref = os.environ['GITHUB_WORKFLOW_REF']
+          workflow_prefix = os.environ['GITHUB_REPOSITORY'] + '/.github/workflows/cockroach-serialization-retry.yml@'
+          assert workflow_ref.startswith(workflow_prefix) and len(workflow_prefix) < len(workflow_ref) <= 1024
+          assert not any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in workflow_ref)
+          expected_producer = {
+              'repository': os.environ['CANDIDATE_REPOSITORY'], 'commit': commit, 'tree': tree,
+              'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'workflow': 'cockroach-serialization-retry', 'job_key': os.environ['GITHUB_JOB'],
+              'job_name': 'live-cockroach-serialization-retry',
+              'workflow_repository': os.environ['GITHUB_REPOSITORY'],
+              'workflow_ref': workflow_ref, 'workflow_sha': os.environ['GITHUB_WORKFLOW_SHA'],
+              'profile': 'cockroachdb', 'image': os.environ['COCKROACH_IMAGE'],
+              'fault_mode': 'cockroach_session_commit_error_injection', 'network_response_loss_injected': False,
+              'compatibility_credit': False, 'accepted_evidence': False, 'production_ready': False,
+          }
+          spec = importlib.util.spec_from_file_location('retry_archive_checker', 'scripts/verify-actions-log-artifact.py')
+          checker = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(checker)
+          archive = Path('run/cockroach-retry.tar.gz').read_bytes()
+          files = checker.archive_files(archive)
+          checker.verify_file_manifest(files)
+          lock = checker.strict_object(files['migration-chain.lock.json'], 'retained migration lock')
+          assert files['migration-chain.lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()
+          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 5
+          token = checker.BINDING.verify_binding(Path('.'), profile='cockroachdb')
+          source_fields = checker.BINDING.validate_annex_files(token, files, commit=commit, tree=tree)
+          validation = checker.strict_object(files['migration-chain-validation.json'], 'complete source validation')
+          assert checker.BINDING.same(validation, checker.BINDING.binding_document(token)['source_selection']['source']['complete_validation']), 'retry full source validation differs'
+          checker.verify_migration_files(files, token)
+          spec = importlib.util.spec_from_file_location('retry_archive_schema', 'scripts/check-authoritative-schema-identity.py')
+          schemas = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(schemas)
+          selection = checker.BINDING.selection_token(token)
+          identity = schemas.decode_identity_document(files['identity.json'])
+          assert isinstance(identity, dict)
+          assert set(identity) == set(expected_producer) | {'schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm', 'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit', 'authoritative_migration_file_count', 'source_selection'}, 'closed retry identity fields differ'
+          for field, expected in expected_producer.items():
+              assert type(identity.get(field)) is type(expected) and identity[field] == expected, ('retry producer mismatch', field)
+          applied = schemas.decode_identity_document(files['schema-apply.json'])
+          verified = schemas.decode_identity_document(files['schema-verify.json'])
+          schemas.validate_identity(applied, profile='cockroachdb', selection=selection, mode='fresh', source_commit=commit)
+          schemas.validate_identity(verified, profile='cockroachdb', selection=selection, mode='verify')
+          assert identity['schema_version'] == identity['storage_writer_epoch'] == identity['authoritative_migration_file_count'] == 4
+          assert checker.BINDING.same(identity['source_selection'], source_fields)
+          for field in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm',
+                        'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
+              assert applied[field] == verified[field] == identity[field]
+          for flag in ('compatibility_credit', 'accepted_evidence', 'production_ready'):
+              assert identity[flag] is False
+          Path('run/cockroach-retry-archive-check.json').write_text(json.dumps({
+              'schema': 'trillionnium.cockroach-retry-archive-check.v1',
+              'archive_sha256': hashlib.sha256(archive).hexdigest(), 'archive_size': len(archive),
+              'producer': expected_producer,
+          }, sort_keys=True, separators=(',', ':')) + '\n')
+          print('retry_archive_bytes_verified=true')
+          PY_RETRY_ARCHIVE
+      - name: Retain exact retry execution packet
+        id: retained-retry
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: cockroach-retry-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/cockroach-retry.tar.gz
+          mime_type: application/gzip
+      - name: Verify retained retry receipt
+        shell: bash
+        env:
+          RETAINED_ARTIFACT_ID: ${{ steps.retained-retry.outputs.artifact_id }}
+          RETAINED_SHA256: ${{ steps.retained-retry.outputs.sha256 }}
+          RETAINED_SIZE: ${{ steps.retained-retry.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_RETRY_RECEIPT'
+          import hashlib, importlib.util, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('retry_receipt_uploader', 'scripts/upload-actions-artifact.py')
+          uploader = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(uploader)
+          name = 'cockroach-retry-' + os.environ['CANDIDATE_SHA'] + '-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
+          archive = uploader.validate_artifact(name, Path('run/cockroach-retry.tar.gz'))
+          uploader._artifact_id(os.environ['RETAINED_ARTIFACT_ID'])
+          spec = importlib.util.spec_from_file_location('retry_receipt_schema', 'scripts/check-authoritative-schema-identity.py')
+          schemas = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(schemas)
+          checked = schemas.decode_identity_document(Path('run/cockroach-retry-archive-check.json').read_bytes())
+          assert isinstance(checked, dict) and checked['schema'] == 'trillionnium.cockroach-retry-archive-check.v1'
+          for field, env in (('repository', 'CANDIDATE_REPOSITORY'), ('commit', 'CANDIDATE_SHA'),
+                             ('run_id', 'GITHUB_RUN_ID'), ('run_attempt', 'GITHUB_RUN_ATTEMPT'),
+                             ('workflow_repository', 'GITHUB_REPOSITORY'), ('workflow_ref', 'GITHUB_WORKFLOW_REF'),
+                             ('workflow_sha', 'GITHUB_WORKFLOW_SHA'), ('job_key', 'GITHUB_JOB'), ('image', 'COCKROACH_IMAGE')):
+              assert type(checked['producer'].get(field)) is str and checked['producer'][field] == os.environ[env]
+          for flag in ('compatibility_credit', 'accepted_evidence', 'production_ready'):
+              assert checked['producer'][flag] is False
+          digest = hashlib.sha256(archive).hexdigest()
+          assert checked['archive_sha256'] == os.environ['RETAINED_SHA256'] == digest
+          assert type(checked['archive_size']) is int and checked['archive_size'] == len(archive)
+          assert os.environ['RETAINED_SIZE'] == str(checked['archive_size'])
+          PY_RETRY_RECEIPT
       - name: Stop CockroachDB
         if: always()
         shell: bash

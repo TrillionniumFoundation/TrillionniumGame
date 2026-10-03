@@ -1,0 +1,244 @@
+{
+  "schema": "trillionnium.documentation-depth.v1",
+  "project_id": "trillionnium-game",
+  "plan_version": 3,
+  "assessment_kind": "engineering-review-proposal",
+  "assessed_at": "2026-09-12",
+  "basis": {
+    "repository": "TrillionniumFoundation/TrillionniumGame",
+    "commit": "9ea6b9fc0d4c1d9a6b8a90ffa2ba7dda75d994bf",
+    "tree": "0b7aceaac6a38cce23a224fbf548bc01534e0acb"
+  },
+  "claim_credit": false,
+  "interpretation": "Document presence, proposed engineering depth, implementation and independently accepted evidence are separate axes. Detailed-bounded-design describes the documented in-process scope only, not complete adapters or production approval. This appraisal is not an acceptance registry or an alternate execution queue.",
+  "required_design_dimensions": [
+    "scope-and-dependencies",
+    "public-api-and-examples",
+    "state-and-data",
+    "errors-and-side-effects",
+    "concurrency-and-recovery",
+    "security-and-budgets",
+    "tests-and-compatibility",
+    "operations-and-change"
+  ],
+  "modules": [
+    {
+      "id": "trnm-contracts",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Public type/code/retry catalogue, numeric and byte bounds, serialized examples and consumer mapping."
+      ]
+    },
+    {
+      "id": "trnm-authority-core",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Generation/revision transition and error-precedence tables; lease clock and adapter ownership contract."
+      ]
+    },
+    {
+      "id": "trnm-session-core",
+      "depth": "detailed-bounded-design",
+      "remaining_design_work": [
+        "Durable refresh response-loss receipt protocol; persist replay revocation even on Err; history lifetime and socket fanout."
+      ]
+    },
+    {
+      "id": "trnm-identity-core",
+      "depth": "detailed-bounded-design",
+      "remaining_design_work": [
+        "Provider normalization/case/collision decisions, trusted assertion verification, durable repository and official wire mapping."
+      ]
+    },
+    {
+      "id": "trnm-social-core",
+      "depth": "detailed-bounded-design",
+      "remaining_design_work": [
+        "Durable social/chat/notification transaction and tables; direct/room chat, history retention and distributed outbox delivery."
+      ]
+    },
+    {
+      "id": "trnm-storage-core",
+      "depth": "partial-design",
+      "remaining_design_work": [
+        "Complete ACL/OCC/batch failure matrix and public request limits; cursor and concurrent mutation semantics."
+      ]
+    },
+    {
+      "id": "trnm-persistence-core",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Repository API and transaction input/output catalogue; outbox state/error table and ambiguous-outcome reconciliation."
+      ]
+    },
+    {
+      "id": "trnm-persistence-pg",
+      "depth": "partial-design",
+      "remaining_design_work": [
+        "Complete authoritative table/index dictionary, SQL/transaction ownership, profile differences and repeatable recovery runbooks."
+      ]
+    },
+    {
+      "id": "trnm-canonical-core",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Normative byte grammar, ordering/escaping/length rules and exact vector-to-public-API mapping."
+      ]
+    },
+    {
+      "id": "trnm-transport-core",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Complete domain-to-HTTP/gRPC/realtime error, metadata, retry and close-code table."
+      ]
+    },
+    {
+      "id": "trnm-token-core",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Claim schema, validation precedence and per-profile time/epoch/domain rules."
+      ]
+    },
+    {
+      "id": "trnm-presence-core",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Presence visibility/lifecycle/error matrix and exact responsibility split with the router."
+      ]
+    },
+    {
+      "id": "trnm-query-core",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Supported grammar, precedence, missing-value/type semantics, complexity limits and hostile examples."
+      ]
+    },
+    {
+      "id": "trnm-token-jwt-adapter",
+      "depth": "partial-design",
+      "remaining_design_work": [
+        "Complete public API, token/profile/error-precedence matrix and oracle-classified strictness differences."
+      ]
+    },
+    {
+      "id": "trnm-token-jwt-adapter-gate",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Exact vector inventory, unique coverage relative to root workspace and convergence/retirement criteria."
+      ]
+    },
+    {
+      "id": "trnm-token-jwt-adapter-gate-v2",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Incremental coverage over the first gate, equivalence proof and reviewed removal criteria."
+      ]
+    },
+    {
+      "id": "trnm-presence-router-v2",
+      "depth": "detailed-bounded-design",
+      "remaining_design_work": [
+        "Durable checkpoints and real outcome verification; cross-node protocol and rolling/quiescent namespace recovery under full capacity."
+      ]
+    },
+    {
+      "id": "trnm-server",
+      "depth": "partial-design",
+      "remaining_design_work": [
+        "Transport-independent service contracts, full lifecycle/dependency readiness, signal/drain sequence and public compatibility integration."
+      ]
+    },
+    {
+      "id": "trnm-persistence-runtime-policy",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Field/default/range/inter-field policy table, elapsed retry budget calculation and concrete adapter consumers."
+      ]
+    },
+    {
+      "id": "trnm-realtime-wire",
+      "depth": "overview",
+      "remaining_design_work": [
+        "Complete message/opcode/CID catalogue, JSON/protobuf mapping, unknown-field rules and official leaf vectors."
+      ]
+    },
+    {
+      "id": "trnm-storage-nakama-version",
+      "depth": "partial-design",
+      "remaining_design_work": [
+        "Public API examples, malformed/wildcard/exact condition precedence and immutable-oracle vector mapping."
+      ]
+    },
+    {
+      "id": "trnm-token-crypto-provider",
+      "depth": "detailed-bounded-design",
+      "remaining_design_work": [
+        "Real provider outcome authentication and custody; durable lifecycle/replay store, peer identity, rotation and cross-node recovery."
+      ]
+    },
+    {
+      "id": "trnm-token-jwt-provider-adapter",
+      "depth": "partial-design",
+      "remaining_design_work": [
+        "Complete format/policy/provider call sequence, failure propagation, cache/revoke consistency and real provider integration."
+      ]
+    }
+  ],
+  "components": [
+    {
+      "id": "COMPONENT-RUST-PACKAGES",
+      "remaining_design_work": [
+        "Module design depth and durable/network integration vary; source boundaries need specialist review."
+      ]
+    },
+    {
+      "id": "COMPONENT-GO-RUNTIME-MIGRATION",
+      "remaining_design_work": [
+        "Per-package maintenance contracts and source/state migration mapping with explicit rollback ownership."
+      ]
+    },
+    {
+      "id": "COMPONENT-DATABASE-MIGRATIONS",
+      "remaining_design_work": [
+        "Object catalogue, data dictionary, invariant-negative matrix and profile-specific recovery steps."
+      ]
+    },
+    {
+      "id": "COMPONENT-PROTOCOL-CONTRACTS",
+      "remaining_design_work": [
+        "Consumer/version/deprecation lifecycle and complete generated binding coverage."
+      ]
+    },
+    {
+      "id": "COMPONENT-ORACLE-DIFFERENTIAL",
+      "remaining_design_work": [
+        "Real immutable/instrumented corpus reproduction, engine equivalence and normalizer acceptance."
+      ]
+    },
+    {
+      "id": "COMPONENT-CONTROL-PLANE",
+      "remaining_design_work": [
+        "Per-tool inputs/outputs and troubleshooting; consolidate reusable code rather than duplicate admission logic."
+      ]
+    },
+    {
+      "id": "COMPONENT-CI-GOVERNANCE",
+      "remaining_design_work": [
+        "Workflow-family runbooks, current candidate identity, administrator readback and conflict-free reviewer capacity."
+      ]
+    },
+    {
+      "id": "COMPONENT-DEPLOYMENT-OPERATIONS",
+      "remaining_design_work": [
+        "Production manifests, secrets, multi-node HA/upgrade, measured RPO/RTO and full-duration rehearsals."
+      ]
+    },
+    {
+      "id": "COMPONENT-EVIDENCE-REVIEW",
+      "remaining_design_work": [
+        "Retained artifact bytes, current-object review provenance and a complete independently accepted evidence cycle."
+      ]
+    }
+  ],
+  "acceptance_rule": "Use the existing retained-evidence and independent-review contracts. Editing a depth label never closes a gap or changes product gates."
+}

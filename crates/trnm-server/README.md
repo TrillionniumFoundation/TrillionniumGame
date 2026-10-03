@@ -49,17 +49,72 @@ The package consumes:
 ## Public contracts
 
 The candidate CLI exposes `check-config`, `migrate`, and `serve`.
+The locked source chain has five revisions per profile; the default `migrate` uses
+the StorageV4 first four. Serving verifies schema 4, chain/catalog identity and writer epoch 4 without
+changing metadata or schema.
 The source includes:
 
 - `GET /healthz`, `GET /readyz`, and `GET /metrics`;
 - authenticated `POST /-/drain`;
 - authenticated `POST /v1/authority/bootstrap` and `POST /v1/authority/commit`;
 - `GET /v1/session/me`, `POST /v1/session/refresh`, and `POST /v1/session/logout`;
+- session-bound `PUT /v2/storage` and `PUT /v2/storage/delete` source adapters;
+- session-bound `POST /v2/storage` batch read with requested-owner ACL checks;
+- session-bound `GET /v2/storage/{collection}` and `GET /v2/storage/{collection}/{user_id}` client-list projections;
 - generated Nakama Healthcheck gRPC service on a separately configured listener;
 - bounded WebSocket JSON and schema-bound protobuf-envelope candidate subprotocols.
 
 These are narrow source contracts, not a claim of complete Nakama API, RTAPI, Runtime, Console, provider, IAP, social, leaderboard, tournament, matchmaker, party, or multiplayer parity.
 Public errors remain typed and redact database, credential, token, and cryptographic detail.
+
+Storage mutations decode bounded protobuf-JSON-shaped batches and preserve the
+original value bytes for public MD5 versions. Owners come from a verified,
+persisted candidate session principal. Calls use the bounded pool and are never
+automatically retried by the generic command supervisor. The source contract is
+`contracts/storage/nakama-http-storage-v1.json`. Official tokens,
+source-bound historical timestamps, exact list/query/gob/collation and read query/order/multiplicity,
+hooks/index, ambiguous-commit reconciliation and
+exact database/oracle evidence remain open.
+The database live harness includes a canonical Rust application fixture for
+these routes, with required database configuration and a checked execution
+marker. This does not establish TCP, SDK or immutable-oracle equivalence.
+
+The canonical repository, pool and retry wrappers carry persisted timestamp
+metadata through write, read and list responses. Fresh insert acknowledgements
+require a known equal creation/update pair; Exact and changed-content receipts
+require known update time. Write acknowledgements preserve database
+microseconds; read/list project the same stored timestamps to whole seconds as
+the pinned upstream source does. Checked `prost-types` formatting produces UTC
+protobuf timestamps and rejects invalid ranges or nanoseconds as a generic 500.
+Historical NULL fields remain absent: a real update can establish update time
+while creation remains unknown, and a blind no-op preserves both original times.
+`updated_at_ms` remains a separate explicit caller clock. The storage-only
+database clock policy grants no exception for other public timestamps.
+
+`STORAGE_LIST_ROUTES` supplies the two live GET templates. The list adapter
+verifies the current principal before query and cursor parsing, then calls one
+readonly serializable repository projection through the pool without generic
+retry. Omitted owner lists public objects across owners; own owner lists readable
+private/public objects; foreign or explicit zero owner lists public objects for
+that owner. SQL applies ACL before `limit + 1`, uses text ordering and decodes only
+returned rows. The sentinel supplies the next position from the last returned row.
+
+This Nakama profile accepts the original unsigned gob/base64 cursor as an
+untrusted key/UUID/read offset. It is an explicit exception to the internal typed
+list's scope-bound cursor: the offset never supplies a principal or ACL authority.
+The row-key projection preserves authoritative Unicode-character bounds and
+permits dot/control identifiers. Collection and cursor key requests are bounded
+at 4096 bytes, page limits at 100, and gob nesting/type/container work is bounded.
+Unsupported gob descriptors, non-UTF8 Go strings, query alias/malformed behavior,
+concurrent pagination, historical timestamp import and exact oracle/SDK qualification remain open.
+The live harness requires one exact client-list repository test, its matching
+profile marker and no skip, and seals its log with the existing artifact packet.
+These source controls do not grant live or independent acceptance.
+The same harness also requires one exact storage timestamp database test and the
+isolated schema lifecycle suite, verifies the timestamp profile marker, rejects
+developer skips and seals their logs with the artifact packet. Required schema,
+role fencing, upgrade, recovery and compatibility evidence remain independent of
+a successful local fixture.
 
 ## Operations
 
@@ -123,3 +178,24 @@ production_ready=false
 public_online=false
 nakama_retired=false
 ```
+
+### Operator diagnostic and drain boundary
+
+Both the canonical `runtime/app.rs` and the feature-gated diagnostic application's `App<R>` use a manual non-traversing `Debug` implementation. It emits only a redacted administrator-token field and a non-exhaustive marker; ordinary, pretty and nested formatting must not inspect repository or session internals. The implementation has no `R: Debug` requirement, preventing a future repository field from implicitly expanding this secret-bearing surface. This is output redaction, not zeroization, production secret custody or proof that every other type is redacted.
+
+After bounded HTTP framing, the drain handler authenticates before checking its business body. Missing or wrong credentials return 401 regardless of an empty or nonempty body, without changing drain state or incrementing body-validation failures. An authenticated nonempty body returns 400 without draining. An authenticated empty body returns 200 and sets the shared drain fence. This changes the candidate operator endpoint's unauthenticated error precedence, not a Nakama compatibility claim; framing/size rejection may still happen before application authentication.
+
+Each application path retains five native regressions: `app_debug_redacts_normal_pretty_and_nested_output`, `app_debug_does_not_require_repository_debug`, `app_debug_does_not_traverse_repository`, `drain_authentication_precedes_body_validation`, and `authenticated_invalid_drain_does_not_change_shared_state`. Synthetic credentials and a deliberately trapping repository formatter exercise the forbidden diagnostic path. Execute both targets, not only the default binary:
+
+```bash
+cargo test -p trnm-server --all-targets --locked
+cargo test -p trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked
+```
+
+The existing dependency pins, CLI, application route names, migration chain, session state transitions, receipt identity and token-comparison implementations are unchanged by this repair. Exact-object format/test/strict-lint, required live lanes and qualified non-author review remain necessary. Reverting either boundary would reintroduce the diagnostic leak or authentication-order regression; a source revert does not authorize a production rollback.
+
+The source-only legacy composition carries an explicit repository target and a typed single-lease pool outcome through the retry wrapper without generic business replay. Old constructors default to StorageV4; AccountsV5 remains blocked before I/O by the production capture gate. Native observed creation/unknown completion/cleanup remain private typed facts when deadline or shutdown prevents token delivery. This does not install legacy authority in the live App.
+
+`legacy_http_api` provides inactive Device/Refresh/Logout codecs, fixed error/WWW header values, first-object decoding and bounded Basic/JSON/query/session handling. The server reuses locked base64 0.22.1, preserves Go padding/CRLF/unused-bit and byte-password behavior, and rejects seven captured registered option names only at message scope. Variable map keys are ordinary data. Local budgets, authentication-before-business precedence, invalid UTF-8/create-overlap and whole registry/runtime boundaries are qualified separately. HTTP routes/headers, startup selection, multiworker cache and paired native compatibility are not admitted; all acceptance/full replacement flags stay false.
+
+The explicit AccountsV5 target expects 14 tables and retains storage writer epoch 4; its closed production gate prevents this source target from authorizing publication.

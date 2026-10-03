@@ -6,17 +6,27 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/schema_source_selection.py'
+      - 'scripts/schema_evidence_binding.py'
+      - 'scripts/capture-schema-source-selection.py'
+      - 'contracts/database/source-execution-evidence.v1.json'
+      - 'tests/control_plane/test_schema_source_selection.py'
+      - 'tests/control_plane/test_schema_evidence_binding.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'crates/trnm-contracts/**'
+      - 'crates/trnm-server/**'
       - 'crates/trnm-persistence-pg/**'
       - 'migrations/**'
       - 'scripts/check-trnm-server.py'
+      - 'scripts/materialize-pinned-storage-upstream.py'
       - 'scripts/ci-trnm-server-live.sh'
+      - 'scripts/print-server-live-failure.py'
       - 'scripts/trnm-server-live-client.py'
       - 'scripts/wait-postgres-final-ready.py'
       - 'tests/control_plane/test_postgres_final_ready.py'
+      - 'tests/control_plane/test_storage_list_live_contract.py'
       - 'docs/ARCHITECTURE.md'
       - 'docs/DEVELOPMENT.md'
       - 'docs/OPERATIONS_AND_RELEASE.md'
@@ -65,9 +75,12 @@ jobs:
           python3 scripts/check-trnm-server.py
           python3 -m py_compile \
             scripts/check-trnm-server.py \
+            scripts/print-server-live-failure.py \
             scripts/trnm-server-live-client.py \
             scripts/wait-postgres-final-ready.py
-          python3 -m unittest tests.control_plane.test_postgres_final_ready -v
+          python3 -m unittest \
+            tests.control_plane.test_postgres_final_ready \
+            tests.control_plane.test_storage_list_live_contract -v
           bash -n scripts/ci-trnm-server-live.sh
 
   live-profile:
@@ -113,6 +126,9 @@ jobs:
           evidence="run/server-live/${PROFILE}"
           test -s "$evidence/SHA256SUMS"
           test -s "$evidence/summary.json"
+          python3 scripts/check-trnm-server.py --live-packet "$evidence" \
+            --profile "$PROFILE" --commit "$CANDIDATE_SHA" --tree "$(git rev-parse HEAD^{tree})"
+          sha256sum --check "$evidence/SHA256SUMS"
           python3 - <<'PY'
           import json
           import os
@@ -124,6 +140,13 @@ jobs:
           for field in (
               'check_config',
               'fresh_migration',
+              'nakama_client_list_projection',
+              'storage_occ_precedence',
+              'raw_version_conditions',
+              'storage_timestamps',
+              'schema_upgrade',
+              'storage_jsonb_v3_projection',
+              'storage_native_jsonb', 'storage_v4_acl', 'storage_v4_import',
               'health_ready',
               'unauthenticated_mutation_rejected',
               'http_bootstrap_commit_duplicate_conflict',
@@ -133,6 +156,14 @@ jobs:
               'process_restart_exact_receipt_replay',
           ):
               assert summary[field] is True, (field, summary[field])
+          assert type(summary['schema_v3_extra_cases']) is int and summary['schema_v3_extra_cases'] == 41
+          assert summary['schema_v3_case_families'] == {
+              'shapes': 8, 'illegal_legacy': 9, 'catalog_drift': 6,
+              'partial_resume': 3, 'metadata_validation': 9, 'opaque_history': 6,
+          }
+          assert all(type(value) is int for value in summary['schema_v3_case_families'].values())
+          for field in ('schema_version', 'storage_writer_epoch', 'authoritative_migrations_count'):
+              assert type(summary[field]) is int and summary[field] == 4
           assert summary['entity_revision'] == 3
           assert summary['event_sequence'] == 3
           assert summary['command_receipts'] == 3

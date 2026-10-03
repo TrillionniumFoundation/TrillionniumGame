@@ -3,17 +3,29 @@
 
 //! Opaque cryptographic provider contract for JWT compatibility.
 //!
-//! This crate contains no SHA, HMAC, constant-time or key-storage
-//! implementation. Production providers must be supplied by separately
-//! reviewed software or remote-key adapters. Operational key checkpoints are
+//! This crate defines opaque provider contracts and software or remote-key
+//! adapters. Software adapters use RustCrypto primitives and zeroized key storage.
+//! Operational key checkpoints are
 //! locally shape-validated before any external verifier runs: signing authority
 //! retains exactly one `Active` record at the highest epoch, authority loss
 //! retains none, and verification/terminal lifecycle timestamps must remain
 //! consistent with activation and the checkpoint time high-water.
 
 mod lifecycle;
+mod nakama_legacy;
+mod remote;
+#[cfg(unix)]
+mod remote_unix;
 mod software;
 
+pub use nakama_legacy::{NakamaLegacyHs256Provider, NakamaLegacyKeyKind, NakamaLegacyKeyLimits};
+pub use remote::{
+    RemoteHs256Provider, RemoteMacError, RemoteMacPurpose, RemoteMacRequest, RemoteMacRequestKind,
+    RemoteMacResponse, RemoteMacTransport, MAX_REMOTE_MAC_MESSAGE_BYTES, MAX_REMOTE_MAC_TIMEOUT,
+    REMOTE_HS256_TAG_BYTES,
+};
+#[cfg(unix)]
+pub use remote_unix::UnixSocketRemoteMacTransport;
 pub use software::{SecretKeyMaterial, SoftwareHs256Provider};
 
 use core::fmt;

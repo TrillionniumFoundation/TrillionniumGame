@@ -1,24 +1,53 @@
-fn apply_delete(
+// Only the explicit Nakama delete policy permits an authoritative missing-row
+// no-op. The typed mixed batch still rejects missing deletes as before.
+fn apply_nakama_delete(
     transaction: &mut Transaction<'_>,
-    staged: &mut BTreeMap<StorageObjectKey, Option<StorageObject>>,
+    staged: &mut BTreeMap<StorageObjectKey, Option<StoredStorageObject>>,
     actor: Actor,
     operation: &DeleteOperation,
-) -> Result<MutationReceipt, DomainError> {
+) -> Result<StoredStorageMutationReceipt, DomainError> {
+    if actor == Actor::Server
+        && operation.expected_version.is_none()
+        && staged.get(&operation.key).is_some_and(Option::is_none)
+    {
+        return Ok(StoredStorageMutationReceipt {
+            receipt: MutationReceipt {
+                key: operation.key.clone(),
+                previous_version: None,
+                current_version: None,
+            },
+            times: StorageTimes::default(),
+        });
+    }
+    apply_delete(transaction, staged, actor, operation)
+}
+
+fn apply_delete(
+    transaction: &mut Transaction<'_>,
+    staged: &mut BTreeMap<StorageObjectKey, Option<StoredStorageObject>>,
+    actor: Actor,
+    operation: &DeleteOperation,
+) -> Result<StoredStorageMutationReceipt, DomainError> {
     let previous = staged
         .get(&operation.key)
         .cloned()
         .ok_or_else(|| data_loss("storage_batch_lock_missing"))?
         .ok_or_else(storage_not_found)?;
-    authorize_write(actor, &operation.key, Some(&previous))?;
+    authorize_delete_permission(
+        actor,
+        &operation.key,
+        Some(previous.object.write_permission),
+    )?;
     if operation
         .expected_version
-        .is_some_and(|expected| expected != previous.version)
+        .as_ref()
+        .is_some_and(|expected| expected.as_str() != previous.object.version.as_str())
     {
         return Err(version_error());
     }
     let deleted = transaction
         .execute(
-            "DELETE FROM trnm_storage_objects \
+            "DELETE FROM public.trnm_storage_objects \
              WHERE collection = $1 AND object_key = $2 AND user_id = $3",
             &[
                 &operation.key.collection(),
@@ -31,11 +60,89 @@ fn apply_delete(
         return Err(data_loss("storage_delete_row_count_mismatch"));
     }
     staged.insert(operation.key.clone(), None);
-    Ok(MutationReceipt {
-        key: operation.key.clone(),
-        previous_version: Some(previous.version),
-        current_version: None,
+    Ok(StoredStorageMutationReceipt {
+        receipt: MutationReceipt {
+            key: operation.key.clone(),
+            previous_version: Some(previous.object.version),
+            current_version: None,
+        },
+        times: previous.times,
     })
+}
+
+pub(crate) fn verify_storage_writer_epoch(
+    transaction: &mut Transaction<'_>,
+    profile: DatabaseProfile,
+) -> Result<(), DomainError> {
+    // This snapshot check is deliberately nonlocking. It complements a real
+    // credential/session upgrade barrier; it cannot fence already-unchecked v1 writers.
+    let row = transaction
+        .query_opt(
+            "SELECT schema_version, profile, storage_writer_epoch, chain_digest, digest_algorithm \
+         FROM public.trnm_schema_metadata WHERE singleton = 1",
+            &[],
+        )
+        .map_err(|source| {
+            let error = map_postgres_error(source);
+            if error.code() == StableCode::FailedPrecondition {
+                data_loss("storage_schema_not_ready")
+            } else {
+                error
+            }
+        })?
+        .ok_or_else(|| data_loss("storage_schema_not_ready"))?;
+    let version: i64 = row
+        .try_get(0)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    let recorded_profile: String = row
+        .try_get(1)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    let epoch: Option<i64> = row
+        .try_get(2)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    let digest: Option<String> = row
+        .try_get(3)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    let algorithm: Option<String> = row
+        .try_get(4)
+        .map_err(|_| data_loss("storage_schema_not_ready"))?;
+    if u64::try_from(version).ok() != Some(crate::AUTHORITATIVE_SCHEMA_VERSION)
+        || epoch.and_then(|value| u64::try_from(value).ok())
+            != Some(crate::AUTHORITATIVE_STORAGE_WRITER_EPOCH)
+        || recorded_profile != profile.metadata_value()
+    {
+        return Err(data_loss("storage_writer_epoch_mismatch"));
+    }
+    use std::fmt::Write as _;
+    let mut expected = String::with_capacity(64);
+    for byte in crate::authoritative_chain_digest(profile).get().as_bytes() {
+        write!(expected, "{byte:02x}")
+            .map_err(|_| data_loss("storage_schema_identity_mismatch"))?;
+    }
+    if digest.as_deref() != Some(expected.as_str())
+        || algorithm.as_deref() != Some(crate::AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM)
+    {
+        return Err(data_loss("storage_schema_identity_mismatch"));
+    }
+    crate::storage_import::verify_storage_import_serving(transaction)?;
+    Ok(())
+}
+
+/// Explicit serving selection only; StorageV4 retains its original exact fence.
+pub(crate) fn verify_storage_writer_epoch_target(
+    transaction: &mut postgres::Transaction<'_>,
+    profile: DatabaseProfile,
+    target: crate::AuthoritativeSchemaTarget,
+) -> Result<(), DomainError> {
+    match target {
+        crate::AuthoritativeSchemaTarget::StorageV4 => {
+            verify_storage_writer_epoch(transaction, profile)
+        }
+        crate::AuthoritativeSchemaTarget::NakamaAccountsV5 => {
+            crate::schema::verify_serving_schema_target(transaction, profile, target)?;
+            crate::storage_import::verify_storage_import_serving(transaction)
+        }
+    }
 }
 
 fn validate_batch(operations: &[BatchOperation]) -> Result<(), DomainError> {
@@ -53,7 +160,7 @@ fn validate_batch(operations: &[BatchOperation]) -> Result<(), DomainError> {
 
 fn validate_version(
     existing: Option<&StorageObject>,
-    check: VersionCheck,
+    check: &VersionCheck,
 ) -> Result<(), DomainError> {
     match check {
         VersionCheck::Any => Ok(()),
@@ -64,7 +171,7 @@ fn validate_version(
             RetryClass::Never,
         )),
         VersionCheck::Exact(expected) => match existing {
-            Some(object) if object.version == expected => Ok(()),
+            Some(object) if object.version.as_str() == expected.as_str() => Ok(()),
             _ => Err(version_error()),
         },
     }
@@ -73,10 +180,9 @@ fn validate_version(
 fn authorize_read(actor: Actor, object: &StorageObject) -> Result<(), DomainError> {
     let allowed = match actor {
         Actor::Server => true,
-        Actor::User(user) => {
-            object.read_permission == ReadPermission::Public
-                || (user == object.key.user_id() && object.read_permission == ReadPermission::Owner)
-        }
+        Actor::User(user) => object
+            .read_permission
+            .allows_batch_read(user == object.key.user_id()),
     };
     if allowed {
         Ok(())
@@ -94,13 +200,40 @@ fn authorize_write(
     key: &StorageObjectKey,
     existing: Option<&StorageObject>,
 ) -> Result<(), DomainError> {
+    authorize_write_permission(actor, key, existing.map(|object| object.write_permission))
+}
+
+fn authorize_write_permission(
+    actor: Actor,
+    key: &StorageObjectKey,
+    existing: Option<WritePermission>,
+) -> Result<(), DomainError> {
     match actor {
         Actor::Server => Ok(()),
         Actor::User(user) => {
             if user.is_zero() || user != key.user_id() {
                 return Err(write_permission_error());
             }
-            if existing.is_some_and(|object| object.write_permission != WritePermission::Owner) {
+            if existing.is_some_and(|permission| !permission.allows_client_write()) {
+                return Err(write_permission_error());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn authorize_delete_permission(
+    actor: Actor,
+    key: &StorageObjectKey,
+    existing: Option<WritePermission>,
+) -> Result<(), DomainError> {
+    match actor {
+        Actor::Server => Ok(()),
+        Actor::User(user) => {
+            if user.is_zero() || user != key.user_id() {
+                return Err(write_permission_error());
+            }
+            if existing.is_some_and(|permission| !permission.allows_client_delete()) {
                 return Err(write_permission_error());
             }
             Ok(())

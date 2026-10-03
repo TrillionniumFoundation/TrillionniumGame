@@ -159,3 +159,5 @@ Generated bundles, author approval, automation comments and old-head reviews do 
 ## 13. Claim boundary
 
 Current candidate manifests and successful source tests provide no automatic compatibility credit. Complete Nakama compatibility, repository-wide C1–C5, SG1–SG9, production readiness, public-online approval, drop-in replacement and retirement remain false until evidence-derived gates say otherwise.
+
+AuthenticateCustom is a source candidate only. Its single-Exec account path retains missing/create-false, stored username, banned account, affected-row and uniqueness error distinctions from pinned Nakama d4d92f93. It does not inherit the Device transaction retry or identity-race winner lookup. HTTP resource caps, auth-before-decode, OS username randomness, invalid-UTF8 Go strings, native SQL projection/cancellation and runtime hooks remain explicit open paired-evidence boundaries. The source addition closes none of C1–C5 or SG1–SG5 and grants no full replacement credit.

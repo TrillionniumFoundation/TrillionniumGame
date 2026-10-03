@@ -1,0 +1,11 @@
+{
+  "schema": "trillionnium.cutover-state.v1",
+  "state": "planning",
+  "candidate_binding": null,
+  "history": [],
+  "claims": {
+    "public_online": false,
+    "cutover_authorized": false,
+    "nakama_retired": false
+  }
+}

@@ -22,8 +22,8 @@ class SessionMutationLockOrderTests(unittest.TestCase):
             "    pub fn rotate_refresh_token(",
             "    pub fn revoke_session_family(",
         )
-        discovery = body.index("SELECT family_id FROM trnm_refresh_tokens")
-        family_lock = body.index("FROM trnm_session_families")
+        discovery = body.index("SELECT family_id FROM public.trnm_refresh_tokens")
+        family_lock = body.index("FROM public.trnm_session_families")
         token_lock = body.index("WHERE family_id = $1 AND token_id = $2 AND token_digest = $3 \\\n                 FOR UPDATE")
         self.assertLess(discovery, family_lock)
         self.assertLess(family_lock, token_lock)
@@ -37,7 +37,7 @@ class SessionMutationLockOrderTests(unittest.TestCase):
             "    pub fn rotate_refresh_token(",
             "    pub fn revoke_session_family(",
         )
-        family_lock = body.index("FROM trnm_session_families")
+        family_lock = body.index("FROM public.trnm_session_families")
         exact_locked_token = body.index(
             "WHERE family_id = $1 AND token_id = $2 AND token_digest = $3 \\\n                 FOR UPDATE"
         )
@@ -51,13 +51,13 @@ class SessionMutationLockOrderTests(unittest.TestCase):
             "fn committed_rotation_retry_matches(",
         )
         self.assertLess(
-            explicit.index("FROM trnm_session_families"),
-            explicit.index("UPDATE trnm_refresh_tokens"),
+            explicit.index("FROM public.trnm_session_families"),
+            explicit.index("UPDATE public.trnm_refresh_tokens"),
         )
 
         replay = self.function("fn revoke_for_replay(", "fn validate_create(")
-        self.assertIn("UPDATE trnm_refresh_tokens", replay)
-        self.assertIn("UPDATE trnm_session_families", replay)
+        self.assertIn("UPDATE public.trnm_refresh_tokens", replay)
+        self.assertIn("UPDATE public.trnm_session_families", replay)
         # revoke_for_replay is private and only called from rotation after the
         # family lock; it must never acquire a family row lock on its own.
         self.assertNotIn("FOR UPDATE", replay)
