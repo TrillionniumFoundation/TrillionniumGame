@@ -37,12 +37,14 @@ class MigrationLockTests(unittest.TestCase):
         self.assertTrue(result["source_identity_verified"])
         self.assertFalse(result["runtime_execution_verified"])
         self.assertFalse(result["compatibility_credit"])
-        self.assertEqual(result["schema_version"], 4)
+        self.assertEqual(result["schema_version"], 5)
+        self.assertEqual(result["default_runtime_schema_version"], 4)
         self.assertEqual(result["digest_algorithm"], "ordered-path-git-blob-sha256.v1")
         for profile, row in result["profiles"].items():
-            self.assertEqual(row["file_count"], 4)
-            self.assertEqual(row["declared_action_count"], 30 if profile == "postgresql" else 34)
-            self.assertEqual(row["revision_action_counts"], {"2": 6, "3": 16, "4": 8 if profile == "postgresql" else 12})
+            self.assertEqual(row["file_count"], 5)
+            self.assertEqual(row["revision_prefixes"]["4"]["file_count"], 4)
+            self.assertEqual(row["declared_action_count"], 35 if profile == "postgresql" else 39)
+            self.assertEqual(row["revision_action_counts"], {"2": 6, "3": 16, "4": 8 if profile == "postgresql" else 12, "5": 5})
             self.assertEqual(row["digest_algorithm"], result["digest_algorithm"])
         self.assertNotEqual(
             result["profiles"]["postgresql"]["chain_sha256"],

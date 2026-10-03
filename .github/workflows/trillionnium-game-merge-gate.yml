@@ -268,22 +268,48 @@ jobs:
           printf '%s\n' "$output"
           receipt=$(printf '%s\n' "$output" | tail -n 1)
           printf '%s\n' "$receipt" | jq -e 'type == "array" and length > 0' >/dev/null
+          for schema_profile in postgresql cockroachdb; do
+            python3 scripts/capture-schema-source-selection.py \
+              --root "run/merge-gate/source-selection/$schema_profile" --profile "$schema_profile" \
+              --commit "$CANDIDATE_SHA" --tree "$(git rev-parse HEAD^{tree})" \
+              > "run/schema-source-$schema_profile-capture.json"
+          done
+          schema_selection=$(python3 - <<'PY_SCHEMA_SELECTION'
+          import json
+          from pathlib import Path
+          root=Path('run/merge-gate/source-selection')
+          print(json.dumps({profile:json.loads((root/profile/'schema-source-selection.json').read_text()) for profile in ('postgresql','cockroachdb')},sort_keys=True,separators=(',',':')))
+          PY_SCHEMA_SELECTION
+          )
           jq -n \
             --arg repository "$CANDIDATE_REPOSITORY" \
             --arg head "$CANDIDATE_SHA" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson schema_source_selection "$schema_selection" \
             --argjson workflows "$receipt" \
-            '{schema:"trillionnium.required-workflow-retained-collection.v1",repository:$repository,head:$head,run_id:$run_id,run_attempt:$run_attempt,workflows:$workflows,claims:{accepted_evidence:false,gap_closed:false,production_ready:false}}' \
+            '{schema:"trillionnium.required-workflow-retained-collection.v2",repository:$repository,head:$head,run_id:$run_id,run_attempt:$run_attempt,schema_source_selection:$schema_source_selection,workflows:$workflows,claims:{accepted_evidence:false,gap_closed:false,production_ready:false}}' \
             > run/merge-gate/external-workflow-collection.json
           jq -e '.workflows | length > 0 and all(.jobs > 0 and .run_id > 0 and .run_attempt > 0 and (.definition_blob_sha1 | length) == 40)' \
             run/merge-gate/external-workflow-collection.json >/dev/null
-          sha256sum run/merge-gate/external-workflow-collection.json \
-            > run/merge-gate/SHA256SUMS
+          python3 - <<'PY_COMPOSITE_SOURCE'
+          import importlib.util, os, subprocess, sys
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          import schema_evidence_binding as binding
+          spec=importlib.util.spec_from_file_location('composite_source_capture','scripts/capture-schema-source-selection.py')
+          capture=importlib.util.module_from_spec(spec);spec.loader.exec_module(capture)
+          commit=os.environ['CANDIDATE_SHA']
+          tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True,timeout=30).strip()
+          tokens=tuple(capture.verified_head_binding(Path('.'),profile,commit,tree) for profile in binding.PROFILES)
+          binding.validate_composite_directory(tokens,Path('run/merge-gate'),prefix='source-selection',receipt_filename='external-workflow-collection.json',commit=commit,tree=tree)
+          PY_COMPOSITE_SOURCE
+          (cd run/merge-gate && find source-selection -type f -print0 | sort -z | xargs -0 sha256sum) > run/merge-gate/SHA256SUMS
+          (cd run/merge-gate && sha256sum external-workflow-collection.json) >> run/merge-gate/SHA256SUMS
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \
             -czf run/required-workflow-collection-${CANDIDATE_SHA}.tar.gz \
-            -C run/merge-gate external-workflow-collection.json SHA256SUMS
+            -C run/merge-gate external-workflow-collection.json SHA256SUMS source-selection
       - name: Retain exact source-head workflow collection
         id: retained-workflow-collection
         uses: ./.github/actions/upload-evidence
@@ -360,19 +386,33 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p run/merge-gate
+          for schema_profile in postgresql cockroachdb; do
+            python3 scripts/capture-schema-source-selection.py \
+              --root "run/merge-gate/source-selection/$schema_profile" --profile "$schema_profile" \
+              --commit "$CANDIDATE_SHA" --tree "$(git rev-parse HEAD^{tree})" \
+              > "run/schema-source-$schema_profile-capture.json"
+          done
+          schema_selection=$(python3 - <<'PY_SCHEMA_SELECTION'
+          import json
+          from pathlib import Path
+          root=Path('run/merge-gate/source-selection')
+          print(json.dumps({profile:json.loads((root/profile/'schema-source-selection.json').read_text()) for profile in ('postgresql','cockroachdb')},sort_keys=True,separators=(',',':')))
+          PY_SCHEMA_SELECTION
+          )
           jq -n \
             --arg repository "$CANDIDATE_REPOSITORY" \
             --arg head "$CANDIDATE_SHA" \
             --arg event "$EVENT_NAME" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson schema_source_selection "$schema_selection" \
             --arg control_plane "$CONTROL_PLANE" \
             --arg rust_workspace "$RUST_WORKSPACE" \
             --arg isolated_rust "$ISOLATED_RUST" \
             --arg python_contracts "$PYTHON_CONTRACTS" \
             --arg legacy_go "$LEGACY_GO" \
             --arg external_workflows "$EXTERNAL_WORKFLOWS" \
-            '{schema:"trillionnium.merge-gate-retained-receipt.v1",repository:$repository,head:$head,event:$event,run_id:$run_id,run_attempt:$run_attempt,lanes:{control_plane:$control_plane,rust_workspace:$rust_workspace,isolated_rust:$isolated_rust,python_contracts:$python_contracts,legacy_go:$legacy_go,external_workflows:$external_workflows},claims:{accepted_evidence:false,gap_closed:false,production_ready:false}}' \
+            '{schema:"trillionnium.merge-gate-retained-receipt.v2",repository:$repository,head:$head,event:$event,run_id:$run_id,run_attempt:$run_attempt,schema_source_selection:$schema_source_selection,lanes:{control_plane:$control_plane,rust_workspace:$rust_workspace,isolated_rust:$isolated_rust,python_contracts:$python_contracts,legacy_go:$legacy_go,external_workflows:$external_workflows},claims:{accepted_evidence:false,gap_closed:false,production_ready:false}}' \
             > run/merge-gate/final-gate-receipt.json
           if [[ "$EVENT_NAME" == pull_request ]]; then
             jq -e '.lanes | to_entries | all(.value == "success")' \
@@ -381,12 +421,24 @@ jobs:
             jq -e '.lanes.control_plane == "success" and .lanes.rust_workspace == "success" and .lanes.isolated_rust == "success" and .lanes.python_contracts == "success" and .lanes.legacy_go == "success" and .lanes.external_workflows == "skipped"' \
               run/merge-gate/final-gate-receipt.json >/dev/null
           fi
-          sha256sum run/merge-gate/final-gate-receipt.json \
-            > run/merge-gate/final-SHA256SUMS
+          python3 - <<'PY_COMPOSITE_SOURCE'
+          import importlib.util, os, subprocess, sys
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          import schema_evidence_binding as binding
+          spec=importlib.util.spec_from_file_location('composite_source_capture','scripts/capture-schema-source-selection.py')
+          capture=importlib.util.module_from_spec(spec);spec.loader.exec_module(capture)
+          commit=os.environ['CANDIDATE_SHA']
+          tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True,timeout=30).strip()
+          tokens=tuple(capture.verified_head_binding(Path('.'),profile,commit,tree) for profile in binding.PROFILES)
+          binding.validate_composite_directory(tokens,Path('run/merge-gate'),prefix='source-selection',receipt_filename='final-gate-receipt.json',commit=commit,tree=tree)
+          PY_COMPOSITE_SOURCE
+          (cd run/merge-gate && find source-selection -type f -print0 | sort -z | xargs -0 sha256sum) > run/merge-gate/final-SHA256SUMS
+          (cd run/merge-gate && sha256sum final-gate-receipt.json) >> run/merge-gate/final-SHA256SUMS
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \
             -czf run/merge-gate-final-${CANDIDATE_SHA}.tar.gz \
-            -C run/merge-gate final-gate-receipt.json final-SHA256SUMS
+            -C run/merge-gate final-gate-receipt.json final-SHA256SUMS source-selection
       - name: Retain stable aggregate gate receipt
         id: retained-merge-gate
         uses: ./.github/actions/upload-evidence

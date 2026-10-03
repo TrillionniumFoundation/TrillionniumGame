@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import importlib.util
 import io
@@ -10,11 +11,15 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tests/control_plane"))
+from source_http_mock import mock_source_process
 SCRIPT = ROOT / "scripts/verify-actions-log-artifact.py"
 REPOSITORY = "TrillionniumFoundation/TrillionniumGame"
 HEAD = "a" * 40
@@ -36,20 +41,12 @@ class ActionsLogVerifierTests(unittest.TestCase):
         seal_spec.loader.exec_module(cls.sealer)
 
     @classmethod
-    def binding(cls, profile: str) -> dict[str, Any]:
-        lock_bytes = (ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes()
-        lock = json.loads(lock_bytes)
-        validation = cls.module.MIGRATIONS.validate(ROOT)
-        return {
-            "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
-            "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
-            "schema_version": "4",
-            "storage_writer_epoch": "4",
-            "chain_digest": validation["profiles"][profile]["chain_sha256"],
-            "digest_algorithm": validation["digest_algorithm"],
-            "ordered_files": lock["profiles"][profile]["ordered_files"],
-            "image": f"example.invalid/{profile}@sha256:{'d' * 64}",
-        }
+    def binding(cls, profile: str):
+        return cls.module.BINDING.verify_binding(ROOT, profile=profile)
+
+    @classmethod
+    def binding_view(cls, profile: str):
+        return cls.module.BINDING.operational_binding(cls.binding(profile))
 
     @classmethod
     def archive(
@@ -63,7 +60,8 @@ class ActionsLogVerifierTests(unittest.TestCase):
         file_overrides: dict[str, bytes | None] | None = None,
         legacy_identity: bool = False,
     ) -> bytes:
-        binding = cls.binding(profile)
+        token = cls.binding(profile)
+        binding = cls.module.BINDING.operational_binding(token)
         identity = {
             "repository": REPOSITORY,
             "commit": HEAD,
@@ -77,6 +75,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
             "workflow_path": cls.module.WORKFLOW_PATH,
             "job_key": "live-profile",
             "job_name": f"live-profile ({profile})",
+            **cls.module.BINDING.identity_fields(token),
             **{key: binding[key] for key in (
                 "migration_lock", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm"
             )},
@@ -134,6 +133,10 @@ class ActionsLogVerifierTests(unittest.TestCase):
             "migration-chain-validation.json": json.dumps(cls.module.MIGRATIONS.validate(ROOT)).encode(),
             "schema-identity.json": json.dumps(schema).encode(),
         }
+        proof = cls.module.BINDING.binding_document(token)
+        files[cls.module.BINDING.SIDECAR] = cls.module.BINDING.canonical(proof)
+        files[cls.module.BINDING.HEAD_PROOF] = cls.module.BINDING.canonical(cls.module.BINDING.head_document(token,commit=HEAD,tree=TREE))
+        files.update({row["archive_path"]:(ROOT/row["path"]).read_bytes() for row in proof["full_source_inventory"]})
         files.update({entry["path"]: (ROOT / entry["path"]).read_bytes()
                       for entry in binding["ordered_files"]})
         for name, payload in (file_overrides or {}).items():
@@ -270,11 +273,12 @@ class ActionsLogVerifierTests(unittest.TestCase):
         source_root = Path(temporary.name) / "source"
         source_root.mkdir()
         shutil.copytree(ROOT / "migrations", source_root / "migrations")
-        (source_root / "config").mkdir()
-        shutil.copyfile(ROOT / "config/database-test-images.json", source_root / "config/database-test-images.json")
+        for relative in self.module.BINDING.CONTROL_PATHS:
+            target=source_root/relative;target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(ROOT/relative,target)
         for arguments in (
             ["init", "--quiet"],
-            ["add", "--", "migrations", "config/database-test-images.json"],
+            ["add", "--", "."],
             ["-c", "user.name=Storage Control Fixture", "-c", "user.email=storage-fixture@example.invalid",
              "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null",
              "commit", "--quiet", "-m", "Isolated source binding fixture"],
@@ -291,6 +295,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
             profile, schema_overrides={"source_commit": commit, "upgrade_source_commit": commit, "v2_apply_source_commit": commit, "v3_apply_source_commit": commit},
             result_overrides={"commit": commit, "tree": tree},
         ))
+        files={name:payload for name,payload in files.items() if name not in (self.module.BINDING.SIDECAR,self.module.BINDING.HEAD_PROOF) and not name.startswith(self.module.BINDING.ANNEX+'/')}
         files["result.env"] = self.env_bytes({"status": "passed", "profile": profile, "commit": commit})
         for name, payload in files.items():
             target = root / name
@@ -327,7 +332,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
                 result = self.sealer.seal_profile(root, **identity)
                 self.assertFalse(result["compatibility_credit"])
                 self.assertFalse(result["production_ready"])
-                binding = self.binding(profile)
+                binding = self.binding_view(profile)
                 self.assertEqual(len(binding["ordered_files"]), 4)
                 for entry in binding["ordered_files"]:
                     self.assertEqual(self.module.git_blob_sha1((root / entry["path"]).read_bytes()), entry["git_blob_sha1"])
@@ -414,7 +419,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
     def test_actual_archive_sealer_rejects_each_missing_or_rehashed_sql_blob(self) -> None:
         root, identity = self.seal_fixture("postgresql")
         self.sealer.seal_profile(root, **identity)
-        for entry in self.binding("postgresql")["ordered_files"]:
+        for entry in self.binding_view("postgresql")["ordered_files"]:
             for payload in (None, b"SELECT 1;\n"):
                 with self.subTest(path=entry["path"], missing=payload is None):
                     archive = self.sealed_tar(root, {entry["path"]: payload})
@@ -423,6 +428,8 @@ class ActionsLogVerifierTests(unittest.TestCase):
 
     def test_actual_sealer_accounts_for_manifest_entry_and_payload_in_shared_budgets(self) -> None:
         root, identity = self.seal_fixture("postgresql")
+        self.sealer.seal_profile(root, **identity)
+        (root / "result.env").write_bytes(self.env_bytes({"status": "passed", "profile": identity["profile"], "commit": identity["commit"]}))
         (root / "files.sha256").unlink()
         entries_without_manifest = sum(1 for _ in root.rglob("*"))
         with mock.patch.object(self.sealer.VERIFIER, "MAX_ARCHIVE_ENTRIES", entries_without_manifest):
@@ -430,20 +437,24 @@ class ActionsLogVerifierTests(unittest.TestCase):
                 self.sealer.seal_profile(root, **identity)
         self.assertTrue((root / "files.sha256").is_file())
 
-        reference, reference_identity = self.seal_fixture("postgresql")
-        self.sealer.seal_profile(reference, **reference_identity)
-        final_size = sum(path.stat().st_size for path in reference.rglob("*") if path.is_file())
         root, identity = self.seal_fixture("postgresql")
+        self.sealer.seal_profile(root, **identity)
+        final_size = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+        manifest_bytes = (root / "files.sha256").stat().st_size
+        producer_result = self.env_bytes({"status": "passed", "profile": identity["profile"], "commit": identity["commit"]})
+        sealing_result_delta = (root / "result.env").stat().st_size - len(producer_result)
+        (root / "result.env").write_bytes(producer_result)
+        (root / "files.sha256").unlink()
         initial_size = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+        self.assertEqual(initial_size + sealing_result_delta, final_size - manifest_bytes)
         self.assertLess(initial_size, final_size - 1)
-        self.assertLess(final_size - (reference / "files.sha256").stat().st_size, final_size - 1)
         with mock.patch.object(self.sealer.VERIFIER, "MAX_RETAINED_BYTES", final_size - 1):
             with self.assertRaisesRegex(self.sealer.SealingError, "expanded byte budget"):
                 self.sealer.seal_profile(root, **identity)
 
     def test_shared_archive_requires_each_exact_locked_sql_blob_despite_valid_manifest(self) -> None:
         for profile in self.module.PROFILES:
-            binding = self.binding(profile)
+            binding = self.binding_view(profile)
             for entry in binding["ordered_files"]:
                 for payload in (None, b"SELECT 1;\n"):
                     with self.subTest(profile=profile, path=entry["path"], missing=payload is None):
@@ -455,7 +466,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
                             self.module.validate_archive(
                                 archive, repository=REPOSITORY, head_sha=HEAD, head_tree=TREE,
                                 run_id=RUN_ID, run_attempt=RUN_ATTEMPT,
-                                profile=profile, binding=binding,
+                                profile=profile, binding=self.binding(profile),
                             )
 
     def test_shared_archive_rejects_unlisted_or_other_profile_migration_payloads(self) -> None:
@@ -644,9 +655,9 @@ class ActionsLogVerifierTests(unittest.TestCase):
     def test_current_chain_binding_cannot_revert_to_v2_or_an_incomplete_suffix(self) -> None:
         for profile in self.module.PROFILES:
             for field in ("schema_version", "storage_writer_epoch", "ordered_files"):
-                binding = self.binding(profile)
+                binding = self.binding_view(profile)
                 binding[field] = binding[field][:2] if field == "ordered_files" else "2"
-                with self.subTest(profile=profile, field=field), self.assertRaisesRegex(self.module.VerificationError, "complete current schema"):
+                with self.subTest(profile=profile, field=field), self.assertRaisesRegex(self.module.VerificationError, "issued full-source5 evidence binding"):
                     self.module.validate_archive(
                         self.archive(profile), repository=REPOSITORY, head_sha=HEAD, head_tree=TREE,
                         run_id=RUN_ID, run_attempt=RUN_ATTEMPT, profile=profile, binding=binding,
@@ -665,7 +676,7 @@ class ActionsLogVerifierTests(unittest.TestCase):
                 target[field] = value
                 archive = self.archive(profile, file_overrides={"migration-chain-validation.json": json.dumps(validation).encode()})
                 self.module.verify_file_manifest(self.module.archive_files(archive))
-                with self.subTest(profile=profile, field=field), self.assertRaisesRegex(self.module.VerificationError, "whole-chain validation"):
+                with self.subTest(profile=profile, field=field), self.assertRaisesRegex(self.module.VerificationError, "complete all10 source validation"):
                     self.module.validate_archive(
                         archive, repository=REPOSITORY, head_sha=HEAD, head_tree=TREE,
                         run_id=RUN_ID, run_attempt=RUN_ATTEMPT, profile=profile, binding=self.binding(profile),
@@ -677,16 +688,13 @@ class ActionsLogVerifierTests(unittest.TestCase):
         source_root = self.sealer.SOURCE_ROOT
         lock_path = source_root / "migrations/MIGRATION_CHAIN.lock.json"
         lock = json.loads(lock_path.read_text())
-        entry = lock["profiles"]["postgresql"]["ordered_files"][3]
-        source = source_root / entry["path"]
-        changed = source.read_bytes() + b"-- uncommitted candidate drift\n"
-        source.write_bytes(changed)
-        entry["git_blob_sha1"] = self.module.git_blob_sha1(changed)
-        lock_path.write_text(json.dumps(lock))
-        # Re-locking an otherwise allowed comment must not bypass the actual
-        # committed candidate's lock identity.
+        original_lock = lock_path.read_bytes()
+        lock_path.write_text(json.dumps(lock) + "\n")
+        self.assertNotEqual(lock_path.read_bytes(), original_lock)
+        # Semantically valid lock reformatting changes real source bytes. It
+        # cannot bypass the committed source check, while immutable SQL stays exact.
         self.module.MIGRATIONS.validate(source_root)
-        with self.assertRaisesRegex(self.sealer.SealingError, "committed source"):
+        with self.assertRaisesRegex(self.sealer.SealingError, "complete authoritative source differs from committed candidate"):
             self.sealer.seal_profile(root, **identity)
 
     def test_remote_binding_uses_complete_exact_head_tree_and_shared_lock_validator(self) -> None:
@@ -694,24 +702,47 @@ class ActionsLogVerifierTests(unittest.TestCase):
         files = {lock_path: (ROOT / lock_path).read_bytes(),
                  "config/database-test-images.json": (ROOT / "config/database-test-images.json").read_bytes()}
         lock = json.loads(files[lock_path])
+        files.update({path:(ROOT/path).read_bytes() for path in self.module.BINDING.CONTROL_PATHS})
         entries = []
         for profile in self.module.PROFILES:
             for item in lock["profiles"][profile]["ordered_files"]:
                 files[item["path"]] = (ROOT / item["path"]).read_bytes()
                 entries.append({"path": item["path"], "mode": "100644", "type": "blob"})
+        entries=[{"path":path,"mode":"100644","type":"blob","sha":self.module.git_blob_sha1(payload),"size":len(payload)} for path,payload in files.items()]
         tree = {"sha": TREE, "truncated": False, "tree": entries}
 
-        def exact(_token: str, repository: str, head: str, path: str):
-            self.assertEqual(repository, REPOSITORY)
-            self.assertEqual(head, HEAD)
-            payload = files[path]
-            return payload, self.module.git_blob_sha1(payload)
+        responses = []
+        class Response(io.BytesIO):
+            def __init__(self, body):
+                super().__init__(body)
+                self.headers = {"Content-Length": str(len(body))}
+                self.read_sizes = []
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                return super().read(size)
 
-        with mock.patch.object(self.module, "fetch_exact_file", side_effect=exact), \
-                mock.patch.object(self.module, "request_json", return_value=tree):
+        def transport(document):
+            def open_mock(request, timeout):
+                self.assertEqual(timeout, self.module.SOURCE_HTTP_TIMEOUT_SECONDS)
+                url = urllib.parse.urlsplit(request.full_url)
+                if url.path.endswith("/git/trees/" + TREE):
+                    payload = document
+                else:
+                    self.assertEqual(urllib.parse.parse_qs(url.query), {"ref": [HEAD]})
+                    path = urllib.parse.unquote(url.path.split("/contents/", 1)[1])
+                    raw = files[path]
+                    payload = {"path": path, "type": "file", "encoding": "base64", "size": len(raw),
+                               "sha": self.module.git_blob_sha1(raw), "content": base64.b64encode(raw).decode()}
+                response = Response(json.dumps(payload).encode())
+                responses.append(response)
+                return response
+            return open_mock
+
+        with mock_source_process(self.module.SOURCE_HTTP), mock.patch.object(self.module.SOURCE_HTTP, "open_source_url", side_effect=transport(tree)):
             bindings = self.module.fetch_profile_bindings("fixture-token", REPOSITORY, HEAD, head_tree=TREE)
-            for profile, binding in bindings.items():
-                self.assertEqual(binding["chain_digest"], self.binding(profile)["chain_digest"])
+            for profile, token in bindings.items():
+                binding=self.module.BINDING.operational_binding(token)
+                self.assertEqual(binding["chain_digest"], self.binding_view(profile)["chain_digest"])
                 self.assertEqual(len(binding["ordered_files"]), 4)
                 self.assertEqual(binding["schema_version"], "4")
                 self.assertEqual(binding["storage_writer_epoch"], "4")
@@ -730,10 +761,13 @@ class ActionsLogVerifierTests(unittest.TestCase):
                     candidate_lock["profiles"]["postgresql"]["ordered_files"].pop()
                     files[lock_path] = json.dumps(candidate_lock).encode()
                 with self.subTest(mutation=mutation), \
-                        mock.patch.object(self.module, "request_json", return_value=candidate_tree), \
+                        mock.patch.object(self.module.SOURCE_HTTP, "open_source_url", side_effect=transport(candidate_tree)), \
                         self.assertRaises(self.module.VerificationError):
                     self.module.fetch_profile_bindings("fixture-token", REPOSITORY, HEAD, head_tree=TREE)
                 files[lock_path] = original_lock
+        self.assertTrue(all(response.closed for response in responses))
+        self.assertTrue(all(response.read_sizes in ([self.module.MAX_SOURCE_FILE_JSON_BYTES + 1],
+                                                   [self.module.MAX_SOURCE_TREE_JSON_BYTES + 1]) for response in responses))
 
     def test_workflow_identity_is_exact_and_numeric(self) -> None:
         workflow = {

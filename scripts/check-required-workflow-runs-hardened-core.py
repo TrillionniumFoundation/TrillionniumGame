@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,16 @@ if _catalog_spec is None or _catalog_spec.loader is None:
 _catalog = importlib.util.module_from_spec(_catalog_spec)
 sys.modules[_catalog_spec.name] = _catalog
 _catalog_spec.loader.exec_module(_catalog)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import schema_evidence_binding as BINDING
+_capture_spec = importlib.util.spec_from_file_location("required_schema_source_capture", Path(__file__).with_name("capture-schema-source-selection.py"))
+_CAPTURE = importlib.util.module_from_spec(_capture_spec)
+_capture_spec.loader.exec_module(_CAPTURE)
+
+def source_selection_fields(root, head):
+    tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root, text=True, timeout=30).strip()
+    return {profile:BINDING.identity_fields(_CAPTURE.verified_head_binding(root, profile, head, tree)) for profile in BINDING.PROFILES}
 
 API = _core.API
 SCHEMA = _core.SCHEMA
@@ -240,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         local_failures = verify_files(Path.cwd(), manifest)
         if local_failures:
             raise ValueError("; ".join(local_failures))
+        source_fields = source_selection_fields(Path.cwd(), options.head_sha)
         api = GitHubApi(__import__("os").environ.get("GITHUB_TOKEN", ""))
         current = api.current_run(
             options.repository, options.current_run_id
@@ -257,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if tuple_failures:
             raise ValueError("; ".join(tuple_failures))
-    except (KeyError, TypeError, ValueError, RuntimeError) as error:
+    except (KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
         print(f"required workflow gate failed: {error}", file=sys.stderr)
         return 1
 
@@ -274,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
             runs, selection_failures = select_runs(
                 raw, manifest, options.head_sha
             )
-        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+        except (KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
             print(f"required workflow gate failed: {error}", file=sys.stderr)
             return 1
 
@@ -343,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                     receipt.append(
                         {
                             "workflow_id": requirement.workflow_id,
+                            "schema_source_selection": source_fields,
                             "path": requirement.path,
                             "run_id": run.id,
                             "run_attempt": run.attempt,
@@ -353,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                             "catalog_path_alias_verified": metadata.get("name") == requirement.path,
                         }
                     )
-            except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            except (KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
                 evidence_failures.append(str(error))
 
             if evidence_failures:
@@ -372,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
                 final_runs, final_failures = select_runs(
                     final_raw, manifest, options.head_sha
                 )
-            except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            except (KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
                 print(f"required workflow gate failed: {error}", file=sys.stderr)
                 return 1
 

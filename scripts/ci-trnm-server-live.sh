@@ -510,6 +510,8 @@ TRNM_DATABASE_URL="$database_url" TRNM_DATABASE_PROFILE="$profile" \
 python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" --mode verify > "$evidence/schema-identity-check.json"
 cp migrations/MIGRATION_CHAIN.lock.json "$evidence/migration-lock.json"
 python3 scripts/check-migration-lock.py > "$evidence/migration-chain-validation.json"
+python3 scripts/capture-schema-source-selection.py --root "$evidence" --profile "$profile" \
+  --commit "$candidate_sha" --tree "$candidate_tree" > "$evidence/schema-source-capture.json"
 schema_version=$(db_scalar 'SELECT schema_version FROM trnm_schema_metadata WHERE singleton = 1')
 test "$schema_version" = 4
 storage_writer_epoch=$(db_scalar 'SELECT storage_writer_epoch FROM trnm_schema_metadata WHERE singleton = 1')
@@ -521,6 +523,8 @@ test "$v3_apply_source_commit" = "$candidate_sha"
 python3 - "$evidence" "$profile" "$candidate_sha" <<'PY_STORAGE_SCHEMA_V3'
 import hashlib,json,sys
 from pathlib import Path
+sys.path.insert(0,"scripts")
+import schema_evidence_binding as binding
 
 evidence,profile,candidate=Path(sys.argv[1]),sys.argv[2],sys.argv[3]
 identity=json.loads((evidence/'schema-identity.json').read_text())
@@ -528,8 +532,10 @@ assert identity['profile']==profile
 assert identity['schema_version']==4 and identity['storage_writer_epoch']==4
 assert identity['source_commit']==identity['upgrade_source_commit']==identity['v2_apply_source_commit']==identity['v3_apply_source_commit']==candidate
 lock=json.loads((evidence/'migration-lock.json').read_text())
-assert lock['schema_version']==4
-files=lock['profiles'][profile]['ordered_files']
+assert type(lock['schema_version']) is int and lock['schema_version']==5
+token=binding.verify_binding(Path('.'),profile=profile)
+files=binding.operational_binding(token)['ordered_files']
+assert len(lock['profiles'][profile]['ordered_files'])==5
 names=('0001_foundation_up.sql','0002_storage_timestamps_up.sql','0003_storage_jsonb_up.sql','0004_storage_source_import_up.sql')
 assert [entry['path'] for entry in files]==[f'migrations/{profile}/{name}' for name in names]
 archive=evidence/'authoritative-migrations'

@@ -24,7 +24,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "26bbb56aaae10682dc3e789af7145f098a600d79",
+      "git_blob_sha1": "90fe7c996f901317670585433836c0d723f4fc47",
       "minimum_successful_execution_jobs": 2,
       "name": "cockroach-serialization-retry",
       "path": ".github/workflows/cockroach-serialization-retry.yml",
@@ -35,7 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "ecab15647158290dad9a7aca41abc7ee0fa49aab54a522f72ffd39273c059319",
+  "overlay_sha256": "9365e4a28a00d2f711068126722596494faf0f214b38d95d7adcc9823e68cb4f",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -312,7 +312,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "bb5dce197ceca8748c690c3f428b5fe7ca4207c3",
+      "git_blob_sha1": "a9c2bc0cb651d2267ed50bc255ccf9455db4f8b1",
       "minimum_successful_execution_jobs": 1,
       "name": "database-backup-restore",
       "path": ".github/workflows/database-backup-restore.yml",
@@ -322,7 +322,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "2a02c2e85c6564a772d60a7e1114babbcc258981",
+      "git_blob_sha1": "2f7660985f9f79221dc101805f06e511fd0e0e75",
       "minimum_successful_execution_jobs": 1,
       "name": "trnm-server-live",
       "path": ".github/workflows/trnm-server-live.yml",
@@ -472,7 +472,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "bfe9fb8ea0574b03adb1fb59ede6446036b7d07d",
+      "git_blob_sha1": "32cdc0e0f2ec4d6361e0854a016ed8618ed074c7",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-spool-worker",
       "path": ".github/workflows/outbox-spool-worker.yml",
@@ -482,7 +482,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "16e71e00bbc8c5de122859e766792e805a0088c3",
+      "git_blob_sha1": "a25e3731188c4f17459317a756877682843bd99f",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-final-attempt-reaper",
       "path": ".github/workflows/outbox-final-attempt-reaper.yml",
@@ -502,7 +502,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "d9f0251e59492de677120b36458c081121ca6e73",
+      "git_blob_sha1": "0023ac6fb948fc999cabde7aceee0fc5cc4aa21d",
       "minimum_successful_execution_jobs": 1,
       "name": "prospective-merge-gate",
       "path": ".github/workflows/prospective-merge-gate.yml",

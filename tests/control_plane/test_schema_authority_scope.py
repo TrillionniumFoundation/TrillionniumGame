@@ -78,12 +78,14 @@ class SchemaAuthorityScopeTests(unittest.TestCase):
 
     def test_active_authority_digest_matches_the_complete_locked_rust_identity(self) -> None:
         chain = CHECKER.validated_migration_chain()
-        self.assertEqual(chain["schema_version"], 4)
+        self.assertEqual(chain["schema_version"], 5)
+        self.assertEqual(chain["default_runtime_schema_version"], 4)
         self.assertEqual(chain["digest_algorithm"], "ordered-path-git-blob-sha256.v1")
         for profile, row in chain["profiles"].items():
             digest, files = CHECKER.migration_digest(f"migrations/{profile}")
-            self.assertEqual(digest, row["chain_sha256"])
-            self.assertEqual([path.relative_to(ROOT).as_posix() for path in files], row["ordered_paths"])
+            self.assertEqual(digest, row["revision_prefixes"]["4"]["chain_sha256"])
+            self.assertNotEqual(digest, row["chain_sha256"])
+            self.assertEqual([path.relative_to(ROOT).as_posix() for path in files], row["revision_prefixes"]["4"]["ordered_paths"])
             self.assertEqual(len(files), 4)
 
     def test_native_profile_image_cannot_be_replaced_by_an_external_override(self) -> None:

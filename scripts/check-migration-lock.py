@@ -11,7 +11,8 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "migrations/MIGRATION_CHAIN.lock.json"
 EXPECTED_PROFILES = {"postgresql", "cockroachdb"}
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+DEFAULT_RUNTIME_SCHEMA_VERSION = 4
 DIGEST_ALGORITHM = "ordered-path-git-blob-sha256.v1"
 FROZEN_BASE = "326e670cb008a990247e31a63c0c4b0e338df62f"
 # Adding a revision must never rewrite any reviewed historical revision,
@@ -23,6 +24,8 @@ FROZEN_HISTORICAL_BLOBS = {
     "migrations/cockroachdb/0002_storage_timestamps_up.sql": "700cdb460b9211370777928b980b10e37ae21ae9",
     "migrations/postgresql/0003_storage_jsonb_up.sql": "4eb39d906f8ed3444cee7dd7a550ce21dad5e00c",
     "migrations/cockroachdb/0003_storage_jsonb_up.sql": "4eb39d906f8ed3444cee7dd7a550ce21dad5e00c",
+    "migrations/postgresql/0004_storage_source_import_up.sql": "12f3f832d6b5509a12573c4d596e5313165307f5",
+    "migrations/cockroachdb/0004_storage_source_import_up.sql": "7e996a3e6732ed91508f4354a4d75a786c00e240",
 }
 
 
@@ -55,6 +58,12 @@ def reviewed_storage_import_actions(profile: str) -> tuple[tuple[str, str], ...]
     ) + common
 
 
+def reviewed_accounts_actions(profile: str) -> tuple[tuple[str, str], ...]:
+    """Exact schema5 source statements; never native catalog observations."""
+    require(profile in EXPECTED_PROFILES, "unknown account action profile")
+    return (('metadata_v4_apply_source_commit', 'ALTER TABLE trnm_schema_metadata ADD COLUMN v4_apply_source_commit TEXT;'), ('nakama_users', "CREATE TABLE public.users (\nid UUID NOT NULL,\nusername VARCHAR(128) NOT NULL,\ndisplay_name VARCHAR(255),\navatar_url VARCHAR(512),\nlang_tag VARCHAR(18) NOT NULL DEFAULT 'en',\nlocation VARCHAR(255),\ntimezone VARCHAR(255),\nmetadata JSONB NOT NULL DEFAULT '{}',\nwallet JSONB NOT NULL DEFAULT '{}',\nemail VARCHAR(255),\npassword BYTEA,\nfacebook_id VARCHAR(128),\ngoogle_id VARCHAR(128),\ngamecenter_id VARCHAR(128),\nsteam_id VARCHAR(128),\ncustom_id VARCHAR(128),\nedge_count INT NOT NULL DEFAULT 0,\ncreate_time TIMESTAMPTZ NOT NULL DEFAULT now(),\nupdate_time TIMESTAMPTZ NOT NULL DEFAULT now(),\nverify_time TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00 UTC',\ndisable_time TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00 UTC',\nfacebook_instant_game_id VARCHAR(128),\napple_id VARCHAR(128),\nCONSTRAINT users_pkey PRIMARY KEY (id),\nCONSTRAINT users_username_key UNIQUE (username),\nCONSTRAINT users_email_key UNIQUE (email),\nCONSTRAINT users_facebook_id_key UNIQUE (facebook_id),\nCONSTRAINT users_google_id_key UNIQUE (google_id),\nCONSTRAINT users_gamecenter_id_key UNIQUE (gamecenter_id),\nCONSTRAINT users_steam_id_key UNIQUE (steam_id),\nCONSTRAINT users_custom_id_key UNIQUE (custom_id),\nCONSTRAINT users_facebook_instant_game_id_key UNIQUE (facebook_instant_game_id),\nCONSTRAINT users_apple_id_key UNIQUE (apple_id),\nCONSTRAINT users_password_check CHECK (length(password) < 32000),\nCONSTRAINT users_edge_count_check CHECK (edge_count >= 0)\n);"), ('nakama_system_user', "INSERT INTO public.users (id, username) VALUES ('00000000-0000-0000-0000-000000000000', '') ON CONFLICT (id) DO NOTHING;"), ('nakama_user_device', "CREATE TABLE public.user_device (\nid VARCHAR(128) NOT NULL,\nuser_id UUID NOT NULL,\npreferences JSONB NOT NULL DEFAULT '{}',\npush_token_amazon VARCHAR(512) NOT NULL DEFAULT '',\npush_token_android VARCHAR(512) NOT NULL DEFAULT '',\npush_token_huawei VARCHAR(512) NOT NULL DEFAULT '',\npush_token_ios VARCHAR(512) NOT NULL DEFAULT '',\npush_token_web VARCHAR(512) NOT NULL DEFAULT '',\nCONSTRAINT user_device_pkey PRIMARY KEY (id),\nCONSTRAINT user_device_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users (id) ON UPDATE NO ACTION ON DELETE CASCADE,\nCONSTRAINT user_device_user_id_id_key UNIQUE (user_id, id)\n);"), ('metadata_v4_history', 'ALTER TABLE trnm_schema_metadata ADD CONSTRAINT metadata_v4_history CHECK (schema_version < 5 OR (v4_apply_source_commit IS NOT NULL AND length(v4_apply_source_commit) = 40));'))
+
+
 def reviewed_actions(profile: str, revision: int) -> tuple[tuple[str, str], ...]:
     """Closed runner declarations, not a general SQL parser or SQL executor."""
     if revision == 2:
@@ -70,6 +79,8 @@ def reviewed_actions(profile: str, revision: int) -> tuple[tuple[str, str], ...]
         )
     if revision == 4:
         return reviewed_storage_import_actions(profile)
+    if revision == 5:
+        return reviewed_accounts_actions(profile)
     require(revision == 3, "unknown action revision")
     return (
         ("metadata_v2_apply_source_commit", "ALTER TABLE trnm_schema_metadata ADD COLUMN v2_apply_source_commit TEXT;"),
@@ -96,12 +107,12 @@ def validate_action_source(data: bytes, profile: str, revision: int) -> list[str
     declarations = reviewed_actions(profile, revision)
     # BEGIN/COMMIT are historical PostgreSQL v2 wrappers, not v3 actions.
     expected = []
-    if (profile == "postgresql" and revision == 2) or revision == 4:
+    if (profile == "postgresql" and revision == 2) or revision in (4, 5):
         expected.append("BEGIN;")
     for action, statement in declarations:
         expected.append(f"-- trnm:action {action}")
         expected.extend(statement.splitlines())
-    if (profile == "postgresql" and revision == 2) or revision == 4:
+    if (profile == "postgresql" and revision == 2) or revision in (4, 5):
         expected.append("COMMIT;")
     actual = []
     for line in data.decode("utf-8").splitlines():
@@ -158,6 +169,8 @@ def validate_source_document(
     require(lock.get("generated_from_base") == FROZEN_BASE, "frozen migration base drifted")
     require(type(lock.get("schema_version")) is int and lock["schema_version"] == SCHEMA_VERSION,
             "unexpected schema version")
+    require(lock.get("default_runtime_schema_version") == DEFAULT_RUNTIME_SCHEMA_VERSION,
+            "default runtime schema profile drift")
     profiles = lock.get("profiles")
     require(isinstance(profiles, dict), "profiles must be an object")
     require(set(profiles) == EXPECTED_PROFILES, "migration profile set drifted")
@@ -201,11 +214,14 @@ def validate_source_document(
                 require(not set(ids).intersection(action_ids), f"{profile}: duplicate action identity")
                 action_ids.extend(ids)
                 revision_actions[str(revision)] = len(ids)
-            if position < 3:
+            if position < 4:
                 require(FROZEN_HISTORICAL_BLOBS.get(path_value) == actual_blob,
                         f"{path_value}: frozen historical identity drift")
             chain_entries.append((path_value, actual_blob))
         require(listed_paths == actual_sql, f"{profile}: unlisted, missing or unordered SQL migration")
+        prefixes = {str(v): {"file_count": v, "ordered_paths": listed_paths[:v],
+            "chain_sha256": ordered_chain_digest(chain_entries[:v]), "digest_algorithm": DIGEST_ALGORITHM}
+            for v in range(1, SCHEMA_VERSION + 1)}
         report[profile] = {
             "file_count": len(listed_paths),
             "ordered_paths": listed_paths,
@@ -213,6 +229,7 @@ def validate_source_document(
             "digest_algorithm": DIGEST_ALGORITHM,
             "declared_action_count": len(action_ids),
             "revision_action_counts": revision_actions,
+            "revision_prefixes": prefixes,
         }
 
     rules = lock.get("rules")
@@ -230,6 +247,7 @@ def validate_source_document(
     return {
         "schema": "trillionnium.migration-chain-lock-validation.v1",
         "schema_version": SCHEMA_VERSION,
+        "default_runtime_schema_version": DEFAULT_RUNTIME_SCHEMA_VERSION,
         "digest_algorithm": DIGEST_ALGORITHM,
         "profiles": report,
         "source_identity_verified": True,

@@ -56,3 +56,19 @@ reproduced in third_party/go-sort/LICENSE. Modification: Rust ordinal sorting
 with a 100-operation bound for canonical-owner batches. Source identities are
 registered in contracts/storage/nakama-sort-source-lock-v1.json. No Go sorter
 executable is a target-service dependency.
+
+Nakama account schema contract
+The source-only 0005 account migration declares users/user_device fields, defaults
+and constraints studied from Nakama 3.40.0 d4d92f93 initial, provider and Console
+migrations. Copyright 2018 The Nakama Authors, Apache License 2.0. This does not
+grant full Nakama schema, account service, data migration or compatibility credit.
+
+Nakama legacy authentication source study
+The independent Rust legacy issuer, RawURL/header/claims/verifier, blacklist,
+Device predicates, owned service and native account adapter study selected
+regions of the exact Nakama 3.40.0 sources recorded in
+contracts/session/nakama-v340-token-source-lock.json. Nakama source is
+Copyright The Nakama Authors & Contributors, Apache License 2.0. Complete-file
+identity verification and the derived-region records are separate scopes.
+No Go authentication implementation is compiled into the target, and these
+source candidates grant no HTTP/native/production/acceptance compatibility.

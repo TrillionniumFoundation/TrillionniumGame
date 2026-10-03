@@ -35,6 +35,18 @@ class RepositoryFixture:
 
         (self.root / "root.txt").write_text("root\n", encoding="utf-8")
         self.write_controls()
+        # Current fixtures carry the complete genuine source frontier, including
+        # both fifth SQL files. They never synthesize a current lock 4.
+        for relative in ("migrations", "config/database-test-images.json",
+                         "docs/development/SCHEMA_AUTHORITY.json", "scripts/check-migration-lock.py",
+                         "scripts/schema_source_selection.py", "scripts/schema_evidence_binding.py",
+                         "scripts/check-authoritative-schema-identity.py", "scripts/capture-schema-source-selection.py"):
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if (ROOT / relative).is_dir():
+                shutil.copytree(ROOT / relative, target)
+            else:
+                shutil.copy2(ROOT / relative, target)
         policy = self.root / "scripts/status_transition_policy.py"
         policy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(POLICY, policy)
@@ -151,6 +163,9 @@ class ProspectiveMergeIdentityTests(unittest.TestCase):
     def test_exact_base_first_head_second_merge_is_accepted(self) -> None:
         result = self.validate()
         self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["schema"], "trillionnium.prospective-merge-identity.v2")
+        self.assertEqual(set(result["schema_source_selection"]), {"postgresql", "cockroachdb"})
+        self.assertTrue(all(value["source_frontier_schema_version"] == "5" and value["execution_schema_version"] == "4" for value in result["schema_source_selection"].values()))
         self.assertEqual(
             result["ordered_parents"],
             [self.fixture.base_commit, self.fixture.head_commit],

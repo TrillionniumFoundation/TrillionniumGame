@@ -118,11 +118,17 @@ def validated_migration_chain() -> dict[str, Any]:
         fail(f"authoritative migration lock: {error}")
 
 
-def migration_digest(relative_root: str, report: dict[str, Any] | None = None) -> tuple[str, list[Path]]:
+def migration_digest(relative_root: str, selection=None) -> tuple[str, list[Path]]:
     require(relative_root in ("migrations/postgresql", "migrations/cockroachdb"), "authoritative profile path")
-    report = validated_migration_chain() if report is None else report
-    row = report["profiles"][relative_root.rsplit("/", 1)[1]]
-    return row["chain_sha256"], [ROOT / path for path in row["ordered_paths"]]
+    import sys
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    import schema_source_selection as source
+    profile=relative_root.rsplit("/",1)[1]
+    token=source.verify_current_source_selection(ROOT,profile=profile) if selection is None else selection
+    proof=source.current_selection_document(token)
+    require(proof["profile"]==profile,"selected source profile mismatch")
+    selected=proof["selection"]
+    return selected["execution_chain_digest"], [ROOT/row["path"] for row in selected["ordered_files"]]
 
 
 def validate_schema_consumer(harness: str, profile: str | None, *, mode: str = "migrate",
@@ -223,7 +229,8 @@ def validate_authority() -> dict[str, str]:
     authority = document.get("authority", {})
     require(authority.get("migration_root") == "migrations", "authoritative migration root")
     chain = validated_migration_chain()
-    require(authority.get("schema_version") == chain["schema_version"], "authority schema version differs from lock")
+    require(authority.get("latest_supported_schema_version") == chain["schema_version"] == 5, "supported schema frontier differs from lock")
+    require(authority.get("schema_version") == authority.get("default_runtime_schema_version") == chain["default_runtime_schema_version"] == 4, "default runtime schema authority drift")
     profiles = authority.get("profiles", [])
     require([row.get("id") for row in profiles] == ["postgresql", "cockroachdb"], "database profiles")
     digests: dict[str, str] = {}
@@ -232,7 +239,7 @@ def validate_authority() -> dict[str, str]:
         relative_root = profile.get("path")
         require(relative_root == f"migrations/{profile_id}", f"{profile_id}: migration path")
         require(profile.get("runtime_adapter") == "crates/trnm-persistence-pg", f"{profile_id}: adapter")
-        digest, files = migration_digest(relative_root, chain)
+        digest, files = migration_digest(relative_root)
         require(all(path.name.endswith(".sql") for path in files), f"{profile_id}: migration naming")
         digests[profile_id] = digest
 
@@ -321,7 +328,7 @@ def validate_sql_abi() -> None:
     for profile in ("postgresql", "cockroachdb"):
         sql = "\n".join(
             path.read_text(encoding="utf-8")
-            for path in migration_digest(f"migrations/{profile}", chain)[1]
+            for path in migration_digest(f"migrations/{profile}")[1]
         )
         missing = sorted(table for table in REQUIRED_TABLES if table not in sql)
         require(not missing, f"{profile}: missing authoritative tables {missing}")

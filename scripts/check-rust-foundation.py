@@ -90,6 +90,7 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {'crates/trnm-authority-core'
                         'trnm-persistence-pg': {'path': '../trnm-persistence-pg'},
                         'trnm-realtime-wire': {'path': '../trnm-realtime-wire'},
                         'trnm-session-core': {'path': '../trnm-session-core'},
+                        'trnm-token-crypto-provider': {'path': '../trnm-token-crypto-provider'},
                         'trnm-token-jwt-adapter': {'path': '../trnm-token-jwt-adapter'}},
  'crates/trnm-session-core': {'trnm-contracts': {'path': '../trnm-contracts'}},
  'crates/trnm-storage-core': {'sha2': '=0.11.0', 'trnm-contracts': {'path': '../trnm-contracts'}},
@@ -99,7 +100,8 @@ EXPECTED_DEPENDENCIES: dict[str, dict[str, Any]] = {'crates/trnm-authority-core'
                                         'sha2': '=0.11.0',
                                         'subtle': '=2.6.1',
                                         'zeroize': '=1.8.2'},
- 'crates/trnm-token-jwt-adapter': {'hmac': '=0.13.0', 'sha2': '=0.11.0', 'subtle': '=2.6.1'},
+ 'crates/trnm-token-jwt-adapter': {'hmac': '=0.13.0', 'sha2': '=0.11.0', 'subtle': '=2.6.1',
+                                    'trnm-token-crypto-provider': {'path': '../trnm-token-crypto-provider'}},
  'crates/trnm-token-jwt-provider-adapter': {'trnm-token-crypto-provider': {'path': '../trnm-token-crypto-provider'},
                                             'trnm-token-jwt-adapter': {'path': '../trnm-token-jwt-adapter'}},
  'crates/trnm-transport-core': {'trnm-contracts': {'path': '../trnm-contracts'}}}

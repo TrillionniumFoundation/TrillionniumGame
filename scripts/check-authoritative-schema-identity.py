@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import schema_source_selection as SELECTION
 ALGORITHM = "ordered-path-git-blob-sha256.v1"
 MAX_IDENTITY_BYTES = 16 * 1024
 
@@ -39,28 +41,19 @@ def decode_identity_document(data: bytes) -> Any:
             value[key] = item
         return value
 
-    return json.loads(data, object_pairs_hook=unique_object)
+    return json.loads(data, object_pairs_hook=unique_object, parse_constant=lambda _: (_ for _ in ()).throw(ValidationError("nonfinite schema identity JSON")))
 
 
-def validated_source() -> tuple[dict[str, Any], int, int]:
-    path = ROOT / "scripts/check-migration-lock.py"
-    spec = importlib.util.spec_from_file_location("trnm_migration_lock", path)
-    require(spec is not None and spec.loader is not None, "migration validator unavailable")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    report = module.validate()
-    lock = json.loads((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_text())
-    authority = json.loads((ROOT / "docs/development/SCHEMA_AUTHORITY.json").read_text())
-    return report["profiles"], lock["schema_version"], len(authority["adapter_abi"]["required_tables"])
+def validated_source(profile: str, *, target=SELECTION.SchemaTarget.StorageV4):
+    """Issue source byte proof only; never accept a caller-built chain map."""
+    return SELECTION.verify_current_source_selection(ROOT, profile=profile, target=target)
 
 
 def validate_identity(
     value: Any,
     *,
     profile: str,
-    chains: dict[str, Any],
-    schema_version: int,
-    table_count: int,
+    selection,
     mode: str = "any",
     source_commit: str | None = None,
     from_version: int | None = None,
@@ -68,18 +61,26 @@ def validate_identity(
     v3_apply_source_commit: str | None = None,
 ) -> None:
     require(mode in {"any", "fresh", "upgrade", "verify"}, "unknown schema identity mode")
-    require(profile in {"postgresql", "cockroachdb"} and profile in chains, "unknown schema profile")
-    require(type(schema_version) is int and schema_version == 4, "unsupported current schema version")
-    require(type(table_count) is int and table_count == 12, "unsupported current schema table count")
-    require(isinstance(chains[profile], dict) and type(chains[profile].get("file_count")) is int
-            and chains[profile]["file_count"] == schema_version, "incomplete current source chain")
-    require(isinstance(value, dict), "schema identity must be an object")
+    try:
+        proof = SELECTION.current_selection_document(selection)
+    except SELECTION.SelectionError as error:
+        raise ValidationError("issued current source selection required") from error
+    selected = proof["selection"]
+    require(profile == proof["profile"], "schema profile token mismatch")
+    schema_version = selected["execution_schema_version"]
+    table_count = selected["table_count"]
+    file_count = selected["executed_migration_file_count"]
+    require(type(value) is dict, "schema identity must be an object")
+    require(set(value) == {"schema", "profile", "schema_version", "storage_writer_epoch", "digest_algorithm",
+            "chain_digest", "table_count", "compatibility_credit", "source_commit", "upgrade_source_commit",
+            "v2_apply_source_commit", "v3_apply_source_commit", "migration_applied", "applied_steps"},
+            "schema identity closed fields mismatch")
     require(value.get("schema") == "trillionnium.authoritative-schema-report.v1", "wrong schema report envelope")
     require(value.get("profile") == profile, "schema profile mismatch")
     require(type(value.get("schema_version")) is int and value["schema_version"] == schema_version, "schema version mismatch")
     require(type(value.get("storage_writer_epoch")) is int and value["storage_writer_epoch"] == 4, "storage writer epoch mismatch")
     require(value.get("digest_algorithm") == ALGORITHM, "schema digest algorithm mismatch")
-    require(value.get("chain_digest") == chains[profile]["chain_sha256"], "complete migration chain digest mismatch")
+    require(value.get("chain_digest") == selected["execution_chain_digest"], "complete migration chain digest mismatch")
     require(type(value.get("table_count")) is int and value["table_count"] == table_count, "schema table count mismatch")
     require(value.get("compatibility_credit") is False, "schema source identity cannot grant compatibility credit")
     for key in ("source_commit", "upgrade_source_commit", "v2_apply_source_commit", "v3_apply_source_commit"):
@@ -101,10 +102,10 @@ def validate_identity(
     applied = value.get("migration_applied")
     steps = value.get("applied_steps")
     require(type(applied) is bool and type(steps) is int, "invalid migration outcome types")
-    require(0 <= steps <= chains[profile]["file_count"], "migration step count out of range")
+    require(0 <= steps <= file_count, "migration step count out of range")
     require((applied and steps > 0) or (not applied and steps == 0), "migration outcome and steps disagree")
     if mode == "fresh":
-        require(applied and steps == chains[profile]["file_count"], "fresh schema did not execute the complete chain")
+        require(applied and steps == file_count, "fresh schema did not execute the complete chain")
         require(value["source_commit"] == value["upgrade_source_commit"] == value["v2_apply_source_commit"] == value["v3_apply_source_commit"],
                 "fresh foundation/v2/v3/current apply provenance mismatch")
         if source_commit is not None:
@@ -136,16 +137,18 @@ def main() -> int:
     parser.add_argument("profile", choices=["postgresql", "cockroachdb"])
     parser.add_argument("--mode", choices=["any", "fresh", "upgrade", "verify"], default="any")
     parser.add_argument("--source-commit")
+    parser.add_argument("--target", choices=[v.value for v in SELECTION.SchemaTarget], default="StorageV4")
     parser.add_argument("--from-version", type=int, choices=[1, 2, 3])
     parser.add_argument("--v2-apply-source-commit", help="Expected historical v2 publisher; required when upgrading from v2")
     parser.add_argument("--v3-apply-source-commit", help="Expected historical v3 publisher; required when upgrading from v3")
     arguments = parser.parse_args()
     try:
+        selection = validated_source(arguments.profile, target=SELECTION.SchemaTarget(arguments.target))
+        # Accounts rejected by issuer before even the identity-file read.
         data = arguments.identity.read_bytes()
         value = decode_identity_document(data)
-        chains, version, tables = validated_source()
-        validate_identity(value, profile=arguments.profile, chains=chains, schema_version=version,
-                          table_count=tables, mode=arguments.mode, source_commit=arguments.source_commit,
+        version = SELECTION.current_selection_document(selection)["selection"]["execution_schema_version"]
+        validate_identity(value, profile=arguments.profile, selection=selection, mode=arguments.mode, source_commit=arguments.source_commit,
                           from_version=arguments.from_version, v2_apply_source_commit=arguments.v2_apply_source_commit,
                           v3_apply_source_commit=arguments.v3_apply_source_commit)
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:

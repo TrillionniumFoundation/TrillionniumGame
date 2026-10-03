@@ -42,6 +42,7 @@ def load_checker(name: str, relative: str) -> Any:
 VERIFIER = load_checker("outbox_seal_archive", "scripts/verify-actions-log-artifact.py")
 SCHEMAS = load_checker("outbox_seal_identity", "scripts/check-authoritative-schema-identity.py")
 MIGRATIONS = VERIFIER.MIGRATIONS
+BINDING = VERIFIER.BINDING
 
 
 def git_value(*arguments: str) -> str:
@@ -81,32 +82,12 @@ def retained_files(root: Path) -> list[Path]:
     return sorted(files, key=lambda path: path.relative_to(root).as_posix())
 
 
-def source_binding(profile: str) -> tuple[dict[str, Any], bytes, dict[str, Any], dict[str, Any]]:
-    require(profile in VERIFIER.PROFILES, "unsupported evidence profile")
-    validation = MIGRATIONS.validate(SOURCE_ROOT)
-    lock_path = SOURCE_ROOT / "migrations/MIGRATION_CHAIN.lock.json"
-    lock_bytes = lock_path.read_bytes()
-    require(MIGRATIONS.git_blob_sha1(lock_bytes) == git_value("rev-parse", "HEAD:migrations/MIGRATION_CHAIN.lock.json"),
-            "candidate migration lock differs from committed source")
-    lock = VERIFIER.strict_object(lock_bytes, "candidate migration lock")
-    image_path = SOURCE_ROOT / "config/database-test-images.json"
-    image_bytes = image_path.read_bytes()
-    require(MIGRATIONS.git_blob_sha1(image_bytes) == git_value("rev-parse", "HEAD:config/database-test-images.json"),
-            "candidate image configuration differs from committed source")
-    image = VERIFIER.strict_object(image_bytes, "candidate images")["profiles"][profile]["image"]
-    ordered = lock["profiles"][profile]["ordered_files"]
-    for entry in ordered:
-        source = SOURCE_ROOT / entry["path"]
-        require(not source.is_symlink(), "migration source symlink is forbidden")
-        require(entry["git_blob_sha1"] == git_value("rev-parse", "HEAD:" + entry["path"]),
-                "locked migration differs from committed candidate source")
-    row = validation["profiles"][profile]
-    binding = {"migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
-               "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
-               "schema_version": str(lock["schema_version"]), "storage_writer_epoch": "4",
-               "chain_digest": row["chain_sha256"], "digest_algorithm": validation["digest_algorithm"],
-               "ordered_files": ordered, "image": image}
-    return validation, lock_bytes, lock, binding
+def source_binding(profile: str):
+    token = BINDING.verify_binding(SOURCE_ROOT, profile=profile)
+    for row in BINDING.binding_document(token)["full_source_inventory"]:
+        require(row["git_blob_sha1"] == git_value("rev-parse", "HEAD:" + row["path"]),
+                "complete authoritative source differs from committed candidate")
+    return token
 
 
 def seal_profile(root: Path, *, profile: str, commit: str, tree: str,
@@ -115,18 +96,24 @@ def seal_profile(root: Path, *, profile: str, commit: str, tree: str,
     candidate_identity(commit, tree, repository, run_id, run_attempt)
     producer = VERIFIER.producer_identity(profile, workflow_context)
     retained_files(root)  # Reject symlinks/devices before reading or replacing files.
-    validation, lock_bytes, lock, binding = source_binding(profile)
+    verified_binding = source_binding(profile)
+    proof = BINDING.binding_document(verified_binding)
+    binding = BINDING.operational_binding(verified_binding)
+    validation = proof["source_selection"]["source"]["complete_validation"]
+    lock_bytes = (SOURCE_ROOT / BINDING.SOURCE.LOCK_PATH).read_bytes()
     require((root / "migration-chain.lock.json").read_bytes() == lock_bytes,
             "retained migration lock differs from candidate source")
     report = VERIFIER.strict_object((root / "migration-chain-validation.json").read_bytes(), "retained chain validation")
-    require(report == validation, "retained complete migration validation differs from candidate source")
+    require(BINDING.same(report, validation), "retained complete migration validation differs from candidate source")
     schema = SCHEMAS.decode_identity_document((root / "schema-identity.json").read_bytes())
-    SCHEMAS.validate_identity(schema, profile=profile, chains=validation["profiles"],
-                              schema_version=lock["schema_version"], table_count=12,
+    SCHEMAS.validate_identity(schema, profile=profile, selection=BINDING.selection_token(verified_binding),
                               mode="fresh", source_commit=commit)
     result = VERIFIER.parse_env((root / "result.env").read_bytes(), "profile result")
     require(result == {"status": "passed", "profile": profile, "commit": commit},
             "profile result is not exact passed evidence")
+    if not (root / BINDING.SIDECAR).exists():
+        BINDING.write_annex(verified_binding, SOURCE_ROOT, root, commit=commit, tree=tree)
+    BINDING.validate_annex_directory(verified_binding, root, commit=commit, tree=tree)
     for entry in binding["ordered_files"]:
         payload = (SOURCE_ROOT / entry["path"]).read_bytes()
         require(MIGRATIONS.git_blob_sha1(payload) == entry["git_blob_sha1"], "locked migration blob changed while sealing")
@@ -142,6 +129,7 @@ def seal_profile(root: Path, *, profile: str, commit: str, tree: str,
                 "image": binding["image"], "run_id": run_id, "run_attempt": run_attempt,
                 "evidence_run_id": f"{run_id}-{run_attempt}-{profile}",
                 **producer,
+                **BINDING.identity_fields(verified_binding),
                 **{key: binding[key] for key in ("migration_lock", "schema_version", "storage_writer_epoch",
                                                 "chain_digest", "digest_algorithm")}}
     (root / "identity.env").write_text("".join(f"{key}={value}\n" for key, value in identity.items()), encoding="utf-8")
@@ -165,7 +153,7 @@ def verify_archive(archive: Path, *, profile: str, commit: str, tree: str,
     VERIFIER.producer_identity(profile, workflow_context)
     require(stat.S_ISREG(archive.lstat().st_mode), "archive must be a regular file")
     require(0 < archive.stat().st_size <= VERIFIER.MAX_ARCHIVE_BYTES, "archive exceeds byte budget")
-    _, _, _, binding = source_binding(profile)
+    binding = source_binding(profile)
     payload = archive.read_bytes()
     # The shared validator owns decompression/member budgets, the exact file
     # manifest and all profile migration inventory/blob checks for both entrypoints.

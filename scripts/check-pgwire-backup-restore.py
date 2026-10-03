@@ -88,6 +88,7 @@ def validate_v3_semantic_harness(harness: str) -> None:
     for marker in ("apply-authoritative-schema.sh\" verify", "restored-schema-identity.json",
                    "--mode verify", "report['schema_version']==4", "report['storage_writer_epoch']==4",
                    "v2_apply_source_commit", "v3_apply_source_commit", "authoritative_migration_file_count", "len(ordered)==4",
+                   "capture-schema-source-selection.py", "binding.validate_annex_directory", "binding.operational_binding(token)",
                    '"storage_v3_constraint_probe_count": 9', "validate_storage_snapshot_bytes"):
         if marker not in harness:
             raise SystemExit(f"storage v3 recovery assertion missing: {marker}")
@@ -257,7 +258,8 @@ def validate_text(script: str, image_config: dict) -> None:
     validate_v3_seed_source(script)
     for marker in ("validate_storage_snapshot_bytes", "source-storage-v3.txt", "restored-storage-v3.txt",
                    "storage-v3-snapshot-check.json", "len(ordered) == 4", "fresh['schema_version'] == 4",
-                   "fresh['storage_writer_epoch'] == 4"):
+                   "fresh['storage_writer_epoch'] == 4", "sealer.BINDING.write_annex",
+                   "sealer.BINDING.operational_binding(binding)"):
         if marker not in script:
             raise SystemExit(f"storage v3 backup assertion missing: {marker}")
 

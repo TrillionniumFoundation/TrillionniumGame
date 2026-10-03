@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/schema_source_selection.py'
+      - 'scripts/schema_evidence_binding.py'
+      - 'scripts/capture-schema-source-selection.py'
+      - 'contracts/database/source-execution-evidence.v1.json'
+      - 'tests/control_plane/test_schema_source_selection.py'
+      - 'tests/control_plane/test_schema_evidence_binding.py'
       - 'crates/trnm-persistence-pg/src/lib.rs'
       - 'crates/trnm-persistence-pg/src/outbox.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm-outbox-worker.rs'

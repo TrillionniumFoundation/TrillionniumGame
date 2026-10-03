@@ -214,7 +214,7 @@ evidence_absolute=$(cd "$evidence" && pwd -P)
 # Reuse its shell layout here only to exercise independent source guard removal,
 # reordering and weakening; this fixture supplies no database execution credit.
 ACTUAL_HARNESS = (ROOT / "scripts/ci-trnm-server-live.sh").read_text(encoding="utf-8")
-SCHEMA_V3 = ACTUAL_HARNESS[ACTUAL_HARNESS.index("schema_version=$(db_scalar"):
+SCHEMA_V3 = ACTUAL_HARNESS[ACTUAL_HARNESS.index("python3 scripts/capture-schema-source-selection.py"):
                            ACTUAL_HARNESS.index("begin_stage session-response-loss")]
 SUFFIX = '''cat > "$evidence/summary.json" <<EOF
 {"schema":"synthetic-only","nakama_client_list_projection":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"storage_v4_acl":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
@@ -1318,7 +1318,10 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         archived = self.root / "authoritative-migrations"
         archived.mkdir()
         files = []
-        for entry in self.lock["profiles"][self.profile]["ordered_files"]:
+        self.source_binding = MODULE.BINDING.verify_binding(ROOT, profile=self.profile)
+        MODULE.BINDING.write_annex(self.source_binding, ROOT, self.root, commit=self.COMMIT, tree=self.TREE)
+        self.write_json("migration-chain-validation.json", MODULE.BINDING.binding_document(self.source_binding)["source_selection"]["source"]["complete_validation"])
+        for entry in MODULE.BINDING.operational_binding(self.source_binding)["ordered_files"]:
             data = (ROOT / entry["path"]).read_bytes()
             path = archived / Path(entry["path"]).name
             path.write_bytes(data)
@@ -1822,7 +1825,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
 
     def chain_digest(self, profile: str) -> str:
         digest = hashlib.sha256()
-        for position, entry in enumerate(self.lock["profiles"][profile]["ordered_files"]):
+        for position, entry in enumerate(MODULE.BINDING.operational_binding(MODULE.BINDING.verify_binding(ROOT,profile=profile))["ordered_files"]):
             digest.update(position.to_bytes(8, "big"))
             digest.update(entry["path"].encode() + b"\0")
             digest.update(bytes.fromhex(entry["git_blob_sha1"]))
@@ -1870,6 +1873,13 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
 
     def test_cockroach_archive_uses_its_own_source_chain_and_observed_input_outcomes(self) -> None:
         self.profile = "cockroachdb"
+        # Profile selection has its own issued sidecar; keep full source5 bytes
+        # but do not retain a PostgreSQL selected-execution proof for Cockroach.
+        shutil.rmtree(self.root / MODULE.BINDING.ANNEX)
+        for name in (MODULE.BINDING.SIDECAR, MODULE.BINDING.HEAD_PROOF):
+            (self.root / name).unlink()
+        self.source_binding = MODULE.BINDING.verify_binding(ROOT, profile=self.profile)
+        MODULE.BINDING.write_annex(self.source_binding, ROOT, self.root, commit=self.COMMIT, tree=self.TREE)
         self.write_native_fixture()
         self.write_json("summary.json", {**self.summary, "profile": self.profile, "late_exact_wait_cases": 2, "late_exact_no_wait_cases": 0, "insert_only_committed_wait_cases": 1, "insert_only_committed_no_wait_cases": 0})
         self.write_json("storage-v4-import-source.json", {**self.import_source, "profile": self.profile})
@@ -2702,6 +2712,77 @@ class NativeAnyObservationSourceGuardTests(unittest.TestCase):
             with self.subTest(old=old):
                 self.reject_fixture(old, new)
                 self.reject_fixture(old, new + "\n// " + old)
+
+
+class CompleteAuthSourceBindingTests(unittest.TestCase):
+    def assert_complete_file_rejected(self, bindings: dict[str, str], path: str, changed: bytes) -> None:
+        original_read = Path.read_bytes
+        target = ROOT / path
+        self.assertNotEqual(changed, original_read(target))
+        def read(current):
+            return changed if current == target else original_read(current)
+        with mock.patch.object(Path, "read_bytes", new=read), self.assertRaisesRegex(
+                SystemExit, "reviewed complete production file drift"):
+            MODULE.validate_reviewed_complete_production_files(bindings)
+
+    def test_complete_auth_files_cover_each_old_region_and_accounts_gate_callers(self) -> None:
+        region_paths = {path for _, path, _, _, _ in MODULE.LEGACY_AUTH_REGION_BINDINGS}
+        self.assertEqual(region_paths, set(MODULE.LEGACY_AUTH_FULL_SOURCE_SHA256))
+        self.assertEqual(set(MODULE.ACCOUNTS_FULL_SOURCE_SHA256), {
+            "crates/trnm-persistence-pg/src/schema_parts/account_catalog.rs",
+            "crates/trnm-persistence-pg/src/schema_parts/migrate.rs",
+            "crates/trnm-persistence-pg/src/schema_parts/metadata.rs"})
+        for bindings in (MODULE.ACCOUNTS_FULL_SOURCE_SHA256, MODULE.LEGACY_AUTH_FULL_SOURCE_SHA256):
+            MODULE.validate_reviewed_complete_production_files(bindings)
+            for path, expected in bindings.items():
+                self.assertEqual(hashlib.sha256((ROOT / path).read_bytes()).hexdigest(), expected)
+
+    def test_complete_accounts_gate_rejects_comment_literal_and_whitespace_shadow(self) -> None:
+        path = "crates/trnm-persistence-pg/src/schema_parts/account_catalog.rs"
+        raw = (ROOT / path).read_bytes()
+        start = raw.index(b"fn require_account_catalog_capture(")
+        end = raw.index(b"\n}", start) + 2
+        gate = raw[start:end]
+        no_gate = b"fn require_account_catalog_capture (target: AuthoritativeSchemaTarget) -> Result<(), DomainError> { let _ = target; Ok(()) }"
+        for retained in (b"/* retained spelling\n" + gate + b"\n*/\n",
+                         b'const FAKE_GATE: &str = r##"' + gate + b'"##;\n', b""):
+            with self.subTest(retained=retained[:24]):
+                self.assert_complete_file_rejected(MODULE.ACCOUNTS_FULL_SOURCE_SHA256,
+                                                  path, raw[:start] + retained + no_gate + raw[end:])
+
+    def test_complete_legacy_ban_rejects_comment_literal_and_space_function(self) -> None:
+        path = "crates/trnm-server/src/runtime/legacy_auth.rs"
+        raw = (ROOT / path).read_bytes()
+        start = raw.index(b"    fn ban_at(\n")
+        end = raw.index(b"    pub fn unban(", start)
+        region = raw[start:end]
+        actual = region.replace(b"    fn ban_at(\n", b"    fn ban_at (\n", 1)
+        actual = actual.replace(b"        let cutoff = now()?;\n", b"", 1)
+        actual = actual.replace(b"        self.cache()?\n            .ban(&keys, cutoff)",
+                                b"        let cutoff = now()?;\n        self.cache()?\n            .ban(&keys, cutoff)", 1)
+        for retained in (b"/* retained spelling\n" + region + b"    pub fn unban(\n*/\n",
+                         b'const FAKE_BAN: &str = r##"' + region + b'    pub fn unban("##;\n', b""):
+            with self.subTest(retained=retained[:24]):
+                self.assert_complete_file_rejected(MODULE.LEGACY_AUTH_FULL_SOURCE_SHA256,
+                                                  path, raw[:start] + retained + actual + raw[end:])
+
+    def test_complete_accounts_gate_callsite_rejects_commented_first_call(self) -> None:
+        path = "crates/trnm-persistence-pg/src/schema_parts/migrate.rs"
+        raw = (ROOT / path).read_bytes()
+        call = b"require_account_catalog_capture(target)?;"
+        self.assertIn(call, raw)
+        changed = raw.replace(call, b"/* " + call + b" */", 1)
+        self.assert_complete_file_rejected(MODULE.ACCOUNTS_FULL_SOURCE_SHA256, path, changed)
+
+    def test_complete_auth_file_raw_line_endings_and_supplied_text_are_exact(self) -> None:
+        path = "crates/trnm-server/src/runtime/legacy_auth.rs"
+        raw = (ROOT / path).read_bytes()
+        self.assert_complete_file_rejected(MODULE.LEGACY_AUTH_FULL_SOURCE_SHA256,
+                                          path, raw.replace(b"\n", b"\r\n"))
+        sources = {Path(name): (ROOT / name).read_text() for name in MODULE.LEGACY_AUTH_FULL_SOURCE_SHA256}
+        sources[Path(path)] += "// altered memory-only source\n"
+        with self.assertRaisesRegex(SystemExit, "production text differs from raw bytes"):
+            MODULE.validate_reviewed_complete_production_files(MODULE.LEGACY_AUTH_FULL_SOURCE_SHA256, sources)
 
 
 if __name__ == "__main__":

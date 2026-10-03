@@ -33,7 +33,14 @@ class CockroachRetryContractTests(unittest.TestCase):
         )
         schemas = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(schemas)
-        cls.chains, cls.version, cls.tables = schemas.validated_source()
+        cls.selection = schemas.validated_source('cockroachdb')
+        cls.binding = schemas.SELECTION.current_selection_document(cls.selection)
+        cls.version, cls.tables = 4, 12
+        cls.chains = {'cockroachdb':{'chain_sha256':cls.binding['selection']['execution_chain_digest']}}
+        import sys
+        sys.path.insert(0,str(ROOT/'scripts'))
+        import schema_evidence_binding
+        cls.evidence = schema_evidence_binding
         cls.lock = json.loads((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes())
         cls.image = json.loads((ROOT / "config/database-test-images.json").read_bytes())["profiles"]["cockroachdb"]["image"]
 
@@ -49,7 +56,9 @@ class CockroachRetryContractTests(unittest.TestCase):
             root = Path(directory)
             for relative in ("scripts/verify-actions-log-artifact.py", "scripts/emit-actions-log-artifact.py",
                              "scripts/check-migration-lock.py", "scripts/check-authoritative-schema-identity.py",
-                             "scripts/upload-actions-artifact.py", "docs/development/SCHEMA_AUTHORITY.json"):
+                             "scripts/upload-actions-artifact.py", "docs/development/SCHEMA_AUTHORITY.json",
+                             "scripts/schema_source_selection.py", "scripts/schema_evidence_binding.py",
+                             "scripts/capture-schema-source-selection.py", "config/database-test-images.json"):
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / relative, target)
@@ -80,7 +89,14 @@ class CockroachRetryContractTests(unittest.TestCase):
                         "authoritative_migration_file_count": 4}
             files = {"migration-chain.lock.json": (ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes(),
                      "execution.log": b"synthetic retry execution; no live SQL credit\n"}
-            for entry in self.lock["profiles"]["cockroachdb"]["ordered_files"]:
+            token = self.evidence.verify_binding(ROOT, profile='cockroachdb')
+            proof = self.evidence.binding_document(token)
+            files['migration-chain-validation.json'] = self.evidence.canonical(proof['source_selection']['source']['complete_validation'])
+            files[self.evidence.SIDECAR] = self.evidence.canonical(proof)
+            files[self.evidence.HEAD_PROOF] = self.evidence.canonical(self.evidence.head_document(token,commit=COMMIT,tree=TREE))
+            files.update({row['archive_path']:(ROOT/row['path']).read_bytes() for row in proof['full_source_inventory']})
+            identity['source_selection'] = self.evidence.identity_fields(token)
+            for entry in self.evidence.operational_binding(token)['ordered_files']:
                 files[entry["path"]] = (ROOT / entry["path"]).read_bytes()
             for name, report in (("identity.json", identity), ("schema-apply.json", applied), ("schema-verify.json", verified)):
                 files[name] = json.dumps(report, sort_keys=True).encode()
@@ -186,7 +202,7 @@ class CockroachRetryContractTests(unittest.TestCase):
     def test_checkout_commit_and_tree_are_independent_authority(self):
         for field in ("commit", "tree"):
             with self.subTest(field=field), self.packet_fixture() as (root, env, _):
-                with self.assertRaises(AssertionError):
+                with self.assertRaises((AssertionError, self.evidence.BindingError)):
                     self.execute_guard("PY_RETRY_ARCHIVE", root, env, **{field: "d" * 40})
 
     def test_current_producer_environment_is_required_and_canonical(self):

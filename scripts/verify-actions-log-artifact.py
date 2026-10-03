@@ -5,15 +5,19 @@ from __future__ import annotations
 import argparse
 import base64
 import gzip
+import functools
 import hashlib
+import http.client
 import importlib.util
 import io
 import json
+import math
 import os
 import re
 import sys
 import tarfile
 import time
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +26,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import schema_evidence_binding as BINDING
+import schema_source_http as SOURCE_HTTP
 EMITTER_PATH = ROOT / "scripts/emit-actions-log-artifact.py"
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 512
@@ -42,6 +49,14 @@ EXPECTED_JOB_NAMES = {
     FINAL_JOB,
     *(f"live-profile ({profile})" for profile in PROFILES),
 }
+# These budgets apply to immutable source custody only. The older Actions
+# metadata/log download helpers below retain their separate resource gaps.
+MAX_SOURCE_FILE_JSON_BYTES = SOURCE_HTTP.FILE_JSON_BYTES
+MAX_SOURCE_TREE_JSON_BYTES = SOURCE_HTTP.TREE_JSON_BYTES
+MAX_SOURCE_ERROR_BYTES = SOURCE_HTTP.ERROR_BODY_BYTES
+MAX_SOURCE_TREE_ENTRIES = 50000
+MAX_SOURCE_JSON_DEPTH = 64
+SOURCE_HTTP_TIMEOUT_SECONDS = SOURCE_HTTP.ABSOLUTE_SECONDS
 
 
 class VerificationError(ValueError):
@@ -160,6 +175,114 @@ def request_bytes(token: str, url: str) -> bytes:
     raise VerificationError(f"GitHub log request failed: {url}: {last_error}")
 
 
+def _check_source_deadline(deadline) -> None:
+    try:
+        SOURCE_HTTP.remaining_deadline(deadline)
+    except SOURCE_HTTP.SourceHttpError as error:
+        raise VerificationError(str(error)) from None
+
+
+def _source_deadline(existing=None):
+    try:
+        SOURCE_HTTP.remaining_deadline(existing)
+        return existing
+    except SOURCE_HTTP.SourceHttpError as error:
+        raise VerificationError(str(error)) from None
+
+
+def _source_budget(purpose):
+    """Own one fixed-purpose token and check after the entire call completes."""
+    def decorate(function):
+        @functools.wraps(function)
+        def execute(*args, **kwargs):
+            deadline = None
+            owned = False
+            try:
+                incoming = kwargs.pop('_deadline', None)
+                if purpose == 'collection':
+                    if incoming is not None:
+                        raise SOURCE_HTTP.SourceHttpError('input')
+                    deadline = SOURCE_HTTP.start_deadline(purpose='collection')
+                    owned = True
+                else:
+                    deadline, owned = SOURCE_HTTP.acquire_request_deadline(incoming)
+                result = function(*args, **kwargs, _deadline=deadline)
+                SOURCE_HTTP.finish_deadline(deadline, release_owned=owned)
+            except BaseException as error:
+                if owned:
+                    SOURCE_HTTP.release_deadline(deadline)
+                if isinstance(error, SOURCE_HTTP.SourceHttpError):
+                    raise VerificationError(str(error)) from None
+                raise
+            return result
+        return execute
+    return decorate
+
+
+@_source_budget('request')
+def request_source_json(token: str, url: str, *, maximum: int, _deadline=None) -> dict[str, Any]:
+    """Strict source JSON after a cancellable absolute-deadline HTTP request."""
+    deadline = _source_deadline(_deadline)
+    if type(maximum) is not int or maximum not in (
+        MAX_SOURCE_FILE_JSON_BYTES, MAX_SOURCE_TREE_JSON_BYTES
+    ):
+        raise VerificationError("unreviewed source HTTP byte budget")
+    try:
+        raw = SOURCE_HTTP.fetch(token, url, budget="tree" if maximum == MAX_SOURCE_TREE_JSON_BYTES else "file", deadline=deadline)
+    except SOURCE_HTTP.SourceHttpError as error:
+        raise VerificationError(str(error)) from None
+
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise VerificationError("GitHub source JSON contains duplicate keys")
+            result[key] = value
+        return result
+
+    def finite(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("nonfinite JSON number")
+        return number
+
+    def reject_constant(_value: str) -> Any:
+        raise ValueError("nonfinite JSON number")
+
+    try:
+        # Python's process-wide recursion limit is mutable. Enforce this
+        # transport's own parse-depth budget before allocating nested values.
+        depth = 0
+        quoted = False
+        escaped = False
+        for byte in raw:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif byte == 92:
+                    escaped = True
+                elif byte == 34:
+                    quoted = False
+            elif byte == 34:
+                quoted = True
+            elif byte in (91, 123):
+                depth += 1
+                if depth > MAX_SOURCE_JSON_DEPTH:
+                    raise ValueError("source JSON nesting budget exceeded")
+            elif byte in (93, 125):
+                depth -= 1
+        payload = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=unique,
+            parse_float=finite, parse_constant=reject_constant,
+        )
+    except (UnicodeError, ValueError, RecursionError) as error:
+        raise VerificationError("GitHub source response contains invalid JSON") from error
+    if type(payload) is not dict:
+        raise VerificationError("GitHub source JSON object required")
+    _check_source_deadline(deadline)
+    return payload
+
+
 def api_base(repository: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise VerificationError("repository is not canonical owner/name")
@@ -201,15 +324,71 @@ def fetch_exact_file(
     return data, actual
 
 
-def fetch_commit_tree(token: str, repository: str, head_sha: str) -> str:
-    if SHA40.fullmatch(head_sha) is None:
+def decode_source_contents(
+    payload: dict[str, Any], path: str, *, maximum: int
+) -> bytes:
+    if type(maximum) is not int or not 0 <= maximum <= BINDING.MAX_FILE_BYTES:
+        raise VerificationError("unreviewed decoded source byte budget")
+    declared = payload.get("size")
+    if type(declared) is not int or not 0 <= declared <= maximum:
+        raise VerificationError(f"{path}: declared source byte budget or type mismatch")
+    if payload.get("path") != path or payload.get("type") != "file" or payload.get("encoding") != "base64":
+        raise VerificationError(f"{path}: exact base64 source file required")
+    content = payload.get("content")
+    # GitHub Contents wraps canonical base64 at 60 columns with LF. Bound the
+    # encoded string before removing those transport line breaks or decoding.
+    encoded_limit = 4 * ((declared + 2) // 3)
+    wrapped_limit = encoded_limit + (encoded_limit + 59) // 60
+    if type(content) is not str or not content or len(content) > wrapped_limit:
+        raise VerificationError(f"{path}: encoded source byte budget exceeded")
+    encoded = content.replace("\n", "")
+    if len(encoded) > encoded_limit:
+        raise VerificationError(f"{path}: encoded source byte budget exceeded")
+    padding = len(encoded) - len(encoded.rstrip("="))
+    if len(encoded) % 4 or padding > 2 or 3 * (len(encoded) // 4) - padding != declared:
+        raise VerificationError(f"{path}: source size or base64 padding mismatch")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (UnicodeError, ValueError) as error:
+        raise VerificationError(f"{path}: invalid source base64") from error
+    if len(data) != declared or base64.b64encode(data).decode("ascii") != encoded:
+        raise VerificationError(f"{path}: source size or canonical base64 mismatch")
+    return data
+
+
+@_source_budget('request')
+def fetch_source_exact_file(
+    token: str, repository: str, head_sha: str, path: str, *, maximum: int, _deadline=None
+) -> tuple[bytes, str]:
+    deadline = _source_deadline(_deadline)
+    encoded_path = urllib.parse.quote(path, safe="/")
+    payload = request_source_json(
+        token, f"{api_base(repository)}/contents/{encoded_path}?ref={head_sha}",
+        maximum=MAX_SOURCE_FILE_JSON_BYTES, _deadline=deadline,
+    )
+    data = decode_source_contents(payload, path, maximum=maximum)
+    actual = git_blob_sha1(data)
+    if payload.get("sha") != actual:
+        raise VerificationError(f"{path}: source Git blob mismatch")
+    _check_source_deadline(deadline)
+    return data, actual
+
+
+@_source_budget('request')
+def fetch_commit_tree(token: str, repository: str, head_sha: str, *, _deadline=None) -> str:
+    deadline = _source_deadline(_deadline)
+    if type(head_sha) is not str or SHA40.fullmatch(head_sha) is None:
         raise VerificationError("head SHA is not 40 lowercase hex")
-    commit = request_json(token, f"{api_base(repository)}/git/commits/{head_sha}")
+    commit = request_source_json(
+        token, f"{api_base(repository)}/git/commits/{head_sha}",
+        maximum=MAX_SOURCE_FILE_JSON_BYTES, _deadline=deadline,
+    )
     if commit.get("sha") != head_sha:
         raise VerificationError("Git commit response is not bound to the requested head")
     tree = commit.get("tree")
-    if not isinstance(tree, dict) or SHA40.fullmatch(str(tree.get("sha", ""))) is None:
+    if type(tree) is not dict or type(tree.get("sha")) is not str or SHA40.fullmatch(tree["sha"]) is None:
         raise VerificationError("Git commit has no canonical tree SHA")
+    _check_source_deadline(deadline)
     return str(tree["sha"])
 
 
@@ -238,74 +417,75 @@ def validate_workflow(workflow: dict[str, Any]) -> None:
         raise VerificationError(f"workflow is not active: {workflow.get('state')!r}")
 
 
+@_source_budget('collection')
 def fetch_profile_bindings(
-    token: str, repository: str, head_sha: str, *, head_tree: str | None = None
-) -> dict[str, dict[str, Any]]:
-    lock_bytes, _ = fetch_exact_file(
-        token, repository, head_sha, "migrations/MIGRATION_CHAIN.lock.json"
+    token: str, repository: str, head_sha: str, *, head_tree: str | None = None, _deadline=None
+) -> dict[str, Any]:
+    """Fetch complete exact-head authority, then issue opaque profile tokens."""
+    deadline = _source_deadline(_deadline)
+    if type(head_sha) is not str or SHA40.fullmatch(head_sha) is None:
+        raise VerificationError("head SHA is not 40 lowercase hex")
+    tree_sha = head_tree if head_tree is not None else fetch_commit_tree(token, repository, head_sha, _deadline=deadline)
+    if type(tree_sha) is not str or SHA40.fullmatch(tree_sha) is None:
+        raise VerificationError("source tree SHA is not 40 lowercase hex")
+    tree = request_source_json(
+        token, f"{api_base(repository)}/git/trees/{tree_sha}?recursive=1",
+        maximum=MAX_SOURCE_TREE_JSON_BYTES, _deadline=deadline,
     )
-    image_bytes, _ = fetch_exact_file(
-        token, repository, head_sha, "config/database-test-images.json"
-    )
-    lock = strict_object(lock_bytes, "migration lock")
-    images = strict_object(image_bytes, "database image lock")
-    if images.get("schema") != "trillionnium.database-test-images.v1":
-        raise VerificationError("database image lock schema mismatch")
-    profiles = lock.get("profiles")
-    image_profiles = images.get("profiles")
-    if not isinstance(profiles, dict) or not isinstance(image_profiles, dict):
-        raise VerificationError("profile lock mappings are malformed")
-
-    tree_sha = head_tree if head_tree is not None else fetch_commit_tree(token, repository, head_sha)
-    tree = request_json(token, f"{api_base(repository)}/git/trees/{tree_sha}?recursive=1")
-    if tree.get("sha") != tree_sha or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
-        raise VerificationError("exact-head migration tree is mismatched, truncated or malformed")
-    inventory = {profile: [] for profile in PROFILES}
-    seen: set[str] = set()
+    if tree.get("sha") != tree_sha or tree.get("truncated") is not False or type(tree.get("tree")) is not list or len(tree["tree"]) > MAX_SOURCE_TREE_ENTRIES:
+        raise VerificationError("exact-head full source tree is mismatched, truncated or oversized")
+    entries = {}
+    inventory = {profile:[] for profile in PROFILES}
     for entry in tree["tree"]:
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
-            raise VerificationError("Git tree entry is malformed")
-        path = entry["path"]
-        if path in seen:
-            raise VerificationError("Git tree contains duplicate paths")
-        seen.add(path)
+        if type(entry) is not dict or type(entry.get("path")) is not str or entry["path"] in entries:
+            raise VerificationError("exact-head source tree entry malformed or duplicate")
+        path=entry["path"];entries[path]=entry
         for profile in PROFILES:
             if path.startswith(f"migrations/{profile}/") and path.endswith(".sql"):
-                if entry.get("type") != "blob" or entry.get("mode") not in ("100644", "100755"):
-                    raise VerificationError("migration tree contains a non-regular SQL source")
                 inventory[profile].append(path)
-    inventory = {profile: sorted(paths) for profile, paths in inventory.items()}
-
-    def read_source(path: str) -> bytes:
-        return fetch_exact_file(token, repository, head_sha, path)[0]
-
-    try:
-        validation = MIGRATIONS.validate_source_document(lock, read_source, inventory)
-    except (MIGRATIONS.ValidationError, OSError, ValueError) as error:
-        raise VerificationError(f"exact-head authoritative migration lock: {error}") from error
-
-    result: dict[str, dict[str, Any]] = {}
-    for profile in PROFILES:
-        row = profiles.get(profile)
-        if not isinstance(row, dict):
-            raise VerificationError(f"migration profile is absent: {profile}")
-        image_row = image_profiles.get(profile)
-        if not isinstance(image_row, dict):
-            raise VerificationError(f"database image profile is absent: {profile}")
-        image = require_nonempty_string(image_row.get("image"), f"{profile} image")
-        if "@sha256:" not in image:
-            raise VerificationError(f"{profile} database image is not digest pinned")
-        result[profile] = {
-            "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
-            "migration_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
-            "schema_version": str(validation["schema_version"]),
-            "storage_writer_epoch": str(STORAGE_WRITER_EPOCH),
-            "chain_digest": validation["profiles"][profile]["chain_sha256"],
-            "digest_algorithm": validation["digest_algorithm"],
-            "ordered_files": row["ordered_files"],
-            "image": image,
-        }
-    return result
+    paths = sorted(BINDING.CONTROL_PATHS + tuple(path for profile in PROFILES for path in inventory[profile]))
+    if any(len(inventory[p]) != 5 for p in PROFILES) or len(paths) != 18:
+        raise VerificationError("exact-head all10 source migration denominator required")
+    # Validate the complete selected inventory and aggregate declaration before
+    # downloading any file. Each independently decoded body must also match it.
+    declared_total = 0
+    for path in paths:
+        entry = entries.get(path, {})
+        if entry.get("type") != "blob" or entry.get("mode") not in ("100644", "100755"):
+            raise VerificationError("exact-head full source regular blob required")
+        if re.fullmatch(r'migrations/(postgresql|cockroachdb)/[0-9]{4}_[a-z0-9_]+[.]sql', path) is None and path not in BINDING.CONTROL_PATHS:
+            raise VerificationError("exact-head source path must be a reviewed regular file")
+        size = entry.get("size")
+        if type(size) is not int or not 0 <= size <= BINDING.MAX_FILE_BYTES:
+            raise VerificationError("exact-head source declared byte bound or type mismatch")
+        declared_total += size
+        if declared_total > BINDING.MAX_ANNEX_BYTES:
+            raise VerificationError("exact-head source declared byte bound or type mismatch")
+        if type(entry.get("sha")) is not str or SHA40.fullmatch(entry["sha"]) is None:
+            raise VerificationError("exact-head canonical source blob required")
+    # Only immutable, independently tree-bound regular bytes enter the issuer.
+    # No caller-supplied read callback or synthetic shortened source report.
+    _check_source_deadline(deadline)
+    with tempfile.TemporaryDirectory(prefix="trnm-full-schema-source-") as temporary:
+        snapshot=Path(temporary);total=0
+        for path in paths:
+            entry=entries[path];size=entry["size"]
+            raw,_=fetch_source_exact_file(token,repository,head_sha,path,maximum=min(BINDING.MAX_FILE_BYTES,BINDING.MAX_ANNEX_BYTES-total),_deadline=deadline)
+            total+=len(raw)
+            if len(raw)!=size or len(raw)>BINDING.MAX_FILE_BYTES or total>BINDING.MAX_ANNEX_BYTES or git_blob_sha1(raw)!=entry.get("sha"):
+                raise VerificationError("exact-head source blob preimage or byte bound mismatch")
+            target=snapshot/path;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
+        _check_source_deadline(deadline)
+        try:
+            bindings = {}
+            for profile in PROFILES:
+                _check_source_deadline(deadline)
+                bindings[profile] = BINDING.verify_binding(snapshot,profile=profile)
+            _check_source_deadline(deadline)
+        except (BINDING.BindingError, BINDING.SOURCE.SelectionError, KeyError, TypeError, ValueError) as error:
+            raise VerificationError("exact-head complete source validation failed") from error
+    _check_source_deadline(deadline)
+    return bindings
 
 
 def parse_env(data: bytes, label: str) -> dict[str, str]:
@@ -436,7 +616,11 @@ def require_env(values: dict[str, str], expected: dict[str, str], label: str) ->
             )
 
 
-def verify_migration_files(files: dict[str, bytes], ordered_files: list[dict[str, Any]]) -> None:
+def verify_migration_files(files: dict[str, bytes], binding) -> None:
+    try:
+        ordered_files = BINDING.operational_binding(binding)["ordered_files"]
+    except (BINDING.BindingError, BINDING.SOURCE.SelectionError) as error:
+        raise VerificationError("issued source token required for executed SQL inventory") from error
     expected_paths = {entry["path"] for entry in ordered_files}
     actual_paths = {name for name in files if name.startswith("migrations/")}
     if actual_paths != expected_paths:
@@ -473,19 +657,26 @@ def validate_archive(
     run_id: str,
     run_attempt: str,
     profile: str,
-    binding: dict[str, Any],
+    binding,
     workflow_context: str = "outbox",
 ) -> dict[str, object]:
     if profile not in PROFILES:
         raise VerificationError(f"unsupported profile: {profile}")
-    if (binding.get("schema_version") != str(SCHEMA_VERSION)
-            or binding.get("storage_writer_epoch") != str(STORAGE_WRITER_EPOCH)
-            or not isinstance(binding.get("ordered_files"), list)
-            or len(binding["ordered_files"]) != SCHEMA_VERSION):
-        raise VerificationError("source binding is not the complete current schema/epoch chain")
+    verified_binding = binding
+    try:
+        binding = BINDING.operational_binding(verified_binding)
+        proof = BINDING.binding_document(verified_binding)
+    except (BINDING.BindingError, BINDING.SOURCE.SelectionError) as error:
+        raise VerificationError("issued full-source5 evidence binding required") from error
+    if proof["profile"] != profile:
+        raise VerificationError("source binding profile mismatch")
     files = archive_files(data)
     verify_file_manifest(files)
-    verify_migration_files(files, binding["ordered_files"])
+    try:
+        source_fields = BINDING.validate_annex_files(verified_binding, files, commit=head_sha, tree=head_tree)
+    except (BINDING.BindingError, BINDING.SOURCE.SelectionError) as error:
+        raise VerificationError("closed full-source5 sidecar/annex differs") from error
+    verify_migration_files(files, verified_binding)
     identity = parse_env(files.get("identity.env", b""), "identity.env")
     require_env(
         identity,
@@ -499,17 +690,23 @@ def validate_archive(
             "run_attempt": run_attempt,
             "evidence_run_id": f"{run_id}-{run_attempt}-{profile}",
             **producer_identity(profile, workflow_context),
+            **source_fields,
             **{key: binding[key] for key in (
                 "migration_lock", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm"
             )},
         },
         "identity.env",
     )
+    expected_identity_keys = {"repository", "commit", "tree", "profile", "image", "run_id", "run_attempt",
+                              "evidence_run_id", *producer_identity(profile, workflow_context),
+                              "migration_lock", "schema_version", "storage_writer_epoch", "chain_digest", "digest_algorithm", *source_fields}
+    if set(identity) != expected_identity_keys:
+        raise VerificationError("identity.env closed source/execution fields differ")
     retained_lock = files.get("migration-chain.lock.json", b"")
     if hashlib.sha256(retained_lock).hexdigest() != binding["migration_lock_sha256"]:
         raise VerificationError("retained migration lock differs from exact-head source")
     lock = strict_object(retained_lock, "retained migration lock")
-    if type(lock.get("schema_version")) is not int or lock["schema_version"] != SCHEMA_VERSION or profile_object(lock, profile, "retained migration lock").get("ordered_files") != binding["ordered_files"]:
+    if type(lock.get("schema_version")) is not int or lock["schema_version"] != 5 or retained_lock != files[BINDING.ANNEX + "/" + BINDING.SOURCE.LOCK_PATH]:
         raise VerificationError("retained migration chain is incomplete or mismatched")
     schema = strict_object(files.get("schema-identity.json", b""), "schema identity")
     expected_schema = {
@@ -520,26 +717,14 @@ def validate_archive(
         "table_count": 12, "applied_steps": len(binding["ordered_files"]),
         "migration_applied": True, "compatibility_credit": False,
     }
+    if set(schema) != set(expected_schema):
+        raise VerificationError("schema identity closed fields mismatch: missing=" + repr(sorted(set(expected_schema) - set(schema))) + " unknown=" + repr(sorted(set(schema) - set(expected_schema))))
     for key, value in expected_schema.items():
         if type(schema.get(key)) is not type(value) or schema.get(key) != value:
             raise VerificationError(f"schema identity: {key} mismatch")
     validation = strict_object(files.get("migration-chain-validation.json", b""), "migration chain validation")
-    validation_row = profile_object(validation, profile, "migration chain validation")
-    expected_validation = {
-        "file_count": len(binding["ordered_files"]),
-        "ordered_paths": [entry["path"] for entry in binding["ordered_files"]],
-        "chain_sha256": binding["chain_digest"], "digest_algorithm": binding["digest_algorithm"],
-        "declared_action_count": sum(len(MIGRATIONS.reviewed_actions(profile, revision)) for revision in (2, 3, 4)),
-        "revision_action_counts": {str(revision): len(MIGRATIONS.reviewed_actions(profile, revision)) for revision in (2, 3, 4)},
-    }
-    if (type(validation.get("schema_version")) is not int or validation.get("schema_version") != SCHEMA_VERSION
-            or validation.get("digest_algorithm") != binding["digest_algorithm"]
-            or validation.get("source_identity_verified") is not True
-            or validation.get("runtime_execution_verified") is not False
-            or validation.get("compatibility_credit") is not False
-            or any(type(validation_row.get(key)) is not type(value) or validation_row.get(key) != value
-                   for key, value in expected_validation.items())):
-        raise VerificationError("retained whole-chain validation differs from source binding")
+    if not BINDING.same(validation, proof["source_selection"]["source"]["complete_validation"]):
+        raise VerificationError("retained complete all10 source validation differs from issued binding")
     result = parse_env(files.get("result.env", b""), "result.env")
     require_env(
         result,
@@ -551,6 +736,8 @@ def validate_archive(
         },
         "result.env",
     )
+    if set(result) != {"status", "profile", "commit", "tree"}:
+        raise VerificationError("result.env closed fields mismatch")
     before = parse_env(
         files.get("crash-before-publish/result.env", b""),
         "crash-before-publish/result.env",
@@ -606,7 +793,7 @@ def validate_archive(
             f"crash-after-publish expected one spool effect, got {after_spool}"
         )
     return {
-        "schema": "trillionnium.outbox-final-attempt-log-verification.v2",
+        "schema": "trillionnium.outbox-final-attempt-log-verification.v3",
         "repository": repository,
         "head_sha": head_sha,
         "head_tree": head_tree,
@@ -625,6 +812,9 @@ def validate_archive(
         "digest_algorithm": binding["digest_algorithm"],
         "ordered_files": binding["ordered_files"],
         "database_image": binding["image"],
+        "source_selection": source_fields,
+        "full_source_inventory_count": 18,
+        "source_frontier_schema_version": 5,
         "file_count": len(files),
         "crash_before_publish": "passed-with-declared-possible-lost-effect",
         "crash_after_publish": "passed-with-one-stable-spool-effect",

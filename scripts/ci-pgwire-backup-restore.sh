@@ -189,13 +189,13 @@ require(migrations.git_blob_sha1(lock_bytes) == git('rev-parse', 'HEAD:migration
 require((retained / 'migration-lock.json').read_bytes() == lock_bytes, 'retained backup migration lock differs')
 require(schemas.decode_identity_document((retained / 'migration-chain-validation.json').read_bytes()) == validation,
         'retained backup chain validation differs')
-chains, version, table_count = schemas.validated_source()
+binding = sealer.source_binding(profile)
+selection = sealer.BINDING.selection_token(binding)
+version = sealer.BINDING.binding_document(binding)['source_selection']['selection']['execution_schema_version']
 fresh = schemas.decode_identity_document((retained / 'schema-identity.json').read_bytes())
 restored = schemas.decode_identity_document((retained / 'restored-schema-identity.json').read_bytes())
-schemas.validate_identity(fresh, profile=profile, chains=chains, schema_version=version,
-                          table_count=table_count, mode='fresh', source_commit=commit)
-schemas.validate_identity(restored, profile=profile, chains=chains, schema_version=version,
-                          table_count=table_count, mode='verify')
+schemas.validate_identity(fresh, profile=profile, selection=selection, mode='fresh', source_commit=commit)
+schemas.validate_identity(restored, profile=profile, selection=selection, mode='verify')
 for field in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
     require(restored[field] == fresh[field], 'restored backup schema provenance differs')
 check = {'schema': 'trillionnium.authoritative-schema-identity-check.v1', 'profile': profile,
@@ -205,7 +205,10 @@ for name in ('schema-identity-check.json', 'restored-schema-identity-check.json'
     require(schemas.decode_identity_document((retained / name).read_bytes()) == check,
             'retained backup schema check differs')
 
-ordered = lock['profiles'][profile]['ordered_files']
+ordered = sealer.BINDING.operational_binding(binding)['ordered_files']
+require(len(lock['profiles'][profile]['ordered_files']) == 5, 'complete source frontier5 missing')
+sealer.BINDING.write_annex(binding, source, retained, commit=commit, tree=tree)
+sealer.BINDING.validate_annex_directory(binding, retained, commit=commit, tree=tree)
 require(len(ordered) == 4 and fresh['schema_version'] == 4 and fresh['storage_writer_epoch'] == 4,
         'backup schema v3 complete-chain ABI differs')
 projection = load('backup_projection', 'scripts/check-pgwire-backup-restore.py')
@@ -224,13 +227,14 @@ for item in ordered:
     shutil.copyfile(source / path, destination)
 sql_files = {path.relative_to(retained).as_posix(): path.read_bytes()
              for path in sealer.retained_files(retained) if path.relative_to(retained).as_posix().startswith('migrations/')}
-sealer.VERIFIER.verify_migration_files(sql_files, ordered)
+sealer.VERIFIER.verify_migration_files(sql_files, binding)
 identity = {
-    'schema': 'trillionnium.backup-restore-identity.v1', 'repository': repository,
+    'schema': 'trillionnium.backup-restore-identity.v2', 'repository': repository,
     'commit': commit, 'tree': tree, 'profile': profile, 'run_id': run, 'run_attempt': attempt,
     'workflow_repository': workflow_repository, 'workflow': workflow, 'workflow_ref': workflow_ref,
     'workflow_sha': workflow_sha, 'job': 'restore', 'job_name': 'backup-restore-' + profile,
     'job_identity_kind': 'workflow_job_key_and_matrix_profile',
+    'source_selection': sealer.BINDING.identity_fields(binding),
     'schema_version': fresh['schema_version'], 'storage_writer_epoch': fresh['storage_writer_epoch'],
     'chain_digest': fresh['chain_digest'], 'digest_algorithm': fresh['digest_algorithm'],
     'source_commit': fresh['source_commit'], 'upgrade_source_commit': fresh['upgrade_source_commit'], 'v2_apply_source_commit': fresh['v2_apply_source_commit'], 'v3_apply_source_commit': fresh['v3_apply_source_commit'],

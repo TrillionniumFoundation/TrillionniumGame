@@ -104,5 +104,27 @@
     "original_request_bytes": "unknown source-native export retains NULL raw witness pair; no source text is original request",
     "completion": "single manifest-bound journal; applying prefix blocked by per-transaction and startup readiness admission",
     "runtime_execution_credit": false
-  }
+  },
+  "default_runtime_schema_version": 4,
+  "latest_supported_schema_version": 5,
+  "accounts_v5_source_candidate": {
+    "target": "NakamaAccountsV5",
+    "storage_writer_epoch": 4,
+    "migration": "0005_nakama_accounts_up.sql",
+    "tables": [
+      "users",
+      "user_device"
+    ],
+    "full_current_two_table_fields_defaults_constraints": true,
+    "native_catalog_observations_bound": false,
+    "native_activation_allowed": false,
+    "default_runtime_promotion_allowed": false,
+    "repository_service_routes_implemented": false,
+    "account_transfer_implemented": false,
+    "accounts_v5_backups_restores_qualified": false,
+    "blocked_before_ddl": "schema5_native_catalog_capture_pending",
+    "accepted": false,
+    "boundary": "Default serve/migrate/import remains strict schema4 prefix. Schema5 source frontier is explicit and cannot borrow epoch4, storage packet or old catalog observations."
+  },
+  "source_execution_evidence_contract": "contracts/database/source-execution-evidence.v1.json"
 }

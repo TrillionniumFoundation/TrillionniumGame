@@ -2,6 +2,7 @@
 
 mod auth;
 mod authority;
+mod nakama_account;
 mod outbox;
 mod pool;
 mod schema;
@@ -14,12 +15,18 @@ pub use auth::{
     parse_refresh_credential, AccessTokenVerifier, ParsedRefreshCredential, SessionPrincipal,
 };
 pub use authority::AuthorityLease;
+pub use nakama_account::{
+    AccountFailure, AccountPhase, AccountSqlFailure, AuthenticateDevice, AuthenticateDeviceOutcome,
+    NakamaAccountError, NakamaAccountIdGenerationError, NakamaLegacyUser,
+    NAKAMA_DEVICE_MAX_ATTEMPTS,
+};
 pub use outbox::{OutboxClaimBatch, OutboxLease, OutboxRetryOutcome};
 pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
 pub use schema::{
-    authoritative_chain_digest, SchemaIdentity, SchemaMigrationReport,
-    AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM, AUTHORITATIVE_SCHEMA_VERSION,
-    AUTHORITATIVE_STORAGE_WRITER_EPOCH,
+    authoritative_chain_digest, authoritative_supported_chain_digest, AuthoritativeSchemaTarget,
+    SchemaIdentity, SchemaMigrationReport, AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM,
+    AUTHORITATIVE_SCHEMA_VERSION, AUTHORITATIVE_STORAGE_WRITER_EPOCH,
+    AUTHORITATIVE_SUPPORTED_SCHEMA_VERSION,
 };
 #[cfg(feature = "session-test-hooks")]
 pub use session::SessionMutationPoint;

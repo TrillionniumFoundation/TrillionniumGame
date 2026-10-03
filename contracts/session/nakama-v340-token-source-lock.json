@@ -13,17 +13,86 @@
     {
       "path": "server/api_authenticate.go",
       "blob": "1f938603160ef1dc7f6546926de5481622139dd2",
-      "observed_contract": ["tid", "uid", "usn", "vrs", "exp", "iat"]
+      "observed_contract": [
+        "tid",
+        "uid",
+        "usn",
+        "vrs",
+        "exp",
+        "iat"
+      ]
     },
     {
       "path": "server/jwt.go",
       "blob": "ab0c53aef5152429370ffe1d3ec9d273007132be",
-      "observed_contract": ["HS256", "expiration-required", "valid-method-restriction"]
+      "observed_contract": [
+        "HS256",
+        "expiration-required",
+        "valid-method-restriction"
+      ]
     },
     {
       "path": "server/api_session.go",
       "blob": "1cef7b9d967e93745b19bdd048ff203fc212acea",
-      "observed_contract": ["refresh-required", "same-token-id-refresh", "session-cache-validation"]
+      "observed_contract": [
+        "refresh-required",
+        "same-token-id-refresh",
+        "session-cache-validation"
+      ]
+    },
+    {
+      "path": "server/api.go",
+      "blob": "61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb",
+      "observed_contract": [
+        "Bearer-purpose-key",
+        "UUID-parse",
+        "session-cache-before-context"
+      ]
+    },
+    {
+      "path": "server/core_authenticate.go",
+      "blob": "5ec2f5c00ef875d11fc79865a30059d1147ac7e1",
+      "observed_contract": [
+        "Device-lookup-before-create",
+        "deferred-account-UUID",
+        "native-transaction"
+      ]
+    },
+    {
+      "path": "server/core_session.go",
+      "blob": "beee140dd6d402434811721f858e64c1c3c79e09",
+      "observed_contract": [
+        "stored-username-refresh",
+        "disable-Unix-seconds",
+        "ordered-purpose-owner-logout"
+      ]
+    },
+    {
+      "path": "server/session_cache.go",
+      "blob": "2f3d4153bfadd6ad398d24173fe4413c12bf9b04",
+      "observed_contract": [
+        "blacklist-only",
+        "clock-before-lock",
+        "Add-Unban-no-op"
+      ]
+    },
+    {
+      "path": "server/config.go",
+      "blob": "d9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6",
+      "observed_contract": [
+        "nonempty-distinct-session-keys",
+        "positive-TTLs",
+        "explicit-default20-and27"
+      ]
+    },
+    {
+      "path": "server/db.go",
+      "blob": "80bff94cfa224bc953fd674af673944ebc50e875",
+      "observed_contract": [
+        "PostgreSQL-class40-bounded-attempts",
+        "Cockroach-savepoint-retry",
+        "completion-error-boundary"
+      ]
     }
   ],
   "legacy_limitations": [
@@ -38,5 +107,186 @@
     "refresh_behavior_compatible": false,
     "c1_earned": false,
     "production_ready": false
+  },
+  "verified_files": [
+    {
+      "path": "server/api.go",
+      "blob": "61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb",
+      "bytes": 30888,
+      "sha256": "583942e1fa47902a1b6cd231a08af3c938314cbe665e6a9765c3dc1959b6cae9",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api.go"
+    },
+    {
+      "path": "server/api_authenticate.go",
+      "blob": "1f938603160ef1dc7f6546926de5481622139dd2",
+      "bytes": 33798,
+      "sha256": "89c0659aa6994c353e9d9dc32ccc412cbdb5dfc04537a1c93fa026dd32a06995",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api_authenticate.go"
+    },
+    {
+      "path": "server/api_session.go",
+      "blob": "1cef7b9d967e93745b19bdd048ff203fc212acea",
+      "bytes": 5848,
+      "sha256": "8bd5ad085d3ebf2a6accc3e8133f605a1f74fa899068caaca95514d321bdf090",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api_session.go"
+    },
+    {
+      "path": "server/config.go",
+      "blob": "d9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6",
+      "bytes": 72466,
+      "sha256": "d437669975abe45ddaa8db556260e5c80faac69a1a4e9c2627967bdbfca24823",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/config.go"
+    },
+    {
+      "path": "server/core_authenticate.go",
+      "blob": "5ec2f5c00ef875d11fc79865a30059d1147ac7e1",
+      "bytes": 50169,
+      "sha256": "1995cf76a7e2f35185e5a9eef161da2cb5851be7a8bdeddb2609c1a0b7b4dc96",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/core_authenticate.go"
+    },
+    {
+      "path": "server/core_session.go",
+      "blob": "beee140dd6d402434811721f858e64c1c3c79e09",
+      "bytes": 3668,
+      "sha256": "068b8846dc32321dc874c6cd0693e304042c08e8f75f9e50738254afa227546f",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/core_session.go"
+    },
+    {
+      "path": "server/db.go",
+      "blob": "80bff94cfa224bc953fd674af673944ebc50e875",
+      "bytes": 18795,
+      "sha256": "5ea00517ee4b9df752cd40da58e75bf18340bf587a9dd7ca4aaf9cef6c0f472d",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/db.go"
+    },
+    {
+      "path": "server/jwt.go",
+      "blob": "ab0c53aef5152429370ffe1d3ec9d273007132be",
+      "bytes": 1241,
+      "sha256": "f50b8ced87d8b457714ee189a6dfdcee37e78fb57dfbd0b93ea9aade789f8cd2",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/jwt.go"
+    },
+    {
+      "path": "server/session_cache.go",
+      "blob": "2f3d4153bfadd6ad398d24173fe4413c12bf9b04",
+      "bytes": 6227,
+      "sha256": "c7cc40783688ae48b677f3cca72f5afd7eefb8ab4ba0c6e81e3a6ee0ca2964e6",
+      "verification_scope": "complete-file-identity-from-retained-official-API-bytes",
+      "primary_url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/session_cache.go"
+    }
+  ],
+  "implementation_attribution": {
+    "interpretation_scope": "independent-first-party-Rust-derived-from-selected-expressions; complete-file identity is not complete behavior equivalence",
+    "Go_code_compiled_into_Rust_target": false,
+    "regions": [
+      {
+        "path": "server/api_authenticate.go",
+        "blob": "1f938603160ef1dc7f6546926de5481622139dd2",
+        "first_line": 33,
+        "last_line": 64,
+        "region_sha256": "00e4476411b175e6433fcad10d1634bea17b48f6edefb1622333e46945562330",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "six-tagged-claims-and-input-POSIX-expressions"
+      },
+      {
+        "path": "server/api_authenticate.go",
+        "blob": "1f938603160ef1dc7f6546926de5481622139dd2",
+        "first_line": 216,
+        "last_line": 289,
+        "region_sha256": "76a2e88fa6b4c3a6ddb71a281a408e6b807aed77951be272c3e9166235448d4b",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "Device-input-order-and-token-issuance"
+      },
+      {
+        "path": "server/api.go",
+        "blob": "61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb",
+        "first_line": 518,
+        "last_line": 546,
+        "region_sha256": "a3c91ad05734c6f77c9656aba6bf45a484e4a63c717204cada56dbc99377e7d2",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "Bearer-and-token-UUID-parser"
+      },
+      {
+        "path": "server/jwt.go",
+        "blob": "ab0c53aef5152429370ffe1d3ec9d273007132be",
+        "first_line": 22,
+        "last_line": 37,
+        "region_sha256": "3b8bc443761a54b9843bf42ab3ab46c676a1d97f324cdc8fc4599c4bc31c5f63",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "HS256-parser-policy"
+      },
+      {
+        "path": "server/core_session.go",
+        "blob": "beee140dd6d402434811721f858e64c1c3c79e09",
+        "first_line": 34,
+        "last_line": 97,
+        "region_sha256": "2ff18d98f5ad6f8258ec671d121d3a5a625f6abc6c4ed97f57d4e2e6805b7c83",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "refresh-durable-user-and-logout-purpose-order"
+      },
+      {
+        "path": "server/api_session.go",
+        "blob": "1cef7b9d967e93745b19bdd048ff203fc212acea",
+        "first_line": 29,
+        "last_line": 94,
+        "region_sha256": "edaaff6e47705f5f358313778a1a15fe62da308abffc500dd5f1c4a099979430",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "refresh-same-token-ID-and-issued-at"
+      },
+      {
+        "path": "server/session_cache.go",
+        "blob": "2f3d4153bfadd6ad398d24173fe4413c12bf9b04",
+        "first_line": 62,
+        "last_line": 222,
+        "region_sha256": "b2ff5d21e0111a5992a6d668eb8c1e5d20376149e6fab59101923c312702e9f0",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "blacklist-validity-Remove-RemoveAll-Ban-and-ticker"
+      },
+      {
+        "path": "server/core_authenticate.go",
+        "blob": "5ec2f5c00ef875d11fc79865a30059d1147ac7e1",
+        "first_line": 185,
+        "last_line": 285,
+        "region_sha256": "ee6b3afac7ca1419e75fb5c496725ad40cdaa5b8bc54506f7e4678e8c5b34454",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "Device-native-account-lookup-and-creation"
+      },
+      {
+        "path": "server/config.go",
+        "blob": "d9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6",
+        "first_line": 147,
+        "last_line": 161,
+        "region_sha256": "3f84f3a999ef29ea78ef907bb59cbfbc2caa84a874277ab81c9a64aa401d3c60",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "positive-TTL-and-nonempty-distinct-key-validation"
+      },
+      {
+        "path": "server/config.go",
+        "blob": "d9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6",
+        "first_line": 807,
+        "last_line": 818,
+        "region_sha256": "265547ad21c2b595fbeea9262577486c0d9c12646541cc204270bdc10bc59886",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "explicit-public-session-defaults"
+      },
+      {
+        "path": "server/db.go",
+        "blob": "80bff94cfa224bc953fd674af673944ebc50e875",
+        "first_line": 308,
+        "last_line": 408,
+        "region_sha256": "80e14333ca221744a2bd243c1e028e4cb3e02269aaefe688642b79e0160aebed",
+        "scope": "derived-narrow-expression-or-function",
+        "purpose": "SQL-transaction-profile-attempt-and-completion-rules"
+      }
+    ],
+    "accepted": false,
+    "compatibility_credit": false
   }
 }

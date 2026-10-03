@@ -14,6 +14,8 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import schema_evidence_binding as BINDING
 PERSISTENCE_ROOT = ROOT / "crates/trnm-persistence-pg/src"
 POOL_ROOT = PERSISTENCE_ROOT / "pool.rs"
 POOL_PARTS = tuple(
@@ -92,6 +94,7 @@ REQUIRED_FILES = {
     STORAGE_LIVE_HARNESS,
     LIVE_FAILURE_HELPER,
     PERSISTENCE_ROOT / "schema.rs",
+    PERSISTENCE_ROOT / "schema_parts/account_catalog.rs",
     PERSISTENCE_ROOT / "schema_parts/jsonb_backfill.rs",
     PERSISTENCE_ROOT / "storage_metadata.rs",
     SERVER_ROOT / "trnm-schema.rs",
@@ -826,10 +829,13 @@ def validate_storage_live_harness(source: str) -> None:
         if position <= previous_end:
             fail("server schema v3 assertions must follow isolated lifecycle execution")
         previous_end = position
+    require_markers("server fullsource5 proof", source, ("scripts/capture-schema-source-selection.py", "schema-source-capture.json", "binding.verify_binding(Path('.'),profile=profile)"))
     require_markers("server schema v3 archived chain", source, (
         "identity['schema_version']==4 and identity['storage_writer_epoch']==4",
         "identity['source_commit']==identity['upgrade_source_commit']==identity['v2_apply_source_commit']==identity['v3_apply_source_commit']==candidate",
-        "assert lock['schema_version']==4",
+        "assert type(lock['schema_version']) is int and lock['schema_version']==5",
+        "files=binding.operational_binding(token)['ordered_files']",
+        "assert len(lock['profiles'][profile]['ordered_files'])==5",
         "names=('0001_foundation_up.sql','0002_storage_timestamps_up.sql','0003_storage_jsonb_up.sql','0004_storage_source_import_up.sql')",
         "assert [entry['path'] for entry in files]==[f'migrations/{profile}/{name}' for name in names]",
         "zip(files,names,strict=True)", "data=Path(entry['path']).read_bytes()",
@@ -1024,6 +1030,10 @@ def validate_storage_import_native_archive(root: Path, *, profile: str, commit: 
     The execution log is checked independently. Custodian/source/binary hashes
     are observed fixture identities, not signatures or accepted oracle proof.
     """
+    token = BINDING.verify_binding(ROOT, profile=profile)
+    BINDING.validate_annex_directory(token, root, commit=commit, tree=tree)
+    # This annex proves source frontier only. Native storage transfer remains
+    # its original schema4 packet and admits no account rows or target5 state.
     native = root / "storage-v4-import-packets"
     if native.is_symlink() or not native.is_dir():
         fail("storage import native observations were not retained")
@@ -1391,7 +1401,7 @@ def validate_storage_import_native_archive(root: Path, *, profile: str, commit: 
     # independently checked against the candidate's complete immutable chain.
     lock = json.loads((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_bytes())
     chain = hashlib.sha256()
-    for position, entry in enumerate(lock["profiles"][profile]["ordered_files"]):
+    for position, entry in enumerate(BINDING.operational_binding(token)["ordered_files"]):
         chain.update(position.to_bytes(8, "big"))
         chain.update(entry["path"].encode() + b"\0")
         chain.update(bytes.fromhex(entry["git_blob_sha1"]))
@@ -1508,10 +1518,11 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
         ):
             fail("server schema identity is absent, indirect or oversized")
         identity = schema_validator.decode_identity_document(identity_path.read_bytes())
-        chains, version, tables = schema_validator.validated_source()
+        verified_binding = BINDING.verify_binding(ROOT, profile=profile)
+        BINDING.validate_annex_directory(verified_binding, root, commit=commit, tree=tree)
+        selection = BINDING.selection_token(verified_binding)
         schema_validator.validate_identity(
-            identity, profile=profile, chains=chains, schema_version=version,
-            table_count=tables, mode="verify",
+            identity, profile=profile, selection=selection, mode="verify",
         )
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, SyntaxError, AttributeError) as error:
         fail("server schema verify report failed shared authoritative validation: " + type(error).__name__)
@@ -1535,7 +1546,11 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     archive = root / "authoritative-migrations"
     if not archive.is_dir() or {path.name for path in archive.iterdir()} != set(names):
         fail("server packet SQL archive must contain exactly the four authoritative files")
-    locked = lock["profiles"][profile]["ordered_files"]
+    proof = BINDING.binding_document(verified_binding)
+    full_validation = document("migration-chain-validation.json")
+    if not BINDING.same(full_validation, proof["source_selection"]["source"]["complete_validation"]):
+        fail("server fullsource5 all10 SQL validation differs from issued source proof")
+    locked = BINDING.operational_binding(verified_binding)["ordered_files"]
     files = manifest.get("ordered_files")
     if not isinstance(files, list) or len(files) != 4 or [entry["path"] for entry in locked] != [f"migrations/{profile}/{name}" for name in names]:
         fail("server packet must retain the complete four-file profile chain")
@@ -2286,6 +2301,502 @@ def validate_dependency_boundary(manifest: dict[str, object]) -> None:
         fail("server candidate changed the reviewed protobuf build dependency boundary")
 
 
+
+ACCOUNTS_FULL_SOURCE_SHA256 = {'crates/trnm-persistence-pg/src/schema_parts/account_catalog.rs': 'b020b404a676cfc8b118c7e342c90e40a2cccc5e9bf2c9b5f938f08d5e0522dc', 'crates/trnm-persistence-pg/src/schema_parts/migrate.rs': '9f33453327d2f82526fcf550023f2b2cbae315c523c4f9e2a7373b849e0ae6bf', 'crates/trnm-persistence-pg/src/schema_parts/metadata.rs': 'ececa19afd84d92ba152c9c4abde420dbfef9d691178cb7cfd349bb623974d26'}
+
+LEGACY_AUTH_FULL_SOURCE_SHA256 = {'crates/trnm-token-crypto-provider/src/nakama_legacy.rs': 'b0ead9137eb2a1c7a353a0ba489f287e1dc3de67cbfb4617f06bdf2c8031cb21', 'crates/trnm-token-jwt-adapter/src/nakama_legacy_verify.rs': 'b36fef2b6bf05856a85fed712b2a673069608ebf3387af94729dd906fd43a0fe', 'crates/trnm-server/src/runtime/legacy_auth.rs': '30be2388891ddd692e6f387506ff5f321332a28089ea905d18e2a41ada4957a5', 'crates/trnm-server/src/runtime/legacy_repository.rs': '6bfb23969eab0318661d9241cc91cc03b8b2ff9889eb1fb9acb97958dbd97c31', 'crates/trnm-persistence-pg/src/nakama_account.rs': 'e9ed5ccfafc1bd270501614c9093912223707cc916aafa596149238f73d34b67'}
+
+def validate_reviewed_complete_production_files(bindings: dict[str, str], sources: dict[Path, str] | None = None) -> None:
+    """Bind raw complete files before finite region checks; no Rust parsing claim."""
+    for path, expected in bindings.items():
+        raw = (ROOT / path).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected:
+            fail(f"reviewed complete production file drift: {path}")
+        if sources is not None and sources.get(Path(path), "").encode("utf-8") != raw:
+            fail(f"reviewed complete production text differs from raw bytes: {path}")
+
+
+def validate_accounts_schema_source() -> None:
+    """An embedded source frontier never authorizes a new runtime profile."""
+    validate_reviewed_complete_production_files(ACCOUNTS_FULL_SOURCE_SHA256)
+    schema = (PERSISTENCE_ROOT / "schema.rs").read_text()
+    gate = (PERSISTENCE_ROOT / "schema_parts/account_catalog.rs").read_text()
+    migrate = (PERSISTENCE_ROOT / "schema_parts/migrate.rs").read_text()
+    metadata = (PERSISTENCE_ROOT / "schema_parts/metadata.rs").read_text()
+    lock = json.loads((ROOT / "migrations/MIGRATION_CHAIN.lock.json").read_text())
+    status = json.loads((ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text())["nakama_accounts_schema5_source_candidate"]
+    if 'pub const AUTHORITATIVE_SCHEMA_VERSION: u64 = 4;' not in schema or 'pub const AUTHORITATIVE_STORAGE_WRITER_EPOCH: u64 = 4;' not in schema or lock.get("schema_version") != 5 or lock.get("default_runtime_schema_version") != 4:
+        fail("schema5 source cannot silently promote the current storage ABI")
+    if 'const ACCOUNT_CATALOG_CAPTURE_READY: bool = false;' not in gate or 'schema5_native_catalog_capture_pending' not in gate:
+        fail("schema5 native catalog observations must remain explicitly pending")
+    expected_gate = (
+        "fn require_account_catalog_capture(target: AuthoritativeSchemaTarget) -> Result<(), DomainError> {\n"
+        "    if target == AuthoritativeSchemaTarget::NakamaAccountsV5 && !ACCOUNT_CATALOG_CAPTURE_READY {\n"
+        "        return Err(failed_precondition(\n"
+        "            \"schema5_native_catalog_capture_pending\",\n"
+        "        ));\n"
+        "    }\n"
+        "    Ok(())\n"
+        "}"
+    )
+    if gate.count(expected_gate) != 1:
+        fail("schema5 account gate must retain its exact closed pre-I/O body")
+    for name in ('verify_authoritative_schema_target', 'migrate_authoritative_schema_target'):
+        match = re.search(r'pub fn ' + name + r'\([\s\S]*?\) -> Result<[^\n]+> \{([\s\S]*?)\n    \}', migrate)
+        if match is None or match.group(1).lstrip().splitlines()[0].strip() != 'require_account_catalog_capture(target)?;':
+            fail("schema5 target capture gate must precede repository or DDL work")
+    if 'descriptor.version < 5 && recorded.v4_apply_source_commit.is_some()' not in metadata or 'v4_apply_source_commit: if target.version == 5' not in metadata:
+        fail("schema5 must preserve prior4 provenance and reject prepublication")
+    for field in ('native_catalog_observations_bound', 'native_migration_executed', 'default_runtime_promoted', 'account_repository_implemented', 'account_service_HTTP_gRPC_implemented', 'account_transfer_implemented', 'schema5_storage_transfer_admitted', 'schema5_backup_restore_qualified', 'accepted', 'compatibility_credit'):
+        if status.get(field) is not False:
+            fail("schema5 account source frontier overclaims " + field)
+
+
+# Finite source candidate bindings; identity checks grant no runtime evidence.
+LEGACY_AUTH_REQUIRED_FILES = tuple(Path(value) for value in (
+    'crates/trnm-server/src/lib.rs',
+    'crates/trnm-server/src/runtime/mod.rs',
+    'crates/trnm-server/src/runtime/legacy_auth.rs',
+    'crates/trnm-server/src/runtime/legacy_auth_tests.rs',
+    'crates/trnm-server/src/runtime/legacy_repository.rs',
+    'crates/trnm-server/src/runtime/legacy_repository_tests.rs',
+    'crates/trnm-server/src/runtime/legacy_device_predicates.rs',
+    'crates/trnm-server/src/runtime/legacy_uuid.rs',
+    'crates/trnm-server/src/runtime/config.rs',
+    'crates/trnm-token-crypto-provider/src/lib.rs',
+    'crates/trnm-token-crypto-provider/src/nakama_legacy.rs',
+    'crates/trnm-token-jwt-adapter/src/lib.rs',
+    'crates/trnm-token-jwt-adapter/src/nakama_legacy.rs',
+    'crates/trnm-token-jwt-adapter/src/nakama_legacy_payload.rs',
+    'crates/trnm-token-jwt-adapter/src/nakama_legacy_decode.rs',
+    'crates/trnm-token-jwt-adapter/src/nakama_legacy_header.rs',
+    'crates/trnm-token-jwt-adapter/src/nakama_legacy_verify.rs',
+    'crates/trnm-session-core/src/lib.rs',
+    'crates/trnm-session-core/src/nakama_legacy_blacklist.rs',
+    'crates/trnm-persistence-pg/src/nakama_account.rs',
+    'crates/trnm-persistence-pg/src/nakama_account/native.rs',
+    'crates/trnm-persistence-pg/src/nakama_account/tests.rs',
+    'crates/trnm-persistence-pg/src/schema_parts/account_native_attributes.rs',
+    'crates/trnm-persistence-pg/src/schema_parts/account_native_columns.rs',
+    'crates/trnm-persistence-pg/src/schema_parts/account_native_objects.rs',
+    'crates/trnm-persistence-pg/src/schema_parts/account_native_triggers.rs',
+    'crates/trnm-persistence-pg/src/schema_parts/account_relation_semantics.rs',
+    'contracts/session/nakama-v340-token-source-lock.json',
+    'crates/trnm-token-crypto-provider/src/software.rs',
+))
+REQUIRED_FILES.update(ROOT / path for path in LEGACY_AUTH_REQUIRED_FILES)
+REQUIRED_TESTS.update({
+    'ban_samples_clock_before_bounds_preparation_and_preserves_atomic_quota',
+    'cockroach_release_success_is_committed_despite_cleanup_error_without_replay',
+    'committed_device_issuer_failure_has_no_pair_and_keeps_native_cleanup',
+    'committed_device_random_and_each_clock_stage_keep_cause_and_cleanup',
+    'committed_device_single_session_clock_quota_and_poison_keep_diagnostic',
+    'deferred_uuid_failure_is_internal_before_tx_without_lookup_recall',
+    'deferred_uuid_invalid_version_or_variant_never_begins_transaction',
+    'deferred_uuid_is_generated_once_and_reused_across_both_profile_attempts',
+    'deferred_uuid_skips_closed_existing_banned_and_missing_no_create_paths',
+    'device_success_preserves_exact_normal_token_pair_and_clock_order',
+    'endpoint_purpose_never_falls_back',
+    'existing_device_failure_does_not_claim_current_commit_or_allow_retry',
+    'legacy_hs256_defaults_are_distinct_and_do_not_weaken_software_keys',
+    'legacy_hs256_wrong_domain_handle_and_epoch_have_no_fallback',
+    'original_crlf_segments_are_signed_without_reencoding',
+    'postgres_unknown_completion_is_never_retried_or_acknowledged',
+    'public_device_call_keeps_one_repository_outcome_and_commit_truth_on_issue_failure',
+    'wrong_mac_precedes_untrusted_claim_semantics',
+})
+
+LEGACY_AUTH_REGION_BINDINGS = (('legacy-fixed-key-construction',
+  'crates/trnm-token-crypto-provider/src/nakama_legacy.rs',
+  '    pub fn new(\n',
+  '    fn tag(\n',
+  'e4995240d94cefa5ad8767e0889d8b8e23a32499b5d2c7a8d9ae5b87347c2910'),
+ ('legacy-fixed-key-selection',
+  'crates/trnm-token-crypto-provider/src/nakama_legacy.rs',
+  '    fn tag(\n',
+  '\n}\n\nimpl fmt::Debug',
+  'e87556b29e78a740b473c3ab163cea3e0feea906fb0c605772de8971384379b8'),
+ ('legacy-exact-encoded-MAC-before-claims',
+  'crates/trnm-token-jwt-adapter/src/nakama_legacy_verify.rs',
+  '    pub fn verify(\n',
+  '\n}\n\n// Both values',
+  '032ff36cefb15db4ddfcd11eb7f7b61389260ac6fc9d75b82fdd7f1924469a6e'),
+ ('legacy-service-owned-construction',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  '    pub fn from_config(',
+  '    fn state(',
+  '10994515928ef2fa72034bb5f74e52c1eb7aae71f7660b461242720651b1fa22'),
+ ('legacy-UUID-after-MAC',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  '    fn parse_at(\n',
+  '    fn verify_access_at(\n',
+  '1a5293276762e363ed94cc7a2fba1fcb659539bcf40245d438e2992a2b32462c'),
+ ('legacy-cache-before-principal',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  '    fn verify_access_at(\n',
+  '    pub fn refresh<',
+  '030ad246030a7c171c1aea65e70e04d19b0fcd0b997dbf783504ac5e407d0d0f'),
+ ('legacy-refresh-durable-user',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  '    fn refresh_at<',
+  '    fn issue_session(\n',
+  'c27e3ec06426b9383feef3c65771e89ff5a121c9bc9f69ba6a4a82539e913423'),
+ ('legacy-logout-purpose-owner-quota',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  '    fn logout_at(\n',
+  '    pub fn authenticate_device<',
+  '65e3f4bf99dcf33723b7178934d681aaffc6b4e2dc4aa626ad5de2fdaf083b65'),
+ ('legacy-device-error-confirmation',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  'impl LegacyDeviceAuthError {',
+  'impl fmt::Debug for LegacyDeviceAuthError',
+  'cfd119a7e6ecfd0d4ba53adfeef56c293718ff035efdf07927ff61d8bd3b2c83'),
+ ('legacy-created-only-postcommit',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  '    fn finish_device_account(\n',
+  '    pub fn remove_all(',
+  'c4f1d914fc103974a1212f139092be5f18650b3986808f52f379319974ad44ee'),
+ ('legacy-Ban-clock-first',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  '    fn ban_at(\n',
+  '    pub fn unban(',
+  '90d4b445f9e95760b6d2f3b57b6f95c4ef256d2e0b32252807768a2a8fe75c6c'),
+ ('legacy-native-error-mapping',
+  'crates/trnm-server/src/runtime/legacy_repository.rs',
+  'fn map_native_error(',
+  'fn map_cleanup(',
+  '933f1f415e0c21910b95061acf9f0ec0669da097763bca4d00b46da76e9b5c8b'),
+ ('legacy-single-native-device-call',
+  'crates/trnm-server/src/runtime/legacy_repository.rs',
+  "impl LegacyDeviceRepository for PgLegacyAuthRepository<'_>",
+  'fn map_stored_user(',
+  '1eb193a8b772eeedc575f4e3e6bb807c10777497caa9cceac0849d563a0c5429'),
+ ('legacy-deferred-account-UUID',
+  'crates/trnm-persistence-pg/src/nakama_account.rs',
+  'fn authenticate_device_with_id_source(\n',
+  'fn insert_both(\n',
+  'ca044de9376dcbdd5e118f81f83ed00af7795a293b7284f200d093cb56ffdb1e'),
+ ('legacy-fixed-size-postcommit-failure',
+  'crates/trnm-server/src/runtime/legacy_auth.rs',
+  'pub struct LegacyDevicePostCommitFailure {',
+  'pub enum LegacyDeviceAuthError {',
+  'be6fb711b1a8966f1e13293c5e6cc9f9ec9d82ae7156c8dfe9ed6e3bd401d3b5'),
+ ('legacy-native-outcome-cleanup-preserved',
+  'crates/trnm-server/src/runtime/legacy_repository.rs',
+  'fn map_cleanup(',
+  '\n#[cfg(test)]',
+  '4634e5f32fbb5ecc52aea03660850ab60f86021bb2efcb4dd1ff9845f2cfa593'))
+
+LEGACY_AUTH_UPSTREAM_FILES = [{'path': 'server/api.go',
+  'blob': '61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb',
+  'bytes': 30888,
+  'sha256': '583942e1fa47902a1b6cd231a08af3c938314cbe665e6a9765c3dc1959b6cae9',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api.go'},
+ {'path': 'server/api_authenticate.go',
+  'blob': '1f938603160ef1dc7f6546926de5481622139dd2',
+  'bytes': 33798,
+  'sha256': '89c0659aa6994c353e9d9dc32ccc412cbdb5dfc04537a1c93fa026dd32a06995',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api_authenticate.go'},
+ {'path': 'server/api_session.go',
+  'blob': '1cef7b9d967e93745b19bdd048ff203fc212acea',
+  'bytes': 5848,
+  'sha256': '8bd5ad085d3ebf2a6accc3e8133f605a1f74fa899068caaca95514d321bdf090',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api_session.go'},
+ {'path': 'server/config.go',
+  'blob': 'd9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6',
+  'bytes': 72466,
+  'sha256': 'd437669975abe45ddaa8db556260e5c80faac69a1a4e9c2627967bdbfca24823',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/config.go'},
+ {'path': 'server/core_authenticate.go',
+  'blob': '5ec2f5c00ef875d11fc79865a30059d1147ac7e1',
+  'bytes': 50169,
+  'sha256': '1995cf76a7e2f35185e5a9eef161da2cb5851be7a8bdeddb2609c1a0b7b4dc96',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/core_authenticate.go'},
+ {'path': 'server/core_session.go',
+  'blob': 'beee140dd6d402434811721f858e64c1c3c79e09',
+  'bytes': 3668,
+  'sha256': '068b8846dc32321dc874c6cd0693e304042c08e8f75f9e50738254afa227546f',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/core_session.go'},
+ {'path': 'server/db.go',
+  'blob': '80bff94cfa224bc953fd674af673944ebc50e875',
+  'bytes': 18795,
+  'sha256': '5ea00517ee4b9df752cd40da58e75bf18340bf587a9dd7ca4aaf9cef6c0f472d',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/db.go'},
+ {'path': 'server/jwt.go',
+  'blob': 'ab0c53aef5152429370ffe1d3ec9d273007132be',
+  'bytes': 1241,
+  'sha256': 'f50b8ced87d8b457714ee189a6dfdcee37e78fb57dfbd0b93ea9aade789f8cd2',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/jwt.go'},
+ {'path': 'server/session_cache.go',
+  'blob': '2f3d4153bfadd6ad398d24173fe4413c12bf9b04',
+  'bytes': 6227,
+  'sha256': 'c7cc40783688ae48b677f3cca72f5afd7eefb8ab4ba0c6e81e3a6ee0ca2964e6',
+  'verification_scope': 'complete-file-identity-from-retained-official-API-bytes',
+  'primary_url': 'https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/session_cache.go'}]
+
+LEGACY_AUTH_OLD_SOURCE_IDENTITIES = [{'path': 'server/api_authenticate.go',
+  'blob': '1f938603160ef1dc7f6546926de5481622139dd2',
+  'observed_contract': ['tid', 'uid', 'usn', 'vrs', 'exp', 'iat']},
+ {'path': 'server/jwt.go',
+  'blob': 'ab0c53aef5152429370ffe1d3ec9d273007132be',
+  'observed_contract': ['HS256', 'expiration-required', 'valid-method-restriction']},
+ {'path': 'server/api_session.go',
+  'blob': '1cef7b9d967e93745b19bdd048ff203fc212acea',
+  'observed_contract': ['refresh-required', 'same-token-id-refresh', 'session-cache-validation']}]
+
+LEGACY_AUTH_PRODUCTION_PREFIXES = {'crates/trnm-token-jwt-adapter/src/nakama_legacy.rs': 'd98d5fbdf5e633950e25ba8be8dad16a5ee4a6594ff99d0ce9c5dc2892057cf4',
+ 'crates/trnm-token-jwt-adapter/src/nakama_legacy_payload.rs': '8110eb4e36c41f491037fb0ac898b5817b8ccff394ab6934327cafa53094241c',
+ 'crates/trnm-token-jwt-adapter/src/nakama_legacy_decode.rs': '33ebbc1cad842fe552f54ee0f2c62c58dd03498b5d64b2554dd3d3cf5482f516',
+ 'crates/trnm-token-jwt-adapter/src/nakama_legacy_header.rs': 'edb5f3ecfa88e19b01c01ada49fc5d055411f1ab62520b5abb01197144a28dd3',
+ 'crates/trnm-session-core/src/nakama_legacy_blacklist.rs': '1d89c5d29ceabee032d0cacce0356c0f0fa0383e42251b5b378d1cc9ba8bdd8f',
+ 'crates/trnm-server/src/runtime/legacy_device_predicates.rs': '6e788e77a2db36d9d2dc64ad65374a1bae99e91f68b73822543520810b3398a7',
+ 'crates/trnm-server/src/runtime/legacy_uuid.rs': 'b344139d0d1c956a273b8a889521b11569e722fd7f95d039031cdc09dc558c4e',
+ 'crates/trnm-token-crypto-provider/src/software.rs': '043e0d21d7d19382ff8cd46affe7c64fb572af65d83cc80770dcc6f70d6f29e7'}
+
+LEGACY_AUTH_ALL_SOURCE_IDENTITIES = [{'path': 'server/api_authenticate.go',
+  'blob': '1f938603160ef1dc7f6546926de5481622139dd2',
+  'observed_contract': ['tid', 'uid', 'usn', 'vrs', 'exp', 'iat']},
+ {'path': 'server/jwt.go',
+  'blob': 'ab0c53aef5152429370ffe1d3ec9d273007132be',
+  'observed_contract': ['HS256', 'expiration-required', 'valid-method-restriction']},
+ {'path': 'server/api_session.go',
+  'blob': '1cef7b9d967e93745b19bdd048ff203fc212acea',
+  'observed_contract': ['refresh-required', 'same-token-id-refresh', 'session-cache-validation']},
+ {'path': 'server/api.go',
+  'blob': '61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb',
+  'observed_contract': ['Bearer-purpose-key', 'UUID-parse', 'session-cache-before-context']},
+ {'path': 'server/core_authenticate.go',
+  'blob': '5ec2f5c00ef875d11fc79865a30059d1147ac7e1',
+  'observed_contract': ['Device-lookup-before-create',
+                        'deferred-account-UUID',
+                        'native-transaction']},
+ {'path': 'server/core_session.go',
+  'blob': 'beee140dd6d402434811721f858e64c1c3c79e09',
+  'observed_contract': ['stored-username-refresh',
+                        'disable-Unix-seconds',
+                        'ordered-purpose-owner-logout']},
+ {'path': 'server/session_cache.go',
+  'blob': '2f3d4153bfadd6ad398d24173fe4413c12bf9b04',
+  'observed_contract': ['blacklist-only', 'clock-before-lock', 'Add-Unban-no-op']},
+ {'path': 'server/config.go',
+  'blob': 'd9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6',
+  'observed_contract': ['nonempty-distinct-session-keys',
+                        'positive-TTLs',
+                        'explicit-default20-and27']},
+ {'path': 'server/db.go',
+  'blob': '80bff94cfa224bc953fd674af673944ebc50e875',
+  'observed_contract': ['PostgreSQL-class40-bounded-attempts',
+                        'Cockroach-savepoint-retry',
+                        'completion-error-boundary']}]
+
+LEGACY_AUTH_DERIVED_ATTRIBUTION = {'interpretation_scope': 'independent-first-party-Rust-derived-from-selected-expressions; '
+                         'complete-file identity is not complete behavior equivalence',
+ 'Go_code_compiled_into_Rust_target': False,
+ 'regions': [{'path': 'server/api_authenticate.go',
+              'blob': '1f938603160ef1dc7f6546926de5481622139dd2',
+              'first_line': 33,
+              'last_line': 64,
+              'region_sha256': '00e4476411b175e6433fcad10d1634bea17b48f6edefb1622333e46945562330',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'six-tagged-claims-and-input-POSIX-expressions'},
+             {'path': 'server/api_authenticate.go',
+              'blob': '1f938603160ef1dc7f6546926de5481622139dd2',
+              'first_line': 216,
+              'last_line': 289,
+              'region_sha256': '76a2e88fa6b4c3a6ddb71a281a408e6b807aed77951be272c3e9166235448d4b',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'Device-input-order-and-token-issuance'},
+             {'path': 'server/api.go',
+              'blob': '61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb',
+              'first_line': 518,
+              'last_line': 546,
+              'region_sha256': 'a3c91ad05734c6f77c9656aba6bf45a484e4a63c717204cada56dbc99377e7d2',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'Bearer-and-token-UUID-parser'},
+             {'path': 'server/jwt.go',
+              'blob': 'ab0c53aef5152429370ffe1d3ec9d273007132be',
+              'first_line': 22,
+              'last_line': 37,
+              'region_sha256': '3b8bc443761a54b9843bf42ab3ab46c676a1d97f324cdc8fc4599c4bc31c5f63',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'HS256-parser-policy'},
+             {'path': 'server/core_session.go',
+              'blob': 'beee140dd6d402434811721f858e64c1c3c79e09',
+              'first_line': 34,
+              'last_line': 97,
+              'region_sha256': '2ff18d98f5ad6f8258ec671d121d3a5a625f6abc6c4ed97f57d4e2e6805b7c83',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'refresh-durable-user-and-logout-purpose-order'},
+             {'path': 'server/api_session.go',
+              'blob': '1cef7b9d967e93745b19bdd048ff203fc212acea',
+              'first_line': 29,
+              'last_line': 94,
+              'region_sha256': 'edaaff6e47705f5f358313778a1a15fe62da308abffc500dd5f1c4a099979430',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'refresh-same-token-ID-and-issued-at'},
+             {'path': 'server/session_cache.go',
+              'blob': '2f3d4153bfadd6ad398d24173fe4413c12bf9b04',
+              'first_line': 62,
+              'last_line': 222,
+              'region_sha256': 'b2ff5d21e0111a5992a6d668eb8c1e5d20376149e6fab59101923c312702e9f0',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'blacklist-validity-Remove-RemoveAll-Ban-and-ticker'},
+             {'path': 'server/core_authenticate.go',
+              'blob': '5ec2f5c00ef875d11fc79865a30059d1147ac7e1',
+              'first_line': 185,
+              'last_line': 285,
+              'region_sha256': 'ee6b3afac7ca1419e75fb5c496725ad40cdaa5b8bc54506f7e4678e8c5b34454',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'Device-native-account-lookup-and-creation'},
+             {'path': 'server/config.go',
+              'blob': 'd9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6',
+              'first_line': 147,
+              'last_line': 161,
+              'region_sha256': '3f84f3a999ef29ea78ef907bb59cbfbc2caa84a874277ab81c9a64aa401d3c60',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'positive-TTL-and-nonempty-distinct-key-validation'},
+             {'path': 'server/config.go',
+              'blob': 'd9cd2b5c1bca3ae13a2560513a8fd99575ec4fe6',
+              'first_line': 807,
+              'last_line': 818,
+              'region_sha256': '265547ad21c2b595fbeea9262577486c0d9c12646541cc204270bdc10bc59886',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'explicit-public-session-defaults'},
+             {'path': 'server/db.go',
+              'blob': '80bff94cfa224bc953fd674af673944ebc50e875',
+              'first_line': 308,
+              'last_line': 408,
+              'region_sha256': '80e14333ca221744a2bd243c1e028e4cb3e02269aaefe688642b79e0160aebed',
+              'scope': 'derived-narrow-expression-or-function',
+              'purpose': 'SQL-transaction-profile-attempt-and-completion-rules'}],
+ 'accepted': False,
+ 'compatibility_credit': False}
+
+LEGACY_AUTH_OLD_LIMITATIONS = ['No key ID or key epoch is carried in the legacy token.',
+ 'Access and refresh tokens use distinct configured signing keys.',
+ 'The same token ID and original issued-at value are reused during refresh in the pinned '
+ 'implementation.',
+ 'Legacy overlap rotation is ambiguous unless verification tries external key policy; this '
+ 'candidate fails closed instead of guessing.']
+
+def validate_legacy_auth_source(sources: dict[Path, str], status: dict, source_lock: dict) -> None:
+    """Close finite candidate source regions without granting runtime evidence."""
+    validate_reviewed_complete_production_files(LEGACY_AUTH_FULL_SOURCE_SHA256, sources)
+    for path in LEGACY_AUTH_REQUIRED_FILES:
+        if path not in sources:
+            fail(f"legacy auth required source absent: {path}")
+    candidate = status.get("nakama_legacy_auth_source_candidate", {})
+    if candidate.get("status") != "source-candidate-http-unconnected-accounts5-gated":
+        fail("legacy auth source state drift")
+    expected = {
+        "source_composition_present": True, "native_repository_adapter_present": True,
+        "legacy_principal_distinct_from_durable_session": True,
+        "fixed_purpose_keys_without_epoch_or_fallback": True,
+        "unconfirmed_means_no_commit": False, "caller_replay_permitted": False,
+        "caller_compensation_permitted": False, "token_ID_before_issued_at": True,
+        "Ban_cutoff_before_key_preparation_and_cache_lock": True,
+    }
+    if any(candidate.get(key) is not value for key, value in expected.items()):
+        fail("legacy auth source truth/commit/replay policy drift")
+    for key, value in (("key_budget_bytes",4096),("default_runtime_schema_version",4),
+                       ("default_storage_writer_epoch",4),("default_runtime_table_count",12),
+                       ("supported_source_schema_version",5)):
+        if type(candidate.get(key)) is not int or candidate[key] != value:
+            fail(f"legacy auth bounded schema/profile policy drift: {key}")
+    if candidate.get("account_gate_reason") != "schema5_native_catalog_capture_pending" or (
+        candidate.get("active_authentication_profile") != "durable-Trillionnium-family-and-key-epoch"
+    ) or candidate.get("device_error_variants") != ["Unconfirmed","CommittedCreation","UnconfirmedCleanup"]:
+        fail("legacy auth gate, active authority or error-envelope drift")
+    flags = candidate.get("acceptance_flags", {})
+    expected_flags = {"HTTP_connected","gRPC_connected","startup_config_enabled",
+        "native_device_transaction_qualified","schema5_migration_qualified",
+        "signature_compatible","refresh_behavior_compatible","accepted","production_ready",
+        "full_replacement","compatibility_credit","current_HEAD_CI_qualified"}
+    if set(flags) != expected_flags or any(value is not False for value in flags.values()):
+        fail("legacy auth source cannot grant runtime or acceptance credit")
+    relation_scope = candidate.get("relation_observation_scope", {})
+    fetch_scope = candidate.get("source_fetch_policy", {})
+    if (relation_scope.get("qualifies_account_migration_or_device_transaction") is not False
+        or fetch_scope.get("checks_before_IO_and_after_delivery") is not True
+        or fetch_scope.get("global_nonreturning_IO_bound_qualified") is not False
+        or any(type(relation_scope.get(key)) is not int for key in (
+            "postgresql_finite_negative_cases", "cockroachdb_negative_cases"))
+        or any(type(fetch_scope.get(key)) is not int for key in (
+            "request_seconds", "collection_seconds"))):
+        fail("legacy auth observation/budget booleans and integers cannot be coerced")
+    if candidate.get("source_paths") != [str(path) for path in LEGACY_AUTH_REQUIRED_FILES
+                                          if path.name != "software.rs"]:
+        fail("legacy auth machine source inventory drift")
+    if candidate.get("relation_observation_scope") != {
+        "readonly_profiles":["postgresql","cockroachdb"],
+        "postgresql_finite_negative_cases":5,"cockroachdb_negative_cases":0,
+        "qualifies_account_migration_or_device_transaction":False,
+    } or candidate.get("source_fetch_policy") != {
+        "request_seconds":30,"collection_seconds":605,
+        "checks_before_IO_and_after_delivery":True,"global_nonreturning_IO_bound_qualified":False,
+    }:
+        fail("legacy auth observations/resource scope drift")
+    if source_lock.get("sources", [])[:3] != LEGACY_AUTH_OLD_SOURCE_IDENTITIES or (
+        source_lock.get("verified_files") != LEGACY_AUTH_UPSTREAM_FILES
+    ):
+        fail("legacy auth exact upstream file identities drift")
+    if source_lock.get("upstream", {}).get("commit") != "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09":
+        fail("legacy auth upstream commit drift")
+    if source_lock.get("sources") != LEGACY_AUTH_ALL_SOURCE_IDENTITIES or (
+        source_lock.get("legacy_limitations") != LEGACY_AUTH_OLD_LIMITATIONS
+    ) or set(source_lock.get("claims", {})) != {"token_serialization_compatible",
+        "signature_compatible","refresh_behavior_compatible","c1_earned","production_ready"} or any(
+        source_lock.get("claims",{}).get(key) is not False for key in (
+            "token_serialization_compatible","signature_compatible","refresh_behavior_compatible",
+            "c1_earned","production_ready")):
+        fail("legacy auth source lock cannot grant compatibility")
+    attribution = source_lock.get("implementation_attribution", {})
+    if attribution != LEGACY_AUTH_DERIVED_ATTRIBUTION:
+        fail("legacy auth complete-file identity and narrow-derived-region scope cannot be conflated")
+    if attribution.get("Go_code_compiled_into_Rust_target") is not False or (
+        attribution.get("accepted") is not False or attribution.get("compatibility_credit") is not False
+    ) or not attribution.get("regions"):
+        fail("legacy auth selected-region attribution drift")
+    for label, path, start, end, digest in LEGACY_AUTH_REGION_BINDINGS:
+        source = sources[Path(path)]
+        if source.count(start) != 1:
+            fail(f"legacy auth local region missing/ambiguous: {label}")
+        first = source.index(start)
+        last = source.find(end, first + len(start))
+        if last < 0 or hashlib.sha256(source[first:last].encode()).hexdigest() != digest:
+            fail(f"legacy auth local ordering/error/authority region drift: {label}")
+    for path, digest in LEGACY_AUTH_PRODUCTION_PREFIXES.items():
+        prefix = sources[Path(path)].split("\n#[cfg(test)]", 1)[0]
+        if hashlib.sha256(prefix.encode()).hexdigest() != digest:
+            fail(f"legacy auth codec/cache/input or old Software production prefix drift: {path}")
+    registrations = {
+        "crates/trnm-server/src/lib.rs":("pub use runtime::legacy_service_exports::*;",),
+        "crates/trnm-server/src/runtime/mod.rs":("mod legacy_auth;","mod legacy_repository;",
+            "mod legacy_uuid;","mod legacy_device_predicates;","pub use super::legacy_auth::*;",
+            "pub use super::legacy_repository::PgLegacyAuthRepository;"),
+        "crates/trnm-token-crypto-provider/src/lib.rs":("mod nakama_legacy;",),
+        "crates/trnm-token-jwt-adapter/src/lib.rs":("mod nakama_legacy_decode;",
+            "mod nakama_legacy_verify;","NakamaLegacyVerifier","NakamaLegacyIssuer"),
+        "crates/trnm-session-core/src/lib.rs":("mod nakama_legacy_blacklist;",),
+    }
+    for path, markers in registrations.items():
+        require_markers("legacy auth local module registration", sources[Path(path)], markers)
+    # No transport/startup admission is fabricated by this library composition.
+    for path in ("crates/trnm-server/src/runtime/app.rs","crates/trnm-server/src/runtime/config.rs"):
+        source = sources[Path(path)]
+        if any(marker in source for marker in ("/v2/account/authenticate/device",
+            "/v2/session/refresh","/v2/session/logout","LegacyAuthService")):
+            fail("legacy auth HTTP/startup integration is outside this gated source slice")
+
+
 def main(arguments: list[str] | None = None) -> int:
     if arguments:
         parser = argparse.ArgumentParser(description=__doc__)
@@ -2306,6 +2817,7 @@ def main(arguments: list[str] | None = None) -> int:
             fail("server live packet could not be decoded or validated")
         print(json.dumps(report, sort_keys=True))
         return 0
+    validate_accounts_schema_source()
     missing = sorted(str(path.relative_to(ROOT)) for path in REQUIRED_FILES if not path.is_file())
     if missing:
         fail("missing files: " + ", ".join(missing))
@@ -2681,6 +3193,9 @@ def main(arguments: list[str] | None = None) -> int:
     status = json.loads(
         (ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text(encoding="utf-8")
     )
+    validate_legacy_auth_source(sources, status, json.loads(
+        (ROOT / "contracts/session/nakama-v340-token-source-lock.json").read_text()
+    ))
     diagnostics = status.get("live_failure_diagnostics_source_candidate", {})
     if diagnostics.get("helper") != str(LIVE_FAILURE_HELPER.relative_to(ROOT)) or (
         diagnostics.get("limits") != {

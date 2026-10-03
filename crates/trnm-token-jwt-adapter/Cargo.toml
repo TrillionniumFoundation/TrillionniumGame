@@ -8,6 +8,7 @@ description = "Strict RustCrypto-backed HS256 legacy and key-epoch JWT adapter"
 publish.workspace = true
 
 [dependencies]
+trnm-token-crypto-provider = { path = "../trnm-token-crypto-provider" }
 hmac = "=0.13.0"
 sha2 = "=0.11.0"
 subtle = "=2.6.1"

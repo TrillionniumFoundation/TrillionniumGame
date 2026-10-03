@@ -11,13 +11,12 @@ type Catalog = BTreeMap<(String, String), CatalogColumn>;
 fn read_catalog(client: &mut impl GenericClient) -> Result<Catalog, DomainError> {
     let tables = client
         .query(
-            "SELECT table_name, table_type FROM information_schema.tables \
-         WHERE table_schema = 'public' AND left(table_name, 5) = 'trnm_' LIMIT 13",
+            "SELECT c.relname, CASE WHEN c.relkind='r' THEN 'BASE TABLE' ELSE c.relkind::TEXT END FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f') AND (left(c.relname,5)='trnm_' OR c.relname IN ('users','user_device')) LIMIT 15",
             &[],
         )
         .map_err(map_postgres_error)?;
     if !tables.is_empty() {
-        if !(10..=REQUIRED_TABLES.len()).contains(&tables.len()) {
+        if !(10..=14).contains(&tables.len()) {
             return Err(failed_precondition(
                 "authoritative_schema_table_inventory_drift",
             ));
@@ -26,7 +25,8 @@ fn read_catalog(client: &mut impl GenericClient) -> Result<Catalog, DomainError>
         for row in &tables {
             let table: String = row.try_get(0).map_err(map_postgres_error)?;
             let kind: String = row.try_get(1).map_err(map_postgres_error)?;
-            if !REQUIRED_TABLES.contains(&table.as_str())
+            if (!REQUIRED_TABLES.contains(&table.as_str())
+                && !matches!(table.as_str(), "users" | "user_device"))
                 || kind != "BASE TABLE"
                 || !seen.insert(table)
             {
@@ -43,15 +43,18 @@ fn read_catalog(client: &mut impl GenericClient) -> Result<Catalog, DomainError>
         }
     }
     let rows = client.query(
-        "SELECT table_name, column_name, udt_name, is_nullable, column_default, character_maximum_length::BIGINT \
+        "SELECT table_name, column_name, udt_name, is_nullable, CASE WHEN octet_length(column_default) <= 4096 THEN column_default ELSE NULL END, character_maximum_length::BIGINT, COALESCE(octet_length(column_default) > 4096,false) \
          FROM information_schema.columns \
-         WHERE table_schema = 'public' AND left(table_name, 5) = 'trnm_' \
+         WHERE table_schema = 'public' AND (left(table_name, 5) = 'trnm_' OR table_name IN ('users','user_device')) \
          ORDER BY table_name, ordinal_position LIMIT 257", &[]).map_err(map_postgres_error)?;
     if rows.len() > 256 {
         return Err(failed_precondition("authoritative_schema_catalog_budget"));
     }
     let mut catalog = BTreeMap::new();
     for row in rows {
+        if row.try_get::<_, bool>(6).map_err(map_postgres_error)? {
+            return Err(failed_precondition("schema_catalog_wire_value_budget"));
+        }
         let table: String = row.try_get(0).map_err(map_postgres_error)?;
         let name: String = row.try_get(1).map_err(map_postgres_error)?;
         let kind = row.try_get(2).map_err(map_postgres_error)?;
@@ -77,12 +80,16 @@ fn read_catalog(client: &mut impl GenericClient) -> Result<Catalog, DomainError>
         }
     }
     if !catalog.is_empty() {
-        verify_primary_keys(client, tables.len())?;
+        let storage_table_count = tables
+            .iter()
+            .filter(|row| row.get::<_, String>(0).starts_with("trnm_"))
+            .count();
+        verify_primary_keys(client, storage_table_count)?;
         let checks = client.query("SELECT t.relname, c.conname, c.convalidated, pg_catalog.pg_get_constraintdef(c.oid), c.conkey \
             FROM pg_catalog.pg_constraint c JOIN pg_catalog.pg_class t ON t.oid=c.conrelid \
             JOIN pg_catalog.pg_namespace n ON n.oid=t.relnamespace \
-            WHERE n.nspname='public' AND (c.conname IN ('storage_projection_digest','storage_origin_witness','metadata_v2_history','metadata_v3_history','trnm_storage_objects_collection_check','trnm_storage_objects_object_key_check','trnm_storage_objects_read_permission_check','trnm_storage_objects_write_permission_check','check_collection','check_object_key','check_read_permission','check_write_permission')) LIMIT 13", &[]).map_err(map_postgres_error)?;
-        if checks.len() > 12 {
+            WHERE n.nspname='public' AND (c.conname IN ('storage_projection_digest','storage_origin_witness','metadata_v2_history','metadata_v3_history','metadata_v4_history','trnm_storage_objects_collection_check','trnm_storage_objects_object_key_check','trnm_storage_objects_read_permission_check','trnm_storage_objects_write_permission_check','check_collection','check_object_key','check_read_permission','check_write_permission')) LIMIT 14", &[]).map_err(map_postgres_error)?;
+        if checks.len() > 13 {
             return Err(failed_precondition("authoritative_schema_check_drift"));
         }
         for row in checks {
@@ -99,6 +106,9 @@ fn read_catalog(client: &mut impl GenericClient) -> Result<Catalog, DomainError>
                     &format!("@checkkeys:{name}"),
                     format!("{keys:?}"),
                 )?;
+            }
+            if name == "metadata_v4_history" && keys != [2, 12] {
+                return Err(failed_precondition("authoritative_schema_check_drift"));
             }
             if name == "metadata_v3_history" && keys != [2, 11] {
                 return Err(failed_precondition("authoritative_schema_check_drift"));
@@ -144,6 +154,11 @@ fn read_catalog(client: &mut impl GenericClient) -> Result<Catalog, DomainError>
             }
         }
     }
+    let physical_users = tables.iter().any(|row| row.get::<_, String>(0) == "users");
+    let physical_devices = tables
+        .iter()
+        .any(|row| row.get::<_, String>(0) == "user_device");
+    read_account_catalog(client, &mut catalog, physical_users, physical_devices)?;
     Ok(catalog)
 }
 
@@ -152,6 +167,9 @@ fn matches_column(
     expected: ColumnDescriptor,
     profile: DatabaseProfile,
 ) -> bool {
+    if matches!(expected.table, "users" | "user_device") {
+        return matches_account_column(actual, expected, profile);
+    }
     (actual.kind == expected.kind
         || matches_import_constraint_serialization(profile, expected, &actual.kind))
         && actual.nullable == expected.nullable
@@ -242,6 +260,14 @@ fn advance_expected_catalog(
             } else {
                 expected.insert((check.table, check.name), check);
                 expected.insert((keys.table, keys.name), keys);
+            }
+        }
+        ActionDescriptor::AccountTable(table) => {
+            for column in table.columns {
+                expected.insert((column.table, column.name), *column);
+            }
+            for object in account_catalog_objects(profile, table.table) {
+                expected.insert((object.table, object.name), object);
             }
         }
         ActionDescriptor::ImportTable(table) => {
@@ -752,6 +778,12 @@ pub(crate) fn verify_storage_import_legacy_writer_barrier(
 mod catalog_v3_tests {
     use super::*;
 
+    // Preserve the complete original v3/v4 regression range when the embedded
+    // source frontier grows. Pending account source has no native fixture ABI.
+    fn storage_v4_prefix(profile: DatabaseProfile) -> usize {
+        revision(profile, 4).unwrap().action_range.end
+    }
+
     fn snapshot(profile: DatabaseProfile, prefix: usize) -> Catalog {
         let mut expected = expected_catalog_baseline(profile);
         for action in actions(profile).iter().take(prefix) {
@@ -773,9 +805,21 @@ mod catalog_v3_tests {
     }
 
     #[test]
+    fn source_account_columns_never_substitute_for_captured_native_catalog() {
+        for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
+            let full_source = snapshot(profile, revision(profile, 5).unwrap().action_range.end);
+            assert!(catalog_prefix(&full_source, profile).is_err());
+            assert_eq!(
+                catalog_prefix(&snapshot(profile, storage_v4_prefix(profile)), profile).unwrap(),
+                storage_v4_prefix(profile)
+            );
+        }
+    }
+
+    #[test]
     fn native_catalog_recognizes_each_typed_prefix_including_data_completion() {
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
-            for prefix in 0..=actions(profile).len() {
+            for prefix in 0..=storage_v4_prefix(profile) {
                 assert_eq!(
                     catalog_prefix(&snapshot(profile, prefix), profile).unwrap(),
                     prefix
@@ -841,7 +885,7 @@ mod catalog_v3_tests {
     #[test]
     fn v4_catalog_rejects_partial_journal_foreign_key_and_wrong_native_check() {
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
-            let ready = snapshot(profile, actions(profile).len());
+            let ready = snapshot(profile, storage_v4_prefix(profile));
             let mut missing = ready.clone();
             missing.remove(&(
                 "trnm_storage_import_jobs".to_owned(),
@@ -894,7 +938,7 @@ mod catalog_v3_tests {
     #[test]
     fn v4_index_catalog_keeps_each_profiles_native_valid_and_ready_flags() {
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
-            let ready = snapshot(profile, actions(profile).len());
+            let ready = snapshot(profile, storage_v4_prefix(profile));
             let key = (
                 "trnm_storage_import_jobs".to_owned(),
                 "@index:storage_import_jobs_pk".to_owned(),
@@ -940,7 +984,7 @@ mod catalog_v3_tests {
     #[test]
     fn v4_postgresql_catalog_accepts_only_captured_fresh_and_restore_check_forms() {
         let profile = DatabaseProfile::PostgreSql;
-        let complete = actions(profile).len();
+        let complete = storage_v4_prefix(profile);
         for mask in 0..4 {
             let mut catalog = snapshot(profile, complete);
             for (index, &(table, name, fresh, restored)) in
@@ -1049,7 +1093,7 @@ mod catalog_v3_tests {
                 ] {
                     let changed = captured.replacen(from, to, 1);
                     assert_ne!(changed, captured, "mutation did not change {name}");
-                    let mut bad = snapshot(profile, actions(profile).len());
+                    let mut bad = snapshot(profile, storage_v4_prefix(profile));
                     bad.get_mut(&(table.to_owned(), name.to_owned()))
                         .unwrap()
                         .kind = changed;
@@ -1064,7 +1108,7 @@ mod catalog_v3_tests {
                     format!(" {captured}"),
                     format!("{})", captured.replacen("CHECK (", "CHECK ((", 1)),
                 ] {
-                    let mut bad = snapshot(profile, actions(profile).len());
+                    let mut bad = snapshot(profile, storage_v4_prefix(profile));
                     bad.get_mut(&(table.to_owned(), name.to_owned()))
                         .unwrap()
                         .kind = changed;
@@ -1077,7 +1121,7 @@ mod catalog_v3_tests {
     #[test]
     fn v4_postgresql_restore_forms_preserve_other_properties_and_catalog_keys() {
         let profile = DatabaseProfile::PostgreSql;
-        let mut restored_catalog = snapshot(profile, actions(profile).len());
+        let mut restored_catalog = snapshot(profile, storage_v4_prefix(profile));
         for &(table, name, _, restored) in &POSTGRESQL17_IMPORT_CHECK_FORMS {
             restored_catalog
                 .get_mut(&(table.to_owned(), name.to_owned()))

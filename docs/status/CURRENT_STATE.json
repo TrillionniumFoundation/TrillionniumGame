@@ -192,5 +192,44 @@
     "compatibility_credit": false,
     "production_ready": false,
     "full_replacement": false
+  },
+  "nakama_accounts_schema5_source_candidate": {
+    "status": "isolated-unpromotable-source-frontier5",
+    "supported_source_schema_version": 5,
+    "default_runtime_schema_version": 4,
+    "storage_writer_epoch": 4,
+    "native_tables": [
+      "users",
+      "user_device"
+    ],
+    "field_counts": {
+      "users": 23,
+      "user_device": 8
+    },
+    "typed_target": "AuthoritativeSchemaTarget::NakamaAccountsV5",
+    "gate_reason": "schema5_native_catalog_capture_pending",
+    "gate_precedes_namespace_and_DDL": true,
+    "native_catalog_observations_bound": false,
+    "native_migration_executed": false,
+    "default_runtime_promoted": false,
+    "account_repository_implemented": false,
+    "account_service_HTTP_gRPC_implemented": false,
+    "account_transfer_implemented": false,
+    "schema5_storage_transfer_admitted": false,
+    "schema5_backup_restore_qualified": false,
+    "existing_eight_SQL_unchanged": true,
+    "existing_storage_transfer_guard_frame_unchanged": true,
+    "preserved_source_publishers": [
+      "source_commit",
+      "v2_apply_source_commit",
+      "v3_apply_source_commit"
+    ],
+    "new_source_publisher": "v4_apply_source_commit records actual prior4 publisher only when publishing5",
+    "full_Nakama_schema_or_account_parity_claimed": false,
+    "accepted": false,
+    "compatibility_credit": false,
+    "claims_boundary": "Complete current two-table fields/defaults/constraints are declared; source-display-name GIN/search, full other Nakama tables, account service/import/runtime and native qualification remain open.",
+    "current_evidence_binding_supports_fullfrontier5_HEAD": false,
+    "blocking_source_boundary": "Existing v4 live, backup, retry and outbox evidence require full locked4 source; fullfrontier5 with selected runtime4 needs distinct typed source-prefix binding before merge."
   }
 }

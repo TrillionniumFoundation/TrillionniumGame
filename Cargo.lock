@@ -1648,6 +1648,7 @@ dependencies = [
  "trnm-persistence-pg",
  "trnm-realtime-wire",
  "trnm-session-core",
+ "trnm-token-crypto-provider",
  "trnm-token-jwt-adapter",
 ]
 
@@ -1701,6 +1702,7 @@ dependencies = [
  "hmac",
  "sha2",
  "subtle",
+ "trnm-token-crypto-provider",
 ]
 
 [[package]]

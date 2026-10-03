@@ -38,6 +38,8 @@ TRNM_DATABASE_URL="postgresql://trnm:trnm@127.0.0.1:${PORT}/trnm_source" TRNM_DA
   > "$EVIDENCE_DIR/schema-identity.json" 2> "$EVIDENCE_DIR/schema-build.log"
 cp "$ROOT/migrations/MIGRATION_CHAIN.lock.json" "$EVIDENCE_DIR/migration-lock.json"
 python3 "$ROOT/scripts/check-migration-lock.py" > "$EVIDENCE_DIR/migration-chain-validation.json"
+python3 "$ROOT/scripts/capture-schema-source-selection.py" --root "$EVIDENCE_DIR" --profile postgresql \
+  --commit "$source_commit" --tree "$(git -C "$ROOT" rev-parse HEAD^{tree})" > "$EVIDENCE_DIR/schema-source-capture.json"
 python3 "$ROOT/scripts/check-authoritative-schema-identity.py" "$EVIDENCE_DIR/schema-identity.json" postgresql --mode fresh --source-commit "$source_commit" \
   > "$EVIDENCE_DIR/schema-identity-check.json"
 
@@ -257,8 +259,14 @@ restored_v3=projection.validate_storage_snapshot_bytes((evidence/'restored-data.
 assert source_v3==restored_v3
 (evidence/'storage-v3-snapshot-check.json').write_text(json.dumps(source_v3,sort_keys=True)+'\n')
 lock=json.loads((evidence/'migration-lock.json').read_text())
-ordered=lock['profiles'][profile]['ordered_files']
+import subprocess
+sys.path.insert(0,str(root/'scripts'))
+import schema_evidence_binding as binding
+token=binding.verify_binding(root,profile=profile)
+assert len(lock['profiles'][profile]['ordered_files'])==5
+ordered=binding.operational_binding(token)['ordered_files']
 assert len(ordered)==4
+binding.validate_annex_directory(token,evidence,commit=fresh['source_commit'],tree=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD^{tree}'],text=True).strip())
 archived_migrations=[]
 for entry in ordered:
     source=root/entry['path']
@@ -282,6 +290,7 @@ manifest={
     "migration_lock_sha256":digest(root/"migrations/MIGRATION_CHAIN.lock.json"),
   "schema_identity":json.loads((evidence/"schema-identity.json").read_text()),
   "migration_chain_validation":json.loads((evidence/"migration-chain-validation.json").read_text()),
+  "source_selection":binding.identity_fields(token),
     "backup_sha256":digest(evidence/"source.dump"),
     "source_data_sha256":digest(evidence/"source-data.txt"),
     "restored_data_sha256":digest(evidence/"restored-data.txt"),

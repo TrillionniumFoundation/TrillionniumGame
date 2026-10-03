@@ -43,7 +43,7 @@
     ],
     "metadata_table": "trnm_schema_metadata",
     "schema_version": 4,
-    "identity_rule": "Every build, migration, adapter test, backup and restore artifact must record the complete ordered migration-chain SHA-256 and candidate commit/tree.",
+    "identity_rule": "Every build, migration, adapter test, backup and restore artifact binds the complete source-frontier ordered chain plus candidate commit/tree. A separately verified typed execution selection binds the exact initial migration prefix, its schema version/digest/table count/writer epoch and actual provenance. Current fullsource5 requires all five SQL proofs/profile even when StorageV4 executes only the original four; historical source4 is explicitly legacy and ineligible as a current source5 binding.",
     "postgresql_connection_fault_source_candidate": {
       "harness": "scripts/ci-postgresql-connection-faults.sh",
       "source_contract": "python3 scripts/check-postgresql-connection-faults.py",
@@ -192,6 +192,64 @@
       "compatibility_credit": false,
       "migration_compatible": false,
       "production_ready": false
+    },
+    "default_runtime_schema_version": 4,
+    "latest_supported_schema_version": 5,
+    "accounts_v5_source_candidate": {
+      "target": "NakamaAccountsV5",
+      "storage_writer_epoch": 4,
+      "migration": "0005_nakama_accounts_up.sql",
+      "tables": [
+        "users",
+        "user_device"
+      ],
+      "full_current_two_table_fields_defaults_constraints": true,
+      "native_catalog_observations_bound": false,
+      "native_activation_allowed": false,
+      "default_runtime_promotion_allowed": false,
+      "repository_service_routes_implemented": false,
+      "account_transfer_implemented": false,
+      "accounts_v5_backups_restores_qualified": false,
+      "blocked_before_ddl": "schema5_native_catalog_capture_pending",
+      "accepted": false,
+      "boundary": "Default serve/migrate/import remains strict schema4 prefix. Schema5 source frontier is explicit and cannot borrow epoch4, storage packet or old catalog observations."
+    },
+    "source_execution_selection_policy": {
+      "schema": "trillionnium.schema-execution-selection-policy.v1",
+      "full_source_frontier_schema_version": 5,
+      "default_target": "StorageV4",
+      "full_source_validation_required": true,
+      "selected_prefix_must_be_initial_contiguous": true,
+      "profiles_are_separate": true,
+      "targets": {
+        "StorageV4": {
+          "selected_schema_version": 4,
+          "executed_migration_file_count": 4,
+          "storage_writer_epoch": 4,
+          "table_count": 12,
+          "source_binding_allowed": true
+        },
+        "NakamaAccountsV5": {
+          "selected_schema_version": 5,
+          "executed_migration_file_count": 5,
+          "storage_writer_epoch": 4,
+          "table_count": 14,
+          "source_binding_allowed": false,
+          "blocked_before_io": "schema5_native_catalog_capture_pending"
+        }
+      },
+      "historical_source4": {
+        "envelope": "trillionnium.historical-schema4-source-selection.v1",
+        "current_head_eligible": false,
+        "must_use_genuine_historical_validator_and_source": true
+      },
+      "claims": {
+        "runtime_execution_verified": false,
+        "accepted": false,
+        "compatibility_credit": false,
+        "production_ready": false,
+        "account_transfer_admitted": false
+      }
     }
   },
   "non_authoritative": [

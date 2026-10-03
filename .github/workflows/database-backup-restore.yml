@@ -6,10 +6,16 @@ on:
   push:
     branches: [main]
     paths:
+      - 'tests/control_plane/test_schema_source_selection.py'
+      - 'tests/control_plane/test_schema_evidence_binding.py'
       - 'crates/**'
       - 'rust-toolchain.toml'
       - 'config/database-test-images.json'
       - 'scripts/check-migration-lock.py'
+      - 'scripts/schema_source_selection.py'
+      - 'scripts/schema_evidence_binding.py'
+      - 'scripts/capture-schema-source-selection.py'
+      - 'contracts/database/source-execution-evidence.v1.json'
       - 'scripts/seal-outbox-final-attempt.py'
       - 'scripts/verify-actions-log-artifact.py'
       - 'Cargo.lock'
@@ -160,7 +166,7 @@ jobs:
           manifest_view['files.sha256'] = manifest_view.pop('SHA256SUMS')
           checker.verify_file_manifest(manifest_view)
           identity = schemas.decode_identity_document(files['identity.json'])
-          assert identity['schema'] == 'trillionnium.backup-restore-identity.v1'
+          assert identity['schema'] == 'trillionnium.backup-restore-identity.v2'
           assert identity['job_identity_kind'] == 'workflow_job_key_and_matrix_profile'
           actual_head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           actual_tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
@@ -173,16 +179,19 @@ jobs:
               'workflow_ref': os.environ['GITHUB_WORKFLOW_REF'], 'workflow_sha': os.environ['GITHUB_WORKFLOW_SHA'],
               'job': os.environ['GITHUB_JOB'], 'job_name': 'backup-restore-' + profile, 'profile': profile,
           }
-          assert all(identity[key] == value for key, value in expected.items()), 'backup archive producer identity differs'
+          assert set(identity) == set(expected) | {'schema', 'job_identity_kind', 'source_selection', 'schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm', 'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit', 'compatibility_credit', 'accepted_evidence', 'production_ready'}, 'closed backup identity fields differ'
+          assert all(type(identity[key]) is type(value) and identity[key] == value for key, value in expected.items()), 'backup archive producer identity differs'
           for flag in ('compatibility_credit', 'accepted_evidence', 'production_ready'):
               assert identity[flag] is False
-          chains, version, table_count = schemas.validated_source()
+          binding = checker.BINDING.verify_binding(Path('.'), profile=profile)
+          selection = checker.BINDING.selection_token(binding)
+          source_fields = checker.BINDING.validate_annex_files(binding, files, commit=actual_head, tree=actual_tree)
+          assert checker.BINDING.same(identity['source_selection'], source_fields)
+          version = 4
           fresh = schemas.decode_identity_document(files['schema-identity.json'])
           restored = schemas.decode_identity_document(files['restored-schema-identity.json'])
-          schemas.validate_identity(fresh, profile=profile, chains=chains, schema_version=version,
-                                    table_count=table_count, mode='fresh', source_commit=actual_head)
-          schemas.validate_identity(restored, profile=profile, chains=chains, schema_version=version,
-                                    table_count=table_count, mode='verify')
+          schemas.validate_identity(fresh, profile=profile, selection=selection, mode='fresh', source_commit=actual_head)
+          schemas.validate_identity(restored, profile=profile, selection=selection, mode='verify')
           assert all(restored[key] == fresh[key] == identity[key] for key in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'))
           assert all(fresh[key] == identity[key] for key in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm'))
           assert fresh['schema_version'] == 4 and fresh['storage_writer_epoch'] == 4
@@ -203,11 +212,12 @@ jobs:
           assert summary['schema_version'] == summary['storage_writer_epoch'] == summary['authoritative_migration_file_count'] == 4
           assert summary['storage_v3_fixture_count'] == source_v3['storage_fixture_count'] == 4
           lock = migrations.load_lock()
-          assert len(lock['profiles'][profile]['ordered_files']) == 4
+          assert len(lock['profiles'][profile]['ordered_files']) == 5
+          selected = checker.BINDING.operational_binding(binding)['ordered_files']
           assert files['migration-lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()
-          checker.verify_migration_files(files, lock['profiles'][profile]['ordered_files'])
+          checker.verify_migration_files(files, binding)
           validation = migrations.validate()
-          assert schemas.decode_identity_document(files['migration-chain-validation.json']) == validation
+          assert checker.BINDING.same(schemas.decode_identity_document(files['migration-chain-validation.json']), validation)
           checked = {'schema': 'trillionnium.backup-restore-archive-check.v1', 'profile': profile,
                      'commit': actual_head, 'tree': actual_tree, 'file_count': len(files),
                      'sha256': hashlib.sha256(data).hexdigest(), 'size_bytes': len(data), 'identity': identity,

@@ -143,6 +143,8 @@ TRNM_SCHEMA_APPLIED_AT_MS=1 \
   >"$evidence/schema-identity.json" 2>"$evidence/schema-migration.log"
 python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" \
   --mode fresh --source-commit="$commit" >"$evidence/schema-identity-check.json"
+python3 scripts/capture-schema-source-selection.py --root "$evidence" --profile "$profile" \
+  --commit "$commit" --tree "$(git rev-parse HEAD^{tree})" >"$evidence/schema-source-capture.json"
 python3 - "$evidence/schema-identity.json" >>"$evidence/identity.env" <<'PYIDENTITY'
 import json,sys
 from pathlib import Path

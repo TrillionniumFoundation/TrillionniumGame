@@ -10,7 +10,32 @@ use trnm_contracts::{Digest32, DomainError};
 use crate::{data_loss, failed_precondition, invalid, map_postgres_error, to_i64};
 use crate::{DatabaseProfile, IntegrityDigest, PgRepository};
 
+/// Default serving and storage-transfer ABI remains schema4.
 pub const AUTHORITATIVE_SCHEMA_VERSION: u64 = 4;
+pub const AUTHORITATIVE_SUPPORTED_SCHEMA_VERSION: u64 = 5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthoritativeSchemaTarget {
+    StorageV4,
+    NakamaAccountsV5,
+}
+
+impl AuthoritativeSchemaTarget {
+    #[must_use]
+    pub const fn version(self) -> u64 {
+        match self {
+            Self::StorageV4 => 4,
+            Self::NakamaAccountsV5 => 5,
+        }
+    }
+
+    const fn table_count(self) -> usize {
+        match self {
+            Self::StorageV4 => 12,
+            Self::NakamaAccountsV5 => 14,
+        }
+    }
+}
 pub const AUTHORITATIVE_STORAGE_WRITER_EPOCH: u64 = 4;
 pub const AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM: &str = "ordered-path-git-blob-sha256.v1";
 const REQUIRED_TABLES: [&str; 12] = [
@@ -42,6 +67,8 @@ pub struct SchemaIdentity {
     pub v2_apply_source_commit: String,
     /// Publisher of the historical v3 revision, preserved by the v4 cutover.
     pub v3_apply_source_commit: String,
+    /// Original schema4 publisher, present only for the explicit AccountsV5 target.
+    pub v4_apply_source_commit: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,6 +108,8 @@ enum MigrationActionKind {
     RemoveStorageCheck,
     AddStorageCheck,
     CreateImportTable,
+    CreateAccountTable,
+    SeedSystemUser,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +123,7 @@ enum ActionDescriptor {
     Column(ColumnDescriptor),
     StorageCheck(ColumnDescriptor),
     ImportTable(ImportTableDescriptor),
+    AccountTable(ImportTableDescriptor),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,6 +147,12 @@ struct RevisionDescriptor {
 
 include!(concat!(env!("OUT_DIR"), "/authoritative_schema.rs"));
 include!("schema_parts/import_catalog.rs");
+include!("schema_parts/account_native_columns.rs");
+include!("schema_parts/account_native_attributes.rs");
+include!("schema_parts/account_relation_semantics.rs");
+include!("schema_parts/account_native_objects.rs");
+include!("schema_parts/account_native_triggers.rs");
+include!("schema_parts/account_catalog.rs");
 include!("schema_parts/catalog.rs");
 include!("schema_parts/metadata.rs");
 include!("schema_parts/migrate.rs");
@@ -202,6 +238,17 @@ pub fn authoritative_chain_digest(profile: DatabaseProfile) -> IntegrityDigest {
     );
     let digest = chain_digest_at(profile, AUTHORITATIVE_SCHEMA_VERSION)
         .expect("the locked current migration prefix is embedded");
+    let expected = current.chain_digest;
+    debug_assert_eq!(digest.get(), Digest32::new(expected));
+    digest
+}
+
+/// Complete embedded source frontier. This digest grants no runtime or account
+/// serving authority; current storage metadata keeps its exact prefix4 digest.
+#[must_use]
+pub fn authoritative_supported_chain_digest(profile: DatabaseProfile) -> IntegrityDigest {
+    let digest = chain_digest_at(profile, AUTHORITATIVE_SUPPORTED_SCHEMA_VERSION)
+        .expect("the locked supported migration chain is embedded");
     let expected = match profile {
         DatabaseProfile::PostgreSql => POSTGRESQL_CHAIN_BYTES,
         DatabaseProfile::CockroachDb => COCKROACHDB_CHAIN_BYTES,
@@ -221,15 +268,20 @@ mod tests {
             (DatabaseProfile::CockroachDb, COCKROACHDB_CHAIN_BYTES),
         ] {
             assert_eq!(
-                authoritative_chain_digest(profile).get(),
+                digest_for_steps(steps(profile)).get(),
                 Digest32::new(expected)
             );
             let chain = steps(profile);
-            assert_eq!(chain.len(), 4);
+            assert_eq!(chain.len(), 5);
             assert_eq!(chain[0].version, 1);
             assert_eq!(chain[1].version, 2);
             assert_eq!(chain[2].version, 3);
             assert_eq!(chain[3].version, AUTHORITATIVE_SCHEMA_VERSION);
+            assert_eq!(chain[4].version, AUTHORITATIVE_SUPPORTED_SCHEMA_VERSION);
+            assert_eq!(
+                authoritative_chain_digest(profile).get(),
+                Digest32::new(revision(profile, 4).unwrap().chain_digest)
+            );
             assert!(chain[0].sql.contains("BEGIN;"));
             assert!(chain[0].sql.contains("COMMIT;"));
             assert!(!chain
@@ -238,9 +290,9 @@ mod tests {
             assert_eq!(
                 actions(profile).len(),
                 if profile == DatabaseProfile::PostgreSql {
-                    30
+                    35
                 } else {
-                    34
+                    39
                 }
             );
             // Nullable bare type declarations still belong to the baseline;
@@ -340,7 +392,7 @@ mod tests {
                 .map(|action| action.id)
                 .collect();
             assert_eq!(actual, expected_actions);
-            for unknown in [0, 5, u64::MAX] {
+            for unknown in [0, 6, u64::MAX] {
                 assert!(revision(profile, unknown).is_none());
                 assert!(chain_digest_at(profile, unknown).is_none());
             }

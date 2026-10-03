@@ -5,11 +5,17 @@ on:
   push:
     branches: [main]
     paths:
+      - 'tests/control_plane/test_schema_source_selection.py'
+      - 'tests/control_plane/test_schema_evidence_binding.py'
       - 'crates/**'
       - 'Cargo.toml'
       - 'rust-toolchain.toml'
       - 'migrations/**'
       - 'scripts/check-migration-lock.py'
+      - 'scripts/schema_source_selection.py'
+      - 'scripts/schema_evidence_binding.py'
+      - 'scripts/capture-schema-source-selection.py'
+      - 'contracts/database/source-execution-evidence.v1.json'
       - 'scripts/seal-outbox-final-attempt.py'
       - 'scripts/verify-actions-log-artifact.py'
       - 'crates/trnm-persistence-pg/src/lib.rs'
@@ -185,7 +191,7 @@ jobs:
           spec = importlib.util.spec_from_file_location('retry_schema_checker', 'scripts/check-authoritative-schema-identity.py')
           checker = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(checker)
-          chains, version, tables = checker.validated_source()
+          selection = checker.validated_source('cockroachdb')
           reports = {}
           lines = Path('run-cockroach-retry.log').read_text().splitlines()
           for label, mode in [('apply', 'fresh'), ('verify', 'verify')]:
@@ -194,8 +200,7 @@ jobs:
               assert len(matches) == 1, ('missing or ambiguous executed schema report', label)
               raw = matches[0].encode()
               report = checker.decode_identity_document(raw)
-              checker.validate_identity(report, profile='cockroachdb', chains=chains,
-                                        schema_version=version, table_count=tables, mode=mode,
+              checker.validate_identity(report, profile='cockroachdb', selection=selection, mode=mode,
                                         source_commit=os.environ['CANDIDATE_SHA'] if label == 'apply' else None)
               (Path('run/cockroach-retry') / ('schema-' + label + '.json')).write_bytes(raw + b'\n')
               reports[label] = report
@@ -231,7 +236,7 @@ jobs:
           tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
           assert commit == os.environ['CANDIDATE_SHA']
           lock = json.loads((root / 'migration-chain.lock.json').read_text())
-          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 4
+          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 5
           applied = json.loads((root / 'schema-apply.json').read_text())
           verified = json.loads((root / 'schema-verify.json').read_text())
           assert applied['schema_version'] == applied['storage_writer_epoch'] == 4
@@ -240,7 +245,15 @@ jobs:
               assert applied[field] == verified[field]
           for field in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
               assert applied[field] == commit
-          for entry in lock['profiles']['cockroachdb']['ordered_files']:
+          import sys
+          sys.path.insert(0, 'scripts')
+          import schema_evidence_binding as binding
+          token = binding.verify_binding(Path('.'), profile='cockroachdb')
+          for entry in binding.binding_document(token)['full_source_inventory']:
+              assert subprocess.check_output(['git', 'rev-parse', 'HEAD:' + entry['path']], text=True).strip() == entry['git_blob_sha1']
+          binding.write_annex(token, Path('.'), root, commit=commit, tree=tree)
+          selected = binding.operational_binding(token)['ordered_files']
+          for entry in selected:
               source = Path(entry['path'])
               assert subprocess.check_output(['git', 'hash-object', str(source)], text=True).strip() == entry['git_blob_sha1']
               target = root / source
@@ -258,7 +271,8 @@ jobs:
           for field in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm',
                         'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
               identity[field] = applied[field]
-          identity['authoritative_migration_file_count'] = len(lock['profiles']['cockroachdb']['ordered_files'])
+          identity['authoritative_migration_file_count'] = len(selected)
+          identity['source_selection'] = binding.identity_fields(token)
           identity['accepted_evidence'] = False
           (root / 'identity.json').write_text(json.dumps(identity, sort_keys=True, separators=(',', ':')) + '\n')
           spec = importlib.util.spec_from_file_location('retry_sealer', 'scripts/seal-outbox-final-attempt.py')
@@ -309,23 +323,27 @@ jobs:
           checker.verify_file_manifest(files)
           lock = checker.strict_object(files['migration-chain.lock.json'], 'retained migration lock')
           assert files['migration-chain.lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()
-          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 4
-          checker.verify_migration_files(files, lock['profiles']['cockroachdb']['ordered_files'])
+          assert len(lock['profiles']['cockroachdb']['ordered_files']) == 5
+          token = checker.BINDING.verify_binding(Path('.'), profile='cockroachdb')
+          source_fields = checker.BINDING.validate_annex_files(token, files, commit=commit, tree=tree)
+          validation = checker.strict_object(files['migration-chain-validation.json'], 'complete source validation')
+          assert checker.BINDING.same(validation, checker.BINDING.binding_document(token)['source_selection']['source']['complete_validation']), 'retry full source validation differs'
+          checker.verify_migration_files(files, token)
           spec = importlib.util.spec_from_file_location('retry_archive_schema', 'scripts/check-authoritative-schema-identity.py')
           schemas = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(schemas)
-          chains, version, tables = schemas.validated_source()
+          selection = checker.BINDING.selection_token(token)
           identity = schemas.decode_identity_document(files['identity.json'])
           assert isinstance(identity, dict)
+          assert set(identity) == set(expected_producer) | {'schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm', 'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit', 'authoritative_migration_file_count', 'source_selection'}, 'closed retry identity fields differ'
           for field, expected in expected_producer.items():
               assert type(identity.get(field)) is type(expected) and identity[field] == expected, ('retry producer mismatch', field)
           applied = schemas.decode_identity_document(files['schema-apply.json'])
           verified = schemas.decode_identity_document(files['schema-verify.json'])
-          schemas.validate_identity(applied, profile='cockroachdb', chains=chains, schema_version=version,
-                                    table_count=tables, mode='fresh', source_commit=commit)
-          schemas.validate_identity(verified, profile='cockroachdb', chains=chains, schema_version=version,
-                                    table_count=tables, mode='verify')
+          schemas.validate_identity(applied, profile='cockroachdb', selection=selection, mode='fresh', source_commit=commit)
+          schemas.validate_identity(verified, profile='cockroachdb', selection=selection, mode='verify')
           assert identity['schema_version'] == identity['storage_writer_epoch'] == identity['authoritative_migration_file_count'] == 4
+          assert checker.BINDING.same(identity['source_selection'], source_fields)
           for field in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm',
                         'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'):
               assert applied[field] == verified[field] == identity[field]

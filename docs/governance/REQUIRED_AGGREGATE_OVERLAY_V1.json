@@ -3,7 +3,7 @@
     "allowed_events": [
       "pull_request"
     ],
-    "git_blob_sha1": "f60060baa1eb2817669738d845267d258d7e1741",
+    "git_blob_sha1": "b7e608148aa0e142497e0a40df9373dcab6f9638",
     "minimum_successful_execution_jobs": 1,
     "name": "trillionnium-game-merge-gate",
     "path": ".github/workflows/trillionnium-game-merge-gate.yml",
@@ -13,7 +13,7 @@
   "base_manifest_blob_sha1": "b1c69f73fe1b44f320067ed5dafea70e4c78af01",
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "event": "pull_request",
-  "overlay_sha256": "c4fe004e9db4550fe34b92d57011e53afbc74b8565a39c1840c53f5b9918ad0b",
+  "overlay_sha256": "2bddc0f8155d29cef80a45d8c08e6cc009cfb99b809f2d02defe842787aec1c9",
   "repository": "TrillionniumFoundation/TrillionniumGame",
   "schema": "trnm_required_aggregate_overlay_v1"
 }

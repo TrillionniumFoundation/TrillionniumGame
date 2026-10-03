@@ -17,7 +17,8 @@ pub fn generate() {
             .expect("migration lock JSON");
     assert_eq!(lock["schema"], "trillionnium.migration-chain-lock.v1");
     assert_eq!(lock["project_id"], "trillionnium-game");
-    assert_eq!(lock["schema_version"], 4);
+    assert_eq!(lock["schema_version"], 5);
+    assert_eq!(lock["default_runtime_schema_version"], 4);
     let profiles = lock["profiles"].as_object().expect("profile object");
     assert_eq!(profiles.len(), 2);
     let mut generated = String::new();
@@ -32,8 +33,8 @@ pub fn generate() {
         // A new schema version must deliberately extend the engine's state machine.
         assert_eq!(
             ordered.len(),
-            4,
-            "engine supports the locked v1 -> v2 -> v3 -> v4 chain"
+            5,
+            "engine embeds the locked v1 -> v2 -> v3 -> v4 -> opt-in v5 chain"
         );
         let mut inventory = Vec::new();
         collect_sql(&root, &root.join(&directory), &mut inventory);
@@ -63,6 +64,7 @@ pub fn generate() {
                         1 => "0002_storage_timestamps_up.sql",
                         2 => "0003_storage_jsonb_up.sql",
                         3 => "0004_storage_source_import_up.sql",
+                        4 => "0005_nakama_accounts_up.sql",
                         _ => unreachable!(),
                     }
                 )
@@ -98,6 +100,7 @@ pub fn generate() {
                         2 => 16,
                         3 if profile == "postgresql" => 8,
                         3 => 12,
+                        4 => 5,
                         _ => unreachable!(),
                     },
                     "locked typed action inventory"
@@ -117,6 +120,7 @@ pub fn generate() {
                 1 => Some(2_u64),
                 2 => Some(3_u64),
                 3 => Some(4_u64),
+                4 => Some(4_u64), // Accounts schema is distinct from storage writer ownership.
                 _ => panic!("unreviewed authoritative writer epoch"),
             };
             writeln!(revisions, "RevisionDescriptor {{ version: {}, chain_digest: {prefix:?}, storage_writer_epoch: {storage_writer_epoch:?}, action_range: {action_start}..{action_count} }},", index + 1).unwrap();
@@ -245,6 +249,9 @@ fn declared_actions(
 ) -> (String, usize) {
     if revision == 3 {
         return declared_import_actions(sql, names, profile);
+    }
+    if revision == 4 {
+        return declared_accounts_actions(sql, names, profile);
     }
     let mut pending = None;
     let mut output = String::new();
@@ -597,4 +604,74 @@ fn reviewed_import_constraints(id: &str, statement: &str) {
         .filter(|line| line.starts_with("CONSTRAINT"))
         .collect();
     assert_eq!(actual, expected, "closed journal constraint inventory");
+}
+
+// Schema5 is a separately named account target. These are source declarations;
+// account native catalog tuples must be independently captured before activation.
+fn declared_accounts_actions(
+    sql: &str,
+    names: &mut BTreeSet<String>,
+    profile: &str,
+) -> (String, usize) {
+    assert!(matches!(profile, "postgresql" | "cockroachdb"));
+    let expected: &[(&str, &str)] = &[
+("metadata_v4_apply_source_commit", "ALTER TABLE trnm_schema_metadata ADD COLUMN v4_apply_source_commit TEXT;"),
+("nakama_users", "CREATE TABLE public.users (\nid UUID NOT NULL,\nusername VARCHAR(128) NOT NULL,\ndisplay_name VARCHAR(255),\navatar_url VARCHAR(512),\nlang_tag VARCHAR(18) NOT NULL DEFAULT 'en',\nlocation VARCHAR(255),\ntimezone VARCHAR(255),\nmetadata JSONB NOT NULL DEFAULT '{}',\nwallet JSONB NOT NULL DEFAULT '{}',\nemail VARCHAR(255),\npassword BYTEA,\nfacebook_id VARCHAR(128),\ngoogle_id VARCHAR(128),\ngamecenter_id VARCHAR(128),\nsteam_id VARCHAR(128),\ncustom_id VARCHAR(128),\nedge_count INT NOT NULL DEFAULT 0,\ncreate_time TIMESTAMPTZ NOT NULL DEFAULT now(),\nupdate_time TIMESTAMPTZ NOT NULL DEFAULT now(),\nverify_time TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00 UTC',\ndisable_time TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00 UTC',\nfacebook_instant_game_id VARCHAR(128),\napple_id VARCHAR(128),\nCONSTRAINT users_pkey PRIMARY KEY (id),\nCONSTRAINT users_username_key UNIQUE (username),\nCONSTRAINT users_email_key UNIQUE (email),\nCONSTRAINT users_facebook_id_key UNIQUE (facebook_id),\nCONSTRAINT users_google_id_key UNIQUE (google_id),\nCONSTRAINT users_gamecenter_id_key UNIQUE (gamecenter_id),\nCONSTRAINT users_steam_id_key UNIQUE (steam_id),\nCONSTRAINT users_custom_id_key UNIQUE (custom_id),\nCONSTRAINT users_facebook_instant_game_id_key UNIQUE (facebook_instant_game_id),\nCONSTRAINT users_apple_id_key UNIQUE (apple_id),\nCONSTRAINT users_password_check CHECK (length(password) < 32000),\nCONSTRAINT users_edge_count_check CHECK (edge_count >= 0)\n);"),
+("nakama_system_user", "INSERT INTO public.users (id, username) VALUES ('00000000-0000-0000-0000-000000000000', '') ON CONFLICT (id) DO NOTHING;"),
+("nakama_user_device", "CREATE TABLE public.user_device (\nid VARCHAR(128) NOT NULL,\nuser_id UUID NOT NULL,\npreferences JSONB NOT NULL DEFAULT '{}',\npush_token_amazon VARCHAR(512) NOT NULL DEFAULT '',\npush_token_android VARCHAR(512) NOT NULL DEFAULT '',\npush_token_huawei VARCHAR(512) NOT NULL DEFAULT '',\npush_token_ios VARCHAR(512) NOT NULL DEFAULT '',\npush_token_web VARCHAR(512) NOT NULL DEFAULT '',\nCONSTRAINT user_device_pkey PRIMARY KEY (id),\nCONSTRAINT user_device_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users (id) ON UPDATE NO ACTION ON DELETE CASCADE,\nCONSTRAINT user_device_user_id_id_key UNIQUE (user_id, id)\n);"),
+("metadata_v4_history", "ALTER TABLE trnm_schema_metadata ADD CONSTRAINT metadata_v4_history CHECK (schema_version < 5 OR (v4_apply_source_commit IS NOT NULL AND length(v4_apply_source_commit) = 40));"),
+];
+    let mut actual = Vec::new();
+    let mut pending = None;
+    let mut body = Vec::new();
+    for line in sql.lines().map(str::trim) {
+        if let Some(id) = line.strip_prefix("-- trnm:action ") {
+            assert!(
+                pending.is_none() && body.is_empty(),
+                "incomplete account action"
+            );
+            assert!(names.insert(id.to_owned()), "duplicate account action");
+            pending = Some(id.to_owned());
+        } else if line.is_empty() || line.starts_with("--") || matches!(line, "BEGIN;" | "COMMIT;")
+        {
+            assert!(!line.starts_with("-- trnm:"), "unknown account directive");
+        } else {
+            assert!(pending.is_some(), "unmarked account statement");
+            body.push(line.to_owned());
+            if line.ends_with(';') {
+                actual.push((pending.take().unwrap(), body.join("\n")));
+                body.clear();
+            }
+        }
+    }
+    assert!(
+        pending.is_none() && body.is_empty(),
+        "unterminated account action"
+    );
+    assert_eq!(
+        actual
+            .iter()
+            .map(|(id, sql)| (id.as_str(), sql.as_str()))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let mut output = String::new();
+    for (id, statement) in actual {
+        let (kind, descriptor) = match id.as_str() {
+            "metadata_v4_apply_source_commit" => ("AddColumn", "ActionDescriptor::Column(ColumnDescriptor { table: \"trnm_schema_metadata\", name: \"v4_apply_source_commit\", kind: \"text\", nullable: true, default_zero: false, character_maximum_length: None })".to_owned()),
+            "metadata_v4_history" => ("AddCheck", "ActionDescriptor::Column(ColumnDescriptor { table: \"trnm_schema_metadata\", name: \"@check:metadata_v4_history\", kind: \"CHECK (((schema_version < 5) OR ((v4_apply_source_commit IS NOT NULL) AND (length(v4_apply_source_commit) = 40))))\", nullable: false, default_zero: false, character_maximum_length: None })".to_owned()),
+            "nakama_system_user" => ("SeedSystemUser", "ActionDescriptor::Column(ColumnDescriptor { table: \"users\", name: \"@system-user\", kind: \"present\", nullable: false, default_zero: false, character_maximum_length: None })".to_owned()),
+            "nakama_users" => {
+                let declarations = if profile == "cockroachdb" { "ColumnDescriptor { table: \"users\", name: \"id\", kind: \"uuid\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"username\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"display_name\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(255_i64) },\nColumnDescriptor { table: \"users\", name: \"avatar_url\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(512_i64) },\nColumnDescriptor { table: \"users\", name: \"lang_tag\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(18_i64) },\nColumnDescriptor { table: \"users\", name: \"location\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(255_i64) },\nColumnDescriptor { table: \"users\", name: \"timezone\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(255_i64) },\nColumnDescriptor { table: \"users\", name: \"metadata\", kind: \"jsonb\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"wallet\", kind: \"jsonb\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"email\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(255_i64) },\nColumnDescriptor { table: \"users\", name: \"password\", kind: \"bytea\", nullable: true, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"facebook_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"google_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"gamecenter_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"steam_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"custom_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"edge_count\", kind: \"int8\", nullable: false, default_zero: true, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"create_time\", kind: \"timestamptz\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"update_time\", kind: \"timestamptz\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"verify_time\", kind: \"timestamptz\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"disable_time\", kind: \"timestamptz\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"facebook_instant_game_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"apple_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) }" } else { "ColumnDescriptor { table: \"users\", name: \"id\", kind: \"uuid\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"username\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"display_name\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(255_i64) },\nColumnDescriptor { table: \"users\", name: \"avatar_url\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(512_i64) },\nColumnDescriptor { table: \"users\", name: \"lang_tag\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(18_i64) },\nColumnDescriptor { table: \"users\", name: \"location\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(255_i64) },\nColumnDescriptor { table: \"users\", name: \"timezone\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(255_i64) },\nColumnDescriptor { table: \"users\", name: \"metadata\", kind: \"jsonb\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"wallet\", kind: \"jsonb\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"email\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(255_i64) },\nColumnDescriptor { table: \"users\", name: \"password\", kind: \"bytea\", nullable: true, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"facebook_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"google_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"gamecenter_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"steam_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"custom_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"edge_count\", kind: \"int4\", nullable: false, default_zero: true, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"create_time\", kind: \"timestamptz\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"update_time\", kind: \"timestamptz\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"verify_time\", kind: \"timestamptz\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"disable_time\", kind: \"timestamptz\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"users\", name: \"facebook_instant_game_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"users\", name: \"apple_id\", kind: \"varchar\", nullable: true, default_zero: false, character_maximum_length: Some(128_i64) }" };
+                ("CreateAccountTable", format!("ActionDescriptor::AccountTable(ImportTableDescriptor {{ table: {:?}, columns: &[{declarations}] }})", "users"))
+            }
+            "nakama_user_device" => {
+                let declarations = "ColumnDescriptor { table: \"user_device\", name: \"id\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(128_i64) },\nColumnDescriptor { table: \"user_device\", name: \"user_id\", kind: \"uuid\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"user_device\", name: \"preferences\", kind: \"jsonb\", nullable: false, default_zero: false, character_maximum_length: None },\nColumnDescriptor { table: \"user_device\", name: \"push_token_amazon\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(512_i64) },\nColumnDescriptor { table: \"user_device\", name: \"push_token_android\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(512_i64) },\nColumnDescriptor { table: \"user_device\", name: \"push_token_huawei\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(512_i64) },\nColumnDescriptor { table: \"user_device\", name: \"push_token_ios\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(512_i64) },\nColumnDescriptor { table: \"user_device\", name: \"push_token_web\", kind: \"varchar\", nullable: false, default_zero: false, character_maximum_length: Some(512_i64) }";
+                ("CreateAccountTable", format!("ActionDescriptor::AccountTable(ImportTableDescriptor {{ table: {:?}, columns: &[{declarations}] }})", "user_device"))
+            }
+            _ => panic!("unreviewed account action"),
+        };
+        writeln!(output, "MigrationAction {{ id: {id:?}, kind: MigrationActionKind::{kind}, descriptor: {descriptor}, sql: {statement:?} }},").unwrap();
+    }
+    (output, expected.len())
 }

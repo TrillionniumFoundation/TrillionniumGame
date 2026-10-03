@@ -51,7 +51,7 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertEqual(result["schema"], "trillionnium.server-source-check.v3")
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["binary"], "trnm-server")
-        self.assertEqual(result["runtime_module_count"], 26)
+        self.assertEqual(result["runtime_module_count"], 32)
         self.assertGreaterEqual(result["source_marker_count"], 20)
         self.assertFalse(result["claims"]["compiled"])
         self.assertFalse(result["claims"]["live_process_executed"])
@@ -67,7 +67,9 @@ class RustServerSliceContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         actual = {path.name for path in (ROOT / "crates/trnm-server/src/runtime").glob("*.rs") if path.is_file()}
         module.validate_runtime_file_inventory(actual)
-        for omitted in ("storage_api_projection_tests.rs", "storage_api_v3_live.rs"):
+        for omitted in ("storage_api_projection_tests.rs", "storage_api_v3_live.rs",
+                        "legacy_auth.rs", "legacy_auth_tests.rs", "legacy_device_predicates.rs",
+                        "legacy_repository.rs", "legacy_repository_tests.rs", "legacy_uuid.rs"):
             with self.subTest(omitted=omitted), self.assertRaisesRegex(module.ValidationError, "file set drift"):
                 module.validate_runtime_file_inventory(actual - {omitted})
         with self.assertRaisesRegex(module.ValidationError, "file set drift"):

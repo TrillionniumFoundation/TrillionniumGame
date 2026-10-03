@@ -220,6 +220,8 @@ TRNM_SCHEMA_APPLIED_AT_MS=1 \
   >"$evidence/schema-identity.json" 2>"$evidence/schema-migration.log"
 python3 scripts/check-authoritative-schema-identity.py "$evidence/schema-identity.json" "$profile" \
   --mode fresh --source-commit="$commit" >"$evidence/schema-identity-check.json"
+python3 scripts/capture-schema-source-selection.py --root "$evidence" --profile "$profile" \
+  --commit "$commit" --tree "$(git rev-parse HEAD^{tree})" >"$evidence/schema-source-capture.json"
 
 cargo build --locked --package trnm-persistence-pg \
   --bin trnm-pg-command --bin trnm-outbox-worker \

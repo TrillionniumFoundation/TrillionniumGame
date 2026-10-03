@@ -58,8 +58,9 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
     ) -> dict:
         observed = requested if observed is None else observed
         start = 1_800_000_000 + index * 21_600 if start is None else start
-        chains, version, tables = self.finalizer.IDENTITY.validated_source()
-        schema_profile = profile if profile in chains else "postgresql"
+        schema_profile = profile if profile in ("postgresql", "cockroachdb") else "postgresql"
+        selected = self.finalizer.IDENTITY.SELECTION.current_selection_document(self.finalizer.IDENTITY.validated_source(schema_profile))["selection"]
+        version, tables = 4, 12
         return {
             "schema": "trillionnium.database-capacity-segment.v1",
             "profile": profile,
@@ -73,7 +74,7 @@ class DatabaseCapacityEnduranceTests(unittest.TestCase):
             "schema_identity": {
                 "schema": "trillionnium.authoritative-schema-report.v1", "profile": schema_profile,
                 "schema_version": version, "storage_writer_epoch": 4,
-                "chain_digest": chains[schema_profile]["chain_sha256"],
+                "chain_digest": selected["execution_chain_digest"],
                 "digest_algorithm": "ordered-path-git-blob-sha256.v1",
                 "source_commit": "1" * 40, "upgrade_source_commit": "2" * 40,
                 # An explicit synthetic previous-revision publisher, independent

@@ -91,17 +91,16 @@ def load_segments(paths: list[Path]) -> list[tuple[Path, dict[str, Any]]]:
 
 
 def validate_capacity_manifest(value: Any, path: Path,
-                               schema_source: tuple[dict[str, Any], int, int] | None = None) -> dict[str, Any]:
+                               schema_source: Any = None) -> dict[str, Any]:
     require(isinstance(value, dict), f"{path}: capacity manifest")
     require(
         value.get("schema") == "trillionnium.database-capacity-segment.v1",
         f"{path}: capacity schema",
     )
     require(value.get("profile") in PROFILES, f"{path}: profile")
-    chains, version, tables = IDENTITY.validated_source() if schema_source is None else schema_source
+    selection = IDENTITY.validated_source(value["profile"]) if schema_source is None else schema_source
     try:
-        IDENTITY.validate_identity(value.get("schema_identity"), profile=value["profile"], chains=chains,
-                                   schema_version=version, table_count=tables, mode="verify")
+        IDENTITY.validate_identity(value.get("schema_identity"), profile=value["profile"], selection=selection, mode="verify")
     except IDENTITY.ValidationError as error:
         raise ValidationError(f"{path}: schema identity: {error}") from error
     exact_digest(value.get("migration_lock_sha256"), f"{path}: migration lock digest")
@@ -167,7 +166,7 @@ def validate(paths: list[Path], target: str) -> dict[str, Any]:
     values = load_segments(paths)
     require(values, "empty endurance ledger")
 
-    schema_source = IDENTITY.validated_source()
+    schema_source = IDENTITY.validated_source(values[0][1]["capacity_manifest"]["profile"])
     first_manifest = validate_capacity_manifest(
         values[0][1].get("capacity_manifest"), values[0][0], schema_source
     )

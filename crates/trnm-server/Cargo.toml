@@ -29,6 +29,7 @@ trnm-persistence-pg = { path = "../trnm-persistence-pg" }
 trnm-realtime-wire = { path = "../trnm-realtime-wire" }
 trnm-session-core = { path = "../trnm-session-core" }
 trnm-token-jwt-adapter = { path = "../trnm-token-jwt-adapter" }
+trnm-token-crypto-provider = { path = "../trnm-token-crypto-provider" }
 
 [build-dependencies]
 prost-build = "=0.14.3"

@@ -20,6 +20,12 @@ EXPECTED_RUNTIME_FILES = {
     "grpc.rs",
     "http.rs",
     "json.rs",
+    "legacy_auth.rs",
+    "legacy_auth_tests.rs",
+    "legacy_device_predicates.rs",
+    "legacy_repository.rs",
+    "legacy_repository_tests.rs",
+    "legacy_uuid.rs",
     "mod.rs",
     "pool.rs",
     "retry.rs",
@@ -52,6 +58,7 @@ EXPECTED_DEPENDENCIES: dict[str, object] = {
     "trnm-persistence-pg": {"path": "../trnm-persistence-pg"},
     "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},
     "trnm-session-core": {"path": "../trnm-session-core"},
+    "trnm-token-crypto-provider": {"path": "../trnm-token-crypto-provider"},
     "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
 }
 EXPECTED_BUILD_DEPENDENCIES: dict[str, object] = {

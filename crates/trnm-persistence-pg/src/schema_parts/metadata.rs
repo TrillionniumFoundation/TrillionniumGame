@@ -10,6 +10,7 @@ struct RecordedMetadata {
     upgrade_source_commit: Option<String>,
     v2_apply_source_commit: Option<String>,
     v3_apply_source_commit: Option<String>,
+    v4_apply_source_commit: Option<String>,
 }
 
 fn validate_source_commit(value: &str) -> Result<(), DomainError> {
@@ -42,14 +43,15 @@ fn read_metadata(
     let rows = client
         .query(
             &format!(
-                "SELECT singleton, schema_version, profile, source_commit, applied_at_ms, {}, {}, {}, {}, {}, {} \
+                "SELECT singleton, schema_version, profile, source_commit, applied_at_ms, {}, {}, {}, {}, {}, {}, {} \
                  FROM public.trnm_schema_metadata LIMIT 2",
                 optional("chain_digest", "text"),
                 optional("digest_algorithm", "text"),
                 optional("storage_writer_epoch", "bigint"),
                 optional("upgrade_source_commit", "text"),
                 optional("v2_apply_source_commit", "text"),
-                optional("v3_apply_source_commit", "text")
+                optional("v3_apply_source_commit", "text"),
+                optional("v4_apply_source_commit", "text")
             ),
             &[],
         )
@@ -74,6 +76,7 @@ fn read_metadata(
         upgrade_source_commit: row.try_get(8).map_err(map_postgres_error)?,
         v2_apply_source_commit: row.try_get(9).map_err(map_postgres_error)?,
         v3_apply_source_commit: row.try_get(10).map_err(map_postgres_error)?,
+        v4_apply_source_commit: row.try_get(11).map_err(map_postgres_error)?,
     }))
 }
 
@@ -92,9 +95,20 @@ fn validate_recorded_revision(
     }
     let descriptor = u64::try_from(recorded.version)
         .ok()
-        .filter(|version| *version <= AUTHORITATIVE_SCHEMA_VERSION)
+        .filter(|version| *version <= AUTHORITATIVE_SUPPORTED_SCHEMA_VERSION)
         .and_then(|version| revision(profile, version))
         .ok_or_else(|| failed_precondition("schema_version_unsupported"))?;
+    if descriptor.version < 5 && recorded.v4_apply_source_commit.is_some() {
+        return Err(failed_precondition("schema_unpublished_metadata_drift"));
+    }
+    if descriptor.version >= 5
+        && recorded
+            .v4_apply_source_commit
+            .as_deref()
+            .is_none_or(|value| validate_source_commit(value).is_err())
+    {
+        return Err(failed_precondition("schema_v4_apply_provenance_invalid"));
+    }
     if descriptor.version < 3 && recorded.v2_apply_source_commit.is_some() {
         return Err(failed_precondition("schema_unpublished_metadata_drift"));
     }
@@ -156,9 +170,18 @@ fn verify_ready_metadata(
     recorded: &RecordedMetadata,
     profile: DatabaseProfile,
 ) -> Result<SchemaIdentity, DomainError> {
+    verify_ready_metadata_target(recorded, profile, AuthoritativeSchemaTarget::StorageV4)
+}
+
+fn verify_ready_metadata_target(
+    recorded: &RecordedMetadata,
+    profile: DatabaseProfile,
+    target: AuthoritativeSchemaTarget,
+) -> Result<SchemaIdentity, DomainError> {
+    require_account_catalog_capture(target)?;
     let descriptor = validate_recorded_revision(recorded, profile)?;
     // A valid historical identity is migration input, not serve readiness.
-    if descriptor.version != AUTHORITATIVE_SCHEMA_VERSION
+    if descriptor.version != target.version()
         || descriptor.storage_writer_epoch != Some(AUTHORITATIVE_STORAGE_WRITER_EPOCH)
     {
         return Err(failed_precondition("authoritative_schema_not_ready"));
@@ -185,6 +208,7 @@ fn verify_ready_metadata(
             .v3_apply_source_commit
             .clone()
             .ok_or_else(|| failed_precondition("schema_v3_apply_provenance_invalid"))?,
+        v4_apply_source_commit: recorded.v4_apply_source_commit.clone(),
     })
 }
 
@@ -196,8 +220,27 @@ fn next_revision_for_prefix(
     profile: DatabaseProfile,
     prefix: usize,
 ) -> Result<Option<&'static RevisionDescriptor>, DomainError> {
+    next_revision_for_prefix_target(
+        recorded,
+        profile,
+        prefix,
+        AuthoritativeSchemaTarget::StorageV4,
+    )
+}
+
+fn next_revision_for_prefix_target(
+    recorded: &RecordedMetadata,
+    profile: DatabaseProfile,
+    prefix: usize,
+    target: AuthoritativeSchemaTarget,
+) -> Result<Option<&'static RevisionDescriptor>, DomainError> {
     let completed = validate_recorded_revision(recorded, profile)?;
-    if completed.version == AUTHORITATIVE_SCHEMA_VERSION {
+    if completed.version > target.version() {
+        return Err(failed_precondition(
+            "authoritative_schema_target_downgrade_rejected",
+        ));
+    }
+    if completed.version == target.version() {
         if prefix != completed.action_range.end {
             return Err(failed_precondition(
                 "authoritative_schema_upgrade_incomplete",
@@ -267,6 +310,11 @@ fn metadata_for_transition(
         } else {
             original.v3_apply_source_commit.clone()
         },
+        v4_apply_source_commit: if target.version == 5 {
+            original.upgrade_source_commit.clone()
+        } else {
+            original.v4_apply_source_commit.clone()
+        },
     };
     validate_recorded_revision(&next, profile)?;
     Ok(next)
@@ -309,6 +357,10 @@ fn publish_metadata(
             params.push(&next.v2_apply_source_commit);
             params.push(&next.v3_apply_source_commit);
         }
+        5 => {
+            sql.push_str(",v4_apply_source_commit=$14");
+            params.push(&next.v4_apply_source_commit);
+        }
         _ => {
             return Err(failed_precondition(
                 "schema_metadata_transition_not_adjacent",
@@ -323,10 +375,17 @@ fn publish_metadata(
             params.len()
         ));
     }
-    if target.version == 4 {
+    if target.version >= 4 {
         params.push(&original.v3_apply_source_commit);
         sql.push_str(&format!(
             " AND v3_apply_source_commit IS NOT DISTINCT FROM ${}",
+            params.len()
+        ));
+    }
+    if target.version == 5 {
+        params.push(&original.v4_apply_source_commit);
+        sql.push_str(&format!(
+            " AND v4_apply_source_commit IS NOT DISTINCT FROM ${}",
             params.len()
         ));
     }
@@ -380,6 +439,7 @@ mod metadata_tests {
             upgrade_source_commit: None,
             v2_apply_source_commit: None,
             v3_apply_source_commit: None,
+            v4_apply_source_commit: None,
         }
     }
 
@@ -647,6 +707,85 @@ mod metadata_tests {
         }
     }
     #[test]
+    fn accounts_source_revision_preserves_v4_history_and_rejects_storage_downgrade() {
+        for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
+            let v3 = metadata_for_transition(
+                profile,
+                &timestamps(profile),
+                revision(profile, 3).unwrap(),
+                &"C".repeat(40),
+            )
+            .unwrap();
+            let v4 = metadata_for_transition(
+                profile,
+                &v3,
+                revision(profile, 4).unwrap(),
+                &"D".repeat(40),
+            )
+            .unwrap();
+            let v5 = metadata_for_transition(
+                profile,
+                &v4,
+                revision(profile, 5).unwrap(),
+                &"e".repeat(40),
+            )
+            .unwrap();
+            assert_eq!(v5.source_commit, v4.source_commit);
+            assert_eq!(v5.applied_at_ms, v4.applied_at_ms);
+            assert_eq!(v5.v2_apply_source_commit, v4.v2_apply_source_commit);
+            assert_eq!(v5.v3_apply_source_commit, v4.v3_apply_source_commit);
+            assert_eq!(v5.v4_apply_source_commit, v4.upgrade_source_commit);
+            assert_eq!(v5.upgrade_source_commit, Some("e".repeat(40)));
+            assert_eq!(v5.storage_writer_epoch, Some(4));
+            assert_eq!(validate_recorded_revision(&v5, profile).unwrap().version, 5);
+            assert_eq!(
+                next_revision_for_prefix(
+                    &v5,
+                    profile,
+                    revision(profile, 5).unwrap().action_range.end
+                )
+                .unwrap_err()
+                .reason(),
+                "authoritative_schema_target_downgrade_rejected"
+            );
+            assert_eq!(
+                verify_ready_metadata_target(
+                    &v5,
+                    profile,
+                    AuthoritativeSchemaTarget::NakamaAccountsV5
+                )
+                .unwrap_err()
+                .reason(),
+                "schema5_native_catalog_capture_pending"
+            );
+            let mut early = v4.clone();
+            early.v4_apply_source_commit = Some("D".repeat(40));
+            assert_eq!(
+                validate_recorded_revision(&early, profile)
+                    .unwrap_err()
+                    .reason(),
+                "schema_unpublished_metadata_drift"
+            );
+            for publisher in [None, Some(String::new()), Some("g".repeat(40))] {
+                let mut altered = v5.clone();
+                altered.v4_apply_source_commit = publisher;
+                assert!(validate_recorded_revision(&altered, profile).is_err());
+            }
+            let mut wrong_epoch = v5.clone();
+            wrong_epoch.storage_writer_epoch = Some(5);
+            assert!(validate_recorded_revision(&wrong_epoch, profile).is_err());
+            assert!(ensure_metadata_unchanged(&v5, &wrong_epoch).is_err());
+            assert!(metadata_for_transition(
+                profile,
+                &v3,
+                revision(profile, 5).unwrap(),
+                &"e".repeat(40)
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn v4_preserves_all_actual_publishers_and_rejects_prepublished_v3_history() {
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
             let v2 = timestamps(profile);
@@ -771,6 +910,7 @@ mod import_schema_guard_tests {
             upgrade_source_commit: Some("c".repeat(40)),
             v2_apply_source_commit: Some("d".repeat(40)),
             v3_apply_source_commit: Some("E".repeat(40)),
+            v4_apply_source_commit: None,
         };
         let digest = recorded_metadata_guard_digest(&original);
         let mut variants = Vec::new();

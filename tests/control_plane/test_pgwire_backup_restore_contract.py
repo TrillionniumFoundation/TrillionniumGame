@@ -189,7 +189,10 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
                              "scripts/check-pgwire-backup-restore.py", "scripts/check-schema-authority.py",
                              "scripts/upload-actions-artifact.py", "scripts/seal-outbox-final-attempt.py",
                              "scripts/verify-actions-log-artifact.py", "scripts/emit-actions-log-artifact.py",
-                             "docs/development/SCHEMA_AUTHORITY.json"):
+                             "docs/development/SCHEMA_AUTHORITY.json", "scripts/schema_source_selection.py",
+                             "scripts/schema_evidence_binding.py", "scripts/schema_source_http.py",
+                             "scripts/capture-schema-source-selection.py",
+                             "config/database-test-images.json"):
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / relative, target)
@@ -203,7 +206,9 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
             spec = importlib.util.spec_from_file_location("backup_fixture_schemas", root / "scripts/check-authoritative-schema-identity.py")
             schemas = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(schemas)
-            chains, version, tables = schemas.validated_source()
+            selection = schemas.validated_source(profile)
+            selected = schemas.SELECTION.current_selection_document(selection)["selection"]
+            version, tables = 4, 12
             retained = root / "run/backup-restore" / profile
             retained.mkdir(parents=True)
             shutil.copyfile(root / "migrations/MIGRATION_CHAIN.lock.json", retained / "migration-lock.json")
@@ -211,7 +216,7 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
             (retained / "migration-chain-validation.json").write_bytes(validation)
             fresh = {"schema": "trillionnium.authoritative-schema-report.v1", "profile": profile,
                      "schema_version": version, "storage_writer_epoch": 4,
-                     "chain_digest": chains[profile]["chain_sha256"],
+                     "chain_digest": selected["execution_chain_digest"],
                      "digest_algorithm": "ordered-path-git-blob-sha256.v1", "table_count": tables,
                      "source_commit": commit, "upgrade_source_commit": commit, "v2_apply_source_commit": commit, "v3_apply_source_commit": commit,
                      "compatibility_credit": False, "migration_applied": True, "applied_steps": 4}
@@ -451,7 +456,7 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
             with self.subTest(marker=marker), self.assertRaises(SystemExit):
                 CHECKER.validate_text(self.script.replace(marker, "removed"), self.images)
         for marker in ("validate_storage_snapshot_bytes", "source-storage-v3.txt", "v2_apply_source_commit", "v3_apply_source_commit",
-                       "storage_v3_fixture_count", "ordered_files']) == 4"):
+                       "storage_v3_fixture_count", "ordered_files']) == 5"):
             self.assertIn(marker, self.workflow_python("PY_BACKUP_ARCHIVE"))
 
     def test_semantic_manifest_builder_retains_actual_four_sql_bytes_and_restored_metadata(self):
@@ -461,8 +466,31 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
             self.assertEqual(len(matches), 1)
             with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
                 evidence = Path(directory)
+                # The real harness admits StorageV4 execution only with the
+                # producer's complete source5 annex from this actual ROOT HEAD.
+                # Data/catalog/backup rows below remain synthetic control data.
+                commit = subprocess.check_output(
+                    ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+                tree = subprocess.check_output(
+                    ["git", "-C", str(ROOT), "rev-parse", "HEAD^{tree}"], text=True).strip()
+                capture = subprocess.run(
+                    ["python3", str(ROOT / "scripts/capture-schema-source-selection.py"),
+                     "--root", str(evidence), "--profile", profile,
+                     "--commit", commit, "--tree", tree],
+                    text=True, capture_output=True, check=False)
+                self.assertEqual(capture.returncode, 0, capture.stderr)
+                selected = json.loads(capture.stdout)
+                self.assertEqual(selected["source_frontier_schema_version"], "5")
+                self.assertEqual(selected["source_profile_migration_file_count"], "5")
+                self.assertEqual(selected["execution_schema_version"], "4")
+                self.assertEqual(selected["executed_migration_file_count"], "4")
+                self.assertEqual(selected["execution_table_count"], "12")
+                self.assertEqual(selected["account_transfer_admitted"], "false")
                 identity = self.snapshot_identity(profile)
-                identity["upgrade_source_commit"] = identity["v2_apply_source_commit"] = identity["v3_apply_source_commit"] = identity["source_commit"]
+                identity["chain_digest"] = selected["execution_chain_digest"]
+                for field in ("source_commit", "upgrade_source_commit",
+                              "v2_apply_source_commit", "v3_apply_source_commit"):
+                    identity[field] = commit
                 for name in ("schema-identity.json", "repeat-schema-identity.json", "restored-schema-identity.json"):
                     (evidence / name).write_text(json.dumps(identity))
                 for name in ("source-data.txt", "restored-data.txt"):
@@ -483,6 +511,8 @@ class PgwireBackupRestoreContractTests(unittest.TestCase):
                 self.assertEqual(manifest["negative_constraint_probe_count"], 10)
                 self.assertEqual(manifest["storage_v3_constraint_probe_count"], 9)
                 self.assertEqual(manifest["authoritative_migration_file_count"], 4)
+                self.assertEqual(manifest["source_selection"], selected)
+                self.assertEqual(manifest["schema_identity"]["chain_digest"], selected["execution_chain_digest"])
                 self.assertEqual(manifest["restored_schema_identity"]["v2_apply_source_commit"], identity["v2_apply_source_commit"])
                 for entry in manifest["authoritative_migrations"]:
                     content = (ROOT / entry["path"]).read_bytes()

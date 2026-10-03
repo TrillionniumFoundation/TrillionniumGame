@@ -15,17 +15,16 @@ SPEC.loader.exec_module(MODULE)
 
 class SchemaIdentityTests(unittest.TestCase):
     def setUp(self):
-        self.chains = {"postgresql": {"chain_sha256": "a" * 64, "file_count": 4},
-                       "cockroachdb": {"chain_sha256": "b" * 64, "file_count": 4}}
+        self.selection = MODULE.validated_source("postgresql")
+        self.digest = MODULE.SELECTION.current_selection_document(self.selection)["selection"]["execution_chain_digest"]
         self.value = {"schema": "trillionnium.authoritative-schema-report.v1", "profile": "postgresql",
                       "schema_version": 4, "storage_writer_epoch": 4, "digest_algorithm": MODULE.ALGORITHM,
-                      "chain_digest": "a" * 64, "table_count": 12, "compatibility_credit": False,
+                      "chain_digest": self.digest, "table_count": 12, "compatibility_credit": False,
                       "source_commit": "a" * 40, "upgrade_source_commit": "a" * 40, "v2_apply_source_commit": "a" * 40, "v3_apply_source_commit": "a" * 40,
                       "migration_applied": True, "applied_steps": 4}
 
     def validate(self, value=None, mode="fresh", source="a" * 40, from_version=None, prior=None, prior_v3=None):
-        MODULE.validate_identity(self.value if value is None else value, profile="postgresql", chains=self.chains,
-                                 schema_version=4, table_count=12, mode=mode, source_commit=source,
+        MODULE.validate_identity(self.value if value is None else value, profile="postgresql", selection=self.selection, mode=mode, source_commit=source,
                                  from_version=from_version, v2_apply_source_commit=prior, v3_apply_source_commit=prior_v3)
 
     def test_fresh_requires_the_entire_chain_and_both_apply_provenances(self):
@@ -125,17 +124,16 @@ class SchemaIdentityTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(MODULE.ValidationError):
                 self.validate(self.value | {field: "c" * 40}, source=None)
         for count in (1, 2, 3, True, "4"):
-            chains = copy.deepcopy(self.chains)
-            chains["postgresql"]["file_count"] = count
+            forged = MODULE.SELECTION.current_selection_document(self.selection)
+            forged["selection"]["executed_migration_file_count"] = count
             with self.subTest(source_count=count), self.assertRaises(MODULE.ValidationError):
-                MODULE.validate_identity(self.value, profile="postgresql", chains=chains,
-                                         schema_version=4, table_count=12, mode="fresh", source_commit="a" * 40)
+                MODULE.validate_identity(self.value, profile="postgresql", selection=forged, mode="fresh", source_commit="a" * 40)
 
     def test_cli_executes_explicit_upgrade_modes_and_preserved_prior_checks(self):
-        chains, version, tables = MODULE.validated_source()
         for profile in ("postgresql", "cockroachdb"):
-            base = self.value | {"profile": profile, "chain_digest": chains[profile]["chain_sha256"],
-                                 "schema_version": version, "table_count": tables}
+            selected = MODULE.SELECTION.current_selection_document(MODULE.validated_source(profile))["selection"]
+            base = self.value | {"profile": profile, "chain_digest": selected["execution_chain_digest"],
+                                 "schema_version": 4, "table_count": 12}
             with tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "identity.json"
 

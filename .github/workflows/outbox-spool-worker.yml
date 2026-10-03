@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/schema_source_selection.py'
+      - 'scripts/schema_evidence_binding.py'
+      - 'scripts/capture-schema-source-selection.py'
+      - 'contracts/database/source-execution-evidence.v1.json'
+      - 'tests/control_plane/test_schema_source_selection.py'
+      - 'tests/control_plane/test_schema_evidence_binding.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'config/database-test-images.json'
@@ -143,6 +149,21 @@ jobs:
           set -euo pipefail
           evidence_root="run/outbox-spool-worker/${PROFILE}"
           mkdir -p "$evidence_root"
+          PROFILE="$PROFILE" EVIDENCE_ROOT="$evidence_root" python3 - <<'PY_SPOOL_SOURCE'
+          import importlib.util,json,os,subprocess,sys
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          import schema_evidence_binding as binding
+          spec=importlib.util.spec_from_file_location('spool_schema_identity','scripts/check-authoritative-schema-identity.py')
+          schemas=importlib.util.module_from_spec(spec);spec.loader.exec_module(schemas)
+          root=Path(os.environ['EVIDENCE_ROOT']);profile=os.environ['PROFILE']
+          commit=os.environ['CANDIDATE_SHA'];tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
+          token=binding.verify_binding(Path('.'),profile=profile)
+          binding.validate_annex_directory(token,root,commit=commit,tree=tree)
+          report=schemas.decode_identity_document((root/'schema-identity.json').read_bytes())
+          schemas.validate_identity(report,profile=profile,selection=binding.selection_token(token),mode='fresh',source_commit=commit)
+          assert binding.same(json.loads((root/'migration-chain-validation.json').read_bytes()),binding.binding_document(token)['source_selection']['source']['complete_validation'])
+          PY_SPOOL_SOURCE
           archive="run/outbox-spool-worker-${PROFILE}-${CANDIDATE_SHA}.tar.gz"
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \

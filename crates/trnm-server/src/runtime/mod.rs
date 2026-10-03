@@ -6,6 +6,10 @@ pub(crate) mod error;
 pub(crate) mod grpc;
 pub(crate) mod http;
 pub(crate) mod json;
+mod legacy_auth;
+mod legacy_device_predicates;
+mod legacy_repository;
+mod legacy_uuid;
 pub(crate) mod pool;
 pub(crate) mod retry;
 #[cfg(test)]
@@ -68,4 +72,10 @@ mod operator_message_tests {
             assert!(!message.contains("profile"));
         }
     }
+}
+
+// Server-owned service API; native repository and HTTP adapters remain separate.
+pub(crate) mod legacy_service_exports {
+    pub use super::legacy_auth::*;
+    pub use super::legacy_repository::PgLegacyAuthRepository;
 }
