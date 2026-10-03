@@ -893,6 +893,7 @@ fn nakama_duplicate_batches_preserve_step_receipts_and_native_atomicity() {
 
         write_tail_drain::exercise(&url, profile, &collection);
         imported_history::exercise(profile);
+        write_tail_drain::exercise_any(url.as_str(), profile, &collection);
         println!(
             "nakama_duplicate_success_full_tuple_executed profile={} fields=15",
             profile.metadata_value()
@@ -1738,9 +1739,21 @@ mod write_tail_drain {
                 let blocked_by: Vec<i32> = row.get(3);
                 if row.get::<_, Option<String>>(2).as_deref() != Some("Lock")
                     || !blocked_by.contains(pid)
-                    || query != expected_source_sql
+                    || if expected_source_sql == native_any_upsert::query_kind() {
+                        !native_any_upsert::observed_wait_query(DatabaseProfile::PostgreSql, &query)
+                    } else {
+                        query != expected_source_sql
+                    }
                 {
                     return None;
+                }
+                if expected_source_sql == native_any_upsert::query_kind() {
+                    native_any_upsert::log_observed_pg_query(
+                        &query,
+                        row.get::<_, i32>(0),
+                        *pid,
+                        application,
+                    );
                 }
                 Some(WaitProof {
                     worker: row.get::<_, i32>(0).to_string(),
@@ -1779,12 +1792,20 @@ mod write_tail_drain {
                 // than this wire literal. Keep its actual bytes/digest; the
                 // worker transaction and exact held-key join grant lock proof.
                 // Require the new JSONB input guard, never the old skinny SQL.
-                assert!(
-                    query.contains("trnm_storage_objects")
-                        && query.contains("::JSONB")
-                        && query.contains("IS NOT NULL")
-                        && query.contains("FOR UPDATE")
-                );
+                if expected_source_sql == native_any_upsert::query_kind() {
+                    assert!(
+                        native_any_upsert::observed_wait_query(DatabaseProfile::CockroachDb, &query),
+                        "held Any query did not use a finite native CR reservation or skinny authority acquisition"
+                    );
+                    native_any_upsert::log_observed_cr_query(&query, &worker_txn, txn, application);
+                } else {
+                    assert!(
+                        query.contains("trnm_storage_objects")
+                            && query.contains("::JSONB")
+                            && query.contains("IS NOT NULL")
+                            && query.contains("FOR UPDATE")
+                    );
+                }
                 if expected_source_sql == EXACT_ACCESS_SQL {
                     assert!(
                         query.contains("public_version")
@@ -1796,8 +1817,9 @@ mod write_tail_drain {
                     "{}",
                     serde_json::json!({"schema":"local.storage-native-jsonb-lock-query.v1",
                     "profile":"cockroachdb","actual_native_query":query,"actual_native_query_sha256":query_digest(&query),
-                    "expected_wire_query_sha256":query_digest(expected_source_sql),
-                    "query_match_scope":"native-worker-transaction-exact-held-key-and-jsonb-guard",
+                    "expected_wire_query_sha256":if expected_source_sql == native_any_upsert::query_kind(){None}else{Some(query_digest(expected_source_sql))},
+                    "expected_query_scope":if expected_source_sql == native_any_upsert::query_kind(){"profile-specific-any-acquisition"}else{"exact-wire-source"},
+                    "query_match_scope":if expected_source_sql == native_any_upsert::query_kind(){"native-worker-transaction-exact-held-key-and-profile-acquisition"}else{"native-worker-transaction-exact-held-key-and-jsonb-guard"},
                     "wire_literal_equality":false,"accepted":false,"compatibility_credit":false})
                 );
                 // phase is read from the real view but does not grant wait credit.
@@ -2116,7 +2138,7 @@ mod write_tail_drain {
                     &mut control,
                     &worker_application,
                     holder,
-                    ACCESS_SQL,
+                    native_any_upsert::query_kind(),
                     &receive,
                     &mut outcome,
                     started,
@@ -2227,6 +2249,10 @@ mod write_tail_drain {
     // Source-bound, finite insert-only matrix. The official source PG/CR
     // packets qualify different committed-existing footprints. They do not
     // establish pgx pipeline, hidden SQLSTATE or complete isolation parity.
+    pub(super) fn exercise_any(url: &str, profile: DatabaseProfile, collection: &str) {
+        native_any_upsert::exercise(url, profile, collection);
+    }
+
     mod native_insert_only {
         use super::*;
 
@@ -2481,7 +2507,12 @@ mod write_tail_drain {
             case: InsertCase,
         ) -> Option<WaitProof> {
             if matches!(case, InsertCase::AnyPositive) {
-                return observe_wait(control, application, &holder.identity, ACCESS_SQL);
+                return observe_wait(
+                    control,
+                    application,
+                    &holder.identity,
+                    native_any_upsert::query_kind(),
+                );
             }
             match &holder.identity {
                 Holder::PostgreSql { pid, xid } => {
@@ -3395,8 +3426,10 @@ mod write_tail_drain {
                     MatrixCase::AclLateExactStale | MatrixCase::AclLateExactWriteZero
                 )) {
                 EXACT_ACCESS_SQL
-            } else {
+            } else if case.typed() {
                 ACCESS_SQL
+            } else {
+                native_any_upsert::query_kind()
             };
             let before = snapshot(&mut control, collection);
             let mut worker_repository = bounded_repository(url, profile);
@@ -3463,7 +3496,13 @@ mod write_tail_drain {
                         &mut outcome,
                         started,
                     );
-                    println!("nakama_native_jsonb_exact_lock_observed profile={} case={label} worker={} blocker={} actual_query_sha256={} expected_wire_query_sha256={} proof=native-lock-view",profile.metadata_value(),proof.worker,proof.blocker,proof.query_sha256,query_digest(expected_query));
+                    let expected_wire_digest = if expected_query == native_any_upsert::query_kind()
+                    {
+                        "null".to_owned()
+                    } else {
+                        query_digest(expected_query)
+                    };
+                    println!("nakama_native_jsonb_exact_lock_observed profile={} case={label} worker={} blocker={} actual_query_sha256={} expected_wire_query_sha256={} proof=native-lock-view",profile.metadata_value(),proof.worker,proof.blocker,proof.query_sha256,expected_wire_digest);
                     rollback_ok &= release(&mut held, profile, label, "held-causal-release");
                     assert!(rollback_ok, "native Exact causal holder release failed");
                 }
@@ -3675,6 +3714,1339 @@ mod write_tail_drain {
                 "production_ready":false,"full_protocol_parity":false,"full_nakama_replacement":false})
             );
             println!("nakama_native_jsonb_exact_matrix_executed profile={} cases=11 late_exact_excluded=2 matched_wait_commit=2 missing_exact_drain_wait=1 literal_native_text=1 escaped_nul=1 both_bad_input=1 both_bad_input_vectors=2 surrogate_bind=1 duplicate_exact=1 typed_policy=2 fields=15 late_exact_wait={late_exact_wait_cases} late_exact_no_wait={late_exact_no_wait_cases}",profile.metadata_value());
+        }
+    }
+    // Native Any observations are a separate bounded target regression. They
+    // neither execute the pinned Nakama server nor observe PG worker isolation.
+    mod native_any_upsert {
+        use super::*;
+
+        const QUERY_KIND: &str = "native-any-profile-specific-acquisition";
+        const CR_ACCESS_SQL: &str = "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects WHERE collection=$1 AND object_key=$2 AND user_id=$3 FOR UPDATE";
+        const COLUMNS: &str = "COLLECTION,OBJECT_KEY,USER_ID,VALUE_JSONB,VALUE_BYTES,VERSION_DIGEST,PUBLIC_VERSION,VALUE_PROJECTION_DIGEST,VALUE_ORIGIN,SOURCE_MANIFEST_DIGEST,READ_PERMISSION,WRITE_PERMISSION,UPDATED_AT_MS,CREATE_TIME,UPDATE_TIME";
+        const SURROGATE: &[u8] = br#"{"bad":"\ud800"}"#;
+
+        #[derive(Clone, Copy)]
+        enum AnyCase {
+            ExistingPermission,
+            CreatorCommit,
+            UnknownNoop,
+            UnknownSurrogate,
+        }
+        impl AnyCase {
+            const fn name(self) -> &'static str {
+                match self {
+                    Self::ExistingPermission => "existing_permission_wait_rollback",
+                    Self::CreatorCommit => "concurrent_creator_commit_true_prior",
+                    Self::UnknownNoop => "unknown_matching_token_noop",
+                    Self::UnknownSurrogate => "unknown_surrogate_native_priority",
+                }
+            }
+            const fn expects_wait(self) -> bool {
+                !matches!(self, Self::UnknownSurrogate)
+            }
+            const fn commits(self) -> bool {
+                matches!(self, Self::CreatorCommit | Self::UnknownNoop)
+            }
+        }
+
+        struct AnyHolder {
+            identity: Holder,
+            table_id: i64,
+            index_id: i64,
+            primary_name: String,
+            actual_granted_rows: serde_json::Value,
+        }
+        struct AnyWait {
+            proof: WaitProof,
+            actual_rows: serde_json::Value,
+            worker_isolation: Option<String>,
+            actual_query_kind: &'static str,
+        }
+
+        pub(super) const fn query_kind() -> &'static str {
+            QUERY_KIND
+        }
+        pub(super) fn reservation_query(query: &str) -> bool {
+            // This is a finite statement classifier, not SQL identity
+            // normalization. Every observation retains the original query.
+            if query.len() > 8192 {
+                return false;
+            }
+            let upper = query.to_ascii_uppercase();
+            let Some(after) = upper
+                .trim_start()
+                .strip_prefix("INSERT INTO PUBLIC.TRNM_STORAGE_OBJECTS AS STORED")
+            else {
+                return false;
+            };
+            let Some((columns, after_columns)) = after
+                .trim_start()
+                .strip_prefix('(')
+                .and_then(|value| value.split_once(')'))
+            else {
+                return false;
+            };
+            let compact = |value: &str| {
+                value
+                    .chars()
+                    .filter(|character| !character.is_ascii_whitespace())
+                    .collect::<String>()
+            };
+            let Some((values, conflict)) = after_columns.split_once(" ON CONFLICT ") else {
+                return false;
+            };
+            let Some((conflict_body, returning)) = conflict.split_once(" RETURNING ") else {
+                return false;
+            };
+            compact(columns) == COLUMNS
+                && values.trim_start().starts_with("VALUES (")
+                && values.contains("::JSONB")
+                && values.contains("'WRITE-REQUEST-BYTES'")
+                && compact(conflict_body) == "(COLLECTION,OBJECT_KEY,USER_ID)DOUPDATESETOBJECT_KEY=EXCLUDED.OBJECT_KEYWHEREFALSE"
+                && returning.contains("VALUE_PROJECTION_DIGEST")
+                && returning.contains("CREATE_TIME")
+                && returning.contains("UPDATE_TIME")
+                && returning.contains("UPDATED_AT_MS")
+                && !upper.contains("FOR UPDATE")
+                && !upper.contains("WITH UPD")
+        }
+
+        fn access_query(query: &str) -> bool {
+            if query.len() > 8192 {
+                return false;
+            }
+            let upper = query.to_ascii_uppercase();
+            let Some((head, predicate)) = upper
+                .trim_start()
+                .split_once(" FROM PUBLIC.TRNM_STORAGE_OBJECTS WHERE ")
+            else {
+                return false;
+            };
+            let fields: String = head.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+            (fields == "SELECTPUBLIC_VERSION::TEXT,WRITE_PERMISSION"
+                || fields == "SELECTPUBLIC_VERSION::STRING,WRITE_PERMISSION")
+                && predicate.trim_end().ends_with("FOR UPDATE")
+                && predicate.contains("COLLECTION")
+                && predicate.contains("OBJECT_KEY")
+                && predicate.contains("USER_ID")
+                && !predicate.contains("PUBLIC_VERSION")
+                && !predicate.contains("WRITE_PERMISSION")
+                && !predicate.contains(" OR ")
+                && !predicate.contains(" UNION ")
+                && !predicate.contains("VALUE_JSONB")
+                && !predicate.contains("IS NOT NULL")
+        }
+        pub(super) fn legacy_wait_query(profile: DatabaseProfile, query: &str) -> bool {
+            match profile {
+                DatabaseProfile::PostgreSql => reservation_query(query),
+                DatabaseProfile::CockroachDb => reservation_query(query) || access_query(query),
+            }
+        }
+        fn actual_query_kind(query: &str) -> &'static str {
+            if reservation_query(query) {
+                "native-reservation-insert15-disabled-conflict"
+            } else if access_query(query) {
+                "native-skinny-acl-select-for-update"
+            } else {
+                panic!("unrecognized native Any acquisition query")
+            }
+        }
+        fn case_query(profile: DatabaseProfile, case: AnyCase, query: &str) -> bool {
+            if matches!(profile, DatabaseProfile::PostgreSql)
+                || matches!(case, AnyCase::CreatorCommit)
+            {
+                reservation_query(query)
+            } else {
+                reservation_query(query) || access_query(query)
+            }
+        }
+        // PG17.6 with the independently observed1KiB activity buffer exposes
+        // exactly1023 bytes. A prefix match only observes that bounded prefix:
+        // the full RETURNING remainder is source-bound, not activity-observed.
+        // The frozen controls bind this complete template to the actual
+        // storage_any_upsert_query(PostgreSql,true) source expansion.
+        const PG_ANY_RESERVATION_WIRE: &str = r#"INSERT INTO public.trnm_storage_objects AS stored (collection,object_key,user_id,value_jsonb,value_bytes,version_digest,public_version,value_projection_digest,value_origin,source_manifest_digest,read_permission,write_permission,updated_at_ms,create_time,update_time) VALUES ($1,$2,$3,$4::JSONB,$5,$6,$7,pg_catalog.sha256(pg_catalog.convert_to($4::JSONB::TEXT,'UTF8')),'write-request-bytes',NULL,$8,$9,$10,pg_catalog.now(),pg_catalog.now()) ON CONFLICT (collection,object_key,user_id) DO UPDATE SET object_key=excluded.object_key WHERE FALSE RETURNING CASE WHEN TRUE THEN CASE WHEN pg_catalog.octet_length(value_jsonb::TEXT)::INT8 <= 16777216 THEN value_jsonb::TEXT END END, CASE WHEN TRUE THEN pg_catalog.octet_length(value_jsonb::TEXT)::INT8 END, CASE WHEN TRUE THEN public_version::TEXT END, CASE WHEN TRUE THEN value_projection_digest END, CASE WHEN TRUE THEN read_permission END, CASE WHEN TRUE THEN write_permission END, CASE WHEN TRUE THEN value_origin END, CASE WHEN TRUE THEN CASE WHEN pg_catalog.octet_length(value_bytes)::INT8 <= 1048576 THEN value_bytes END END, CASE WHEN TRUE THEN pg_catalog.octet_length(value_bytes)::INT8 END, CASE WHEN TRUE THEN version_digest END, CASE WHEN TRUE THEN source_manifest_digest END, CASE WHEN TRUE THEN CASE WHEN value_origin IN ('legacy-rust-v2-bytes', 'write-request-bytes') AND pg_catalog.octet_length(value_bytes)::INT8 <= 1048576 THEN CASE WHEN pg_catalog.octet_length(pg_catalog.convert_from(value_bytes, 'UTF8')::JSONB::TEXT) <= 16777216 THEN pg_catalog.convert_from(value_bytes, 'UTF8')::JSONB::TEXT END END END, CASE WHEN TRUE THEN create_time END, CASE WHEN TRUE THEN update_time END, updated_at_ms, collection, object_key, user_id"#;
+        const PG_OBSERVED_QUERY_PREFIX_BYTES: usize = 1023;
+
+        pub(super) fn pg_reservation_scope(query: &str) -> Option<&'static str> {
+            if query == PG_ANY_RESERVATION_WIRE {
+                Some("exact-complete-PG-wire-template")
+            } else if query.len() == PG_OBSERVED_QUERY_PREFIX_BYTES
+                && PG_ANY_RESERVATION_WIRE
+                    .as_bytes()
+                    .get(..PG_OBSERVED_QUERY_PREFIX_BYTES)
+                    == Some(query.as_bytes())
+            {
+                Some("exact-observed-PG-wire-prefix-1023")
+            } else {
+                None
+            }
+        }
+
+        // CR26.2.6 cluster_queries exposes this exact997-byte wire prefix
+        // followed by a native U+2026 marker (1000 UTF-8 bytes total). The
+        // complete RETURNING remainder stays source-bound, never observed.
+        const CR_ANY_RESERVATION_WIRE: &str = r#"INSERT INTO public.trnm_storage_objects AS stored (collection,object_key,user_id,value_jsonb,value_bytes,version_digest,public_version,value_projection_digest,value_origin,source_manifest_digest,read_permission,write_permission,updated_at_ms,create_time,update_time) VALUES ($1,$2,$3,$4::JSONB,$5,$6,$7,pg_catalog.decode(pg_catalog.sha256(pg_catalog.convert_to($4::JSONB::TEXT,'UTF8')),'hex'),'write-request-bytes',NULL,$8,$9,$10,pg_catalog.now(),pg_catalog.now()) ON CONFLICT (collection,object_key,user_id) DO UPDATE SET object_key=excluded.object_key WHERE FALSE RETURNING CASE WHEN TRUE THEN CASE WHEN pg_catalog.octet_length(value_jsonb::TEXT)::INT8 <= 16777216 THEN value_jsonb::TEXT END END, CASE WHEN TRUE THEN pg_catalog.octet_length(value_jsonb::TEXT)::INT8 END, CASE WHEN TRUE THEN public_version::TEXT END, CASE WHEN TRUE THEN value_projection_digest END, CASE WHEN TRUE THEN read_permission END, CASE WHEN TRUE THEN write_permission END, CASE WHEN TRUE THEN value_origin END, CASE WHEN TRUE THEN CASE WHEN pg_catalog.octet_length(value_bytes)::INT8 <= 1048576 THEN value_bytes END END, CASE WHEN TRUE THEN pg_catalog.octet_length(value_bytes)::INT8 END, CASE WHEN TRUE THEN version_digest END, CASE WHEN TRUE THEN source_manifest_digest END, CASE WHEN TRUE THEN CASE WHEN value_origin IN ('legacy-rust-v2-bytes', 'write-request-bytes') AND pg_catalog.octet_length(value_bytes)::INT8 <= 1048576 THEN CASE WHEN pg_catalog.octet_length(pg_catalog.convert_from(value_bytes, 'UTF8')::JSONB::TEXT) <= 16777216 THEN pg_catalog.convert_from(value_bytes, 'UTF8')::JSONB::TEXT END END END, CASE WHEN TRUE THEN create_time END, CASE WHEN TRUE THEN update_time END, updated_at_ms, collection, object_key, user_id"#;
+        const CR_OBSERVED_QUERY_PREFIX_BYTES: usize = 997;
+
+        pub(super) fn cr_reservation_scope(query: &str) -> Option<&'static str> {
+            if query == CR_ANY_RESERVATION_WIRE {
+                Some("exact-complete-CR-wire-template")
+            } else if query.len() == CR_OBSERVED_QUERY_PREFIX_BYTES + '…'.len_utf8()
+                && query.strip_suffix('…').map(str::as_bytes)
+                    == CR_ANY_RESERVATION_WIRE
+                        .as_bytes()
+                        .get(..CR_OBSERVED_QUERY_PREFIX_BYTES)
+            {
+                Some("exact-observed-CR-wire-prefix-997-ellipsis")
+            } else {
+                None
+            }
+        }
+
+        fn cr_observed_scope(query: &str) -> Option<&'static str> {
+            cr_reservation_scope(query).or_else(|| {
+                access_query(query).then_some("complete-native-CR-skinny-authority-query")
+            })
+        }
+
+        pub(super) fn observed_wait_query(profile: DatabaseProfile, query: &str) -> bool {
+            match profile {
+                DatabaseProfile::PostgreSql => pg_reservation_scope(query).is_some(),
+                DatabaseProfile::CockroachDb => {
+                    cr_reservation_scope(query).is_some()
+                        || (access_query(query) && legacy_wait_query(profile, query))
+                }
+            }
+        }
+
+        fn observed_case_query(profile: DatabaseProfile, case: AnyCase, query: &str) -> bool {
+            match profile {
+                DatabaseProfile::PostgreSql => pg_reservation_scope(query).is_some(),
+                DatabaseProfile::CockroachDb => {
+                    if matches!(case, AnyCase::CreatorCommit) {
+                        cr_reservation_scope(query).is_some()
+                    } else {
+                        cr_reservation_scope(query).is_some()
+                            || (access_query(query) && case_query(profile, case, query))
+                    }
+                }
+            }
+        }
+
+        fn observed_query_kind(profile: DatabaseProfile, query: &str) -> &'static str {
+            match profile {
+                DatabaseProfile::PostgreSql => {
+                    assert!(pg_reservation_scope(query).is_some());
+                    "native-reservation-insert15-disabled-conflict"
+                }
+                DatabaseProfile::CockroachDb => {
+                    if cr_reservation_scope(query).is_some() {
+                        "native-reservation-insert15-disabled-conflict"
+                    } else {
+                        assert!(access_query(query));
+                        actual_query_kind(query)
+                    }
+                }
+            }
+        }
+
+        pub(super) fn log_observed_pg_query(
+            query: &str,
+            worker_pid: i32,
+            holder_pid: i32,
+            application: &str,
+        ) {
+            let scope = pg_reservation_scope(query).unwrap();
+            assert!(query.len() <= 8192 && application.len() <= 128);
+            assert!(worker_pid > 0 && holder_pid > 0 && worker_pid != holder_pid);
+            let packet = serde_json::json!({
+                "schema": "local.storage-native-any-PG-query-scope.v1",
+                "profile": "postgresql",
+                "actual_native_query": query,
+                "actual_native_query_utf8_bytes": query.len(),
+                "actual_native_query_sha256": query_digest(query),
+                "query_match_scope": scope,
+                "activity_query_prefix_truncated": scope == "exact-observed-PG-wire-prefix-1023",
+                "full_wire_returning_observed": scope == "exact-complete-PG-wire-template",
+                "expected_complete_wire_template_sha256": query_digest(PG_ANY_RESERVATION_WIRE),
+                "actual_worker_pid": worker_pid,
+                "exact_owned_holder_pid": holder_pid,
+                "actual_named_worker_application": application,
+                "wire_literal_normalized": false,
+                "accepted": false,
+                "full_protocol_parity": false
+            });
+            let encoded = serde_json::to_string(&packet).unwrap();
+            assert!(encoded.len() <= 32768);
+            println!("{encoded}");
+        }
+
+        pub(super) fn log_observed_cr_query(
+            query: &str,
+            worker_txn: &str,
+            holder_txn: &str,
+            application: &str,
+        ) {
+            let scope = cr_observed_scope(query).unwrap();
+            assert!(query.len() <= 8192 && application.len() <= 128);
+            assert!(!worker_txn.is_empty() && worker_txn.len() <= 128);
+            assert!(!holder_txn.is_empty() && holder_txn.len() <= 128);
+            assert_ne!(worker_txn, holder_txn);
+            let packet = serde_json::json!({
+                "schema": "local.storage-native-any-CR-query-scope.v1",
+                "profile": "cockroachdb",
+                "actual_native_query": query,
+                "actual_native_query_utf8_bytes": query.len(),
+                "actual_native_query_sha256": query_digest(query),
+                "query_match_scope": scope,
+                "activity_query_prefix_truncated": scope == "exact-observed-CR-wire-prefix-997-ellipsis",
+                "full_wire_returning_observed": scope == "exact-complete-CR-wire-template",
+                "expected_complete_wire_template_sha256": cr_reservation_scope(query).map(|_| query_digest(CR_ANY_RESERVATION_WIRE)),
+                "actual_worker_transaction": worker_txn,
+                "exact_owned_holder_transaction": holder_txn,
+                "actual_named_worker_application": application,
+                "wire_literal_normalized": false,
+                "accepted": false,
+                "full_protocol_parity": false
+            });
+            let encoded = serde_json::to_string(&packet).unwrap();
+            assert!(encoded.len() <= 32768);
+            println!("{encoded}");
+        }
+
+        fn application(case: &str, role: &str, stamp: u128) -> String {
+            let label = match case {
+                "existing_permission_wait_rollback" => "permission",
+                "concurrent_creator_commit_true_prior" => "creator",
+                "unknown_matching_token_noop" => "noop",
+                "unknown_surrogate_native_priority" => "surrogate",
+                _ => panic!("unknown Any fixture application label"),
+            };
+            let name = format!("native_any_{label}_{role}_{stamp:x}");
+            assert!(name.len() < 64);
+            assert!(name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+            name
+        }
+        fn primary_catalog(control: &mut Client, profile: DatabaseProfile) -> (i64, i64, String) {
+            let rows = match profile {
+                DatabaseProfile::PostgreSql => control.query(
+                    "SELECT c.oid::INT8,i.indexrelid::INT8,ci.relname::TEXT FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_index i ON i.indrelid=c.oid JOIN pg_catalog.pg_class ci ON ci.oid=i.indexrelid WHERE n.nspname='public' AND c.relname='trnm_storage_objects' AND i.indisprimary LIMIT 2", &[]),
+                DatabaseProfile::CockroachDb => {
+                    control.batch_execute("SET allow_unsafe_internals=true").unwrap();
+                    control.query("SELECT descriptor_id::INT8,index_id::INT8,index_name::TEXT FROM crdb_internal.table_indexes WHERE descriptor_name='trnm_storage_objects' AND index_type='primary' LIMIT 2", &[])
+                }
+            }.unwrap_or_else(|error| panic!("Any actual primary catalog failed sqlstate={}", sqlstate(&error)));
+            assert_eq!(rows.len(), 1, "Any native primary catalog ambiguous");
+            let found = (
+                rows[0].get::<_, i64>(0),
+                rows[0].get::<_, i64>(1),
+                rows[0].get::<_, String>(2),
+            );
+            assert!(found.0 > 0 && found.1 > 0 && !found.2.is_empty() && found.2.len() <= 128);
+            if matches!(profile, DatabaseProfile::CockroachDb) {
+                assert_eq!(found.1, 1);
+            }
+            found
+        }
+        fn fresh_granted(
+            control: &mut Client,
+            key: &StorageObjectKey,
+            holder: &AnyHolder,
+        ) -> serde_json::Value {
+            match &holder.identity {
+                Holder::PostgreSql { pid, xid } => {
+                    let rows=control.query("SELECT a.pid::INTEGER,a.backend_xid::TEXT,a.state::TEXT,l.locktype::TEXT,l.transactionid::TEXT,l.mode::TEXT,l.granted FROM pg_catalog.pg_stat_activity a JOIN pg_catalog.pg_locks l ON l.pid=a.pid WHERE a.datname=current_database() AND a.pid=$1 AND l.locktype='transactionid' AND l.transactionid::TEXT=$2 AND l.mode='ExclusiveLock' AND l.granted LIMIT 2", &[pid,xid]).unwrap();
+                    assert_eq!(rows.len(), 1, "Any same owned PG holder no longer granted");
+                    let r = &rows[0];
+                    assert_eq!(r.get::<_, i32>(0), *pid);
+                    assert_eq!(r.get::<_, String>(1), *xid);
+                    assert_eq!(r.get::<_, String>(2), "idle in transaction");
+                    assert_eq!(r.get::<_, String>(3), "transactionid");
+                    assert_eq!(r.get::<_, String>(4), *xid);
+                    assert_eq!(r.get::<_, String>(5), "ExclusiveLock");
+                    assert!(r.get::<_, bool>(6));
+                    serde_json::json!([[
+                        pid,
+                        xid,
+                        "idle in transaction",
+                        "transactionid",
+                        xid,
+                        "ExclusiveLock",
+                        true
+                    ]])
+                }
+                Holder::CockroachDb { txn, keys } => {
+                    let prefix = format!("/Table/{}/1/", holder.table_id);
+                    let rows=control.query("SELECT txn_id::TEXT,lock_key_pretty::TEXT,table_id::INT8,index_name::TEXT,lock_strength::TEXT,isolation_level::TEXT FROM crdb_internal.cluster_locks WHERE database_name=current_database() AND schema_name='public' AND table_name='trnm_storage_objects' AND table_id::INT8=$1 AND granted AND txn_id::TEXT=$2 AND lock_key_pretty=ANY($3::TEXT[]) ORDER BY lock_key_pretty LIMIT 64", &[&holder.table_id,txn,keys]).unwrap();
+                    assert_eq!(
+                        rows.len(),
+                        keys.len(),
+                        "Any same native PRIMARY holder changed"
+                    );
+                    let mut raw = Vec::new();
+                    for row in rows {
+                        let t: String = row.get(0);
+                        let k: String = row.get(1);
+                        let id: i64 = row.get(2);
+                        let name: Option<String> = row.get(3);
+                        let strength: String = row.get(4);
+                        let isolation: String = row.get(5);
+                        assert_eq!(t, *txn);
+                        assert_eq!(id, holder.table_id);
+                        assert!(
+                            keys.contains(&k)
+                                && k.starts_with(&prefix)
+                                && k.contains(key.collection())
+                                && k.contains(key.key())
+                        );
+                        assert_eq!(strength, "Exclusive");
+                        assert_eq!(isolation, "SERIALIZABLE");
+                        raw.push(serde_json::json!([t, k, id, name, strength, isolation]));
+                    }
+                    serde_json::Value::Array(raw)
+                }
+            }
+        }
+        fn capture_holder(
+            tx: &mut Transaction<'_>,
+            control: &mut Client,
+            profile: DatabaseProfile,
+            key: &StorageObjectKey,
+            primary: &(i64, i64, String),
+        ) -> AnyHolder {
+            let identity = match profile {
+                DatabaseProfile::PostgreSql => {
+                    let row = tx
+                        .query_one("SELECT pg_backend_pid(),pg_current_xact_id()::TEXT", &[])
+                        .unwrap();
+                    Holder::PostgreSql {
+                        pid: row.get(0),
+                        xid: row.get(1),
+                    }
+                }
+                DatabaseProfile::CockroachDb => {
+                    let prefix = format!("/Table/{}/1/", primary.0);
+                    let rows=control.query("SELECT txn_id::TEXT,lock_key_pretty::TEXT FROM crdb_internal.cluster_locks WHERE database_name=current_database() AND schema_name='public' AND table_name='trnm_storage_objects' AND table_id::INT8=$1 AND granted AND strpos(lock_key_pretty,$2)=1 AND strpos(lock_key_pretty,$3)>0 AND strpos(lock_key_pretty,$4)>0 ORDER BY txn_id::TEXT,lock_key_pretty LIMIT 64",&[&primary.0,&prefix,&key.collection(),&key.key()]).unwrap();
+                    assert!(
+                        !rows.is_empty() && rows.len() < 64,
+                        "Any owned PRIMARY holder absent"
+                    );
+                    let txn: String = rows[0].get(0);
+                    assert!(!txn.is_empty() && txn.len() <= 128);
+                    let mut keys = Vec::new();
+                    for row in rows {
+                        assert_eq!(row.get::<_, String>(0), txn);
+                        let pretty: String = row.get(1);
+                        assert!(pretty.starts_with(&prefix) && pretty.len() <= 8192);
+                        keys.push(pretty);
+                    }
+                    keys.sort();
+                    keys.dedup();
+                    Holder::CockroachDb { txn, keys }
+                }
+            };
+            let mut holder = AnyHolder {
+                identity,
+                table_id: primary.0,
+                index_id: primary.1,
+                primary_name: primary.2.clone(),
+                actual_granted_rows: serde_json::Value::Null,
+            };
+            holder.actual_granted_rows = fresh_granted(control, key, &holder);
+            holder
+        }
+        fn hold_primary(
+            tx: &mut Transaction<'_>,
+            profile: DatabaseProfile,
+            key: &StorageObjectKey,
+            primary: &(i64, i64, String),
+        ) {
+            tx.batch_execute("SET LOCAL idle_in_transaction_session_timeout='10s'")
+                .unwrap();
+            assert!(primary
+                .2
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+            let relation = match profile {
+                DatabaseProfile::PostgreSql => "public.trnm_storage_objects".to_owned(),
+                DatabaseProfile::CockroachDb => {
+                    format!("public.trnm_storage_objects@\"{}\"", primary.2)
+                }
+            };
+            let row=tx.query_one(&format!("SELECT collection,object_key,user_id FROM {relation} WHERE collection=$1 AND object_key=$2 AND user_id=$3 FOR UPDATE"),&[&key.collection(),&key.key(),&key.user_id().as_bytes().as_slice()]).unwrap();
+            assert_eq!(row.get::<_, String>(0), key.collection());
+            assert_eq!(row.get::<_, String>(1), key.key());
+            assert_eq!(
+                row.get::<_, Vec<u8>>(2).as_slice(),
+                key.user_id().as_bytes().as_slice()
+            );
+        }
+        fn observe_wait(
+            control: &mut Client,
+            application: &str,
+            holder: &AnyHolder,
+            case: AnyCase,
+        ) -> Option<AnyWait> {
+            match &holder.identity {
+                Holder::PostgreSql { pid, xid } => {
+                    let rows=control.query("SELECT a.pid::INTEGER,a.backend_xid::TEXT,a.query::TEXT,a.state::TEXT,a.wait_event_type::TEXT,a.wait_event::TEXT,pg_blocking_pids(a.pid),l.locktype::TEXT,l.transactionid::TEXT,l.granted,h.pid::INTEGER,h.mode::TEXT,h.granted FROM pg_catalog.pg_stat_activity a JOIN pg_catalog.pg_locks l ON l.pid=a.pid JOIN pg_catalog.pg_locks h ON h.locktype=l.locktype AND h.transactionid=l.transactionid WHERE a.datname=current_database() AND a.application_name=$1 AND a.pid<>$2 AND $2=ANY(pg_blocking_pids(a.pid)) AND a.wait_event_type='Lock' AND l.locktype='transactionid' AND NOT l.granted AND h.pid=$2 AND h.transactionid::TEXT=$3 AND h.mode='ExclusiveLock' AND h.granted LIMIT 2",&[&application,pid,xid]).unwrap();
+                    if rows.is_empty() {
+                        return None;
+                    }
+                    assert_eq!(rows.len(), 1, "Any native PG worker ambiguous");
+                    let row = &rows[0];
+                    let worker: i32 = row.get(0);
+                    let worker_xid: Option<String> = row.get(1);
+                    let query: String = row.get(2);
+                    let phase: String = row.get(3);
+                    let wait_type: String = row.get(4);
+                    let wait: Option<String> = row.get(5);
+                    let blocking: Vec<i32> = row.get(6);
+                    let kind: String = row.get(7);
+                    let blocked: String = row.get(8);
+                    let granted: bool = row.get(9);
+                    let blocker: i32 = row.get(10);
+                    let mode: String = row.get(11);
+                    let blocker_granted: bool = row.get(12);
+                    assert_ne!(worker, *pid);
+                    if let Some(actual_xid) = &worker_xid {
+                        assert_ne!(actual_xid, xid);
+                    }
+                    assert_eq!(wait_type, "Lock");
+                    assert!(blocking.contains(pid));
+                    assert_eq!(kind, "transactionid");
+                    assert_eq!(blocked, *xid);
+                    assert!(!granted);
+                    assert_eq!(blocker, *pid);
+                    assert_eq!(mode, "ExclusiveLock");
+                    assert!(blocker_granted);
+                    assert!(
+                        observed_case_query(DatabaseProfile::PostgreSql, case, &query),
+                        "Any PG waiter was not the native INSERT disabled-conflict reservation"
+                    );
+                    let rows = serde_json::json!([
+                        worker,
+                        worker_xid,
+                        query,
+                        phase,
+                        wait_type,
+                        wait,
+                        blocking,
+                        kind,
+                        blocked,
+                        granted,
+                        blocker,
+                        mode,
+                        blocker_granted
+                    ]);
+                    println!(
+                        "{}",
+                        serde_json::json!({"schema":"local.storage-native-any-lock-query.v1","profile":"postgresql","actual_native_query":query,"actual_native_query_sha256":query_digest(&query),"native_fields":rows,"worker_isolation_observed":null,"worker_isolation_source":"unobserved-public-repository-has-no-same-transaction-show-seam","query_match_scope":pg_reservation_scope(&query).unwrap(),"activity_query_prefix_truncated":pg_reservation_scope(&query)==Some("exact-observed-PG-wire-prefix-1023"),"full_wire_returning_observed":pg_reservation_scope(&query)==Some("exact-complete-PG-wire-template"),"expected_complete_wire_template_sha256":query_digest(PG_ANY_RESERVATION_WIRE),"worker_xid_nullable":true,"hidden_batch_sqlstate":null,"wire_literal_normalized":false,"accepted":false})
+                    );
+                    Some(AnyWait {
+                        proof: WaitProof {
+                            worker: worker.to_string(),
+                            blocker: pid.to_string(),
+                            query_sha256: query_digest(&query),
+                        },
+                        actual_rows: rows,
+                        worker_isolation: None,
+                        actual_query_kind: observed_query_kind(DatabaseProfile::PostgreSql, &query),
+                    })
+                }
+                Holder::CockroachDb { txn, keys } => {
+                    let rows=control.query("SELECT q.query_id::TEXT,q.txn_id::TEXT,q.query::TEXT,q.phase::TEXT,l.lock_key_pretty::TEXT,l.granted,l.contended,h.txn_id::TEXT,h.granted,l.table_id::INT8,l.index_name::TEXT,h.index_name::TEXT,l.isolation_level::TEXT FROM crdb_internal.cluster_queries q JOIN crdb_internal.cluster_locks l ON q.txn_id::TEXT=l.txn_id::TEXT JOIN crdb_internal.cluster_locks h ON h.database_name=l.database_name AND h.schema_name=l.schema_name AND h.table_name=l.table_name AND h.lock_key_pretty=l.lock_key_pretty WHERE q.application_name=$1 AND l.database_name=current_database() AND l.schema_name='public' AND l.table_name='trnm_storage_objects' AND l.table_id::INT8=$4 AND l.lock_key_pretty=ANY($2::TEXT[]) AND NOT l.granted AND l.contended AND l.txn_id::TEXT<>$3 AND h.txn_id::TEXT=$3 AND h.granted ORDER BY q.query_id::TEXT,l.lock_key_pretty LIMIT 64",&[&application,keys,txn,&holder.table_id]).unwrap();
+                    if rows.is_empty() {
+                        return None;
+                    }
+                    assert!(rows.len() < 64);
+                    let worker: String = rows[0].get(1);
+                    let query: String = rows[0].get(2);
+                    let isolation: Option<String> = rows[0].get(12);
+                    assert_ne!(worker, *txn);
+                    assert!(!worker.is_empty() && worker.len() <= 128);
+                    assert!(
+                        observed_case_query(DatabaseProfile::CockroachDb, case, &query),
+                        "Any CR native wait query did not match the profile/case acquisition"
+                    );
+                    if let Some(level) = &isolation {
+                        assert!(!level.is_empty() && level.len() <= 64);
+                    }
+                    let mut raw = Vec::new();
+                    for row in rows {
+                        let id: String = row.get(0);
+                        let t: String = row.get(1);
+                        let q: String = row.get(2);
+                        let phase: String = row.get(3);
+                        let key: String = row.get(4);
+                        let granted: bool = row.get(5);
+                        let contended: bool = row.get(6);
+                        let h: String = row.get(7);
+                        let hg: bool = row.get(8);
+                        let table: i64 = row.get(9);
+                        let name: Option<String> = row.get(10);
+                        let hname: Option<String> = row.get(11);
+                        let level: Option<String> = row.get(12);
+                        assert!(!id.is_empty() && id.len() <= 128 && phase.len() <= 128);
+                        assert_eq!(t, worker);
+                        assert_eq!(q, query);
+                        assert!(
+                            keys.contains(&key)
+                                && key.starts_with(&format!("/Table/{}/1/", holder.table_id))
+                        );
+                        assert!(!granted && contended && hg);
+                        assert_eq!(h, *txn);
+                        assert_eq!(table, holder.table_id);
+                        assert_eq!(level, isolation);
+                        raw.push(serde_json::json!([
+                            id, t, q, phase, key, granted, contended, h, hg, table, name, hname,
+                            level
+                        ]));
+                    }
+                    let raw = serde_json::Value::Array(raw);
+                    println!(
+                        "{}",
+                        serde_json::json!({"schema":"local.storage-native-any-lock-query.v1","profile":"cockroachdb","actual_native_query":query,"actual_native_query_sha256":query_digest(&query),"native_fields":raw,"worker_isolation_observed":isolation,"worker_isolation_source":"same-worker-native-cluster-locks","query_match_scope":cr_observed_scope(&query).unwrap(),"activity_query_prefix_truncated":cr_reservation_scope(&query)==Some("exact-observed-CR-wire-prefix-997-ellipsis"),"full_wire_returning_observed":cr_reservation_scope(&query)==Some("exact-complete-CR-wire-template"),"expected_complete_wire_template_sha256":cr_reservation_scope(&query).map(|_|query_digest(CR_ANY_RESERVATION_WIRE)),"index_name_raw_preserved":true,"hidden_batch_sqlstate":null,"wire_literal_normalized":false,"accepted":false})
+                    );
+                    Some(AnyWait {
+                        proof: WaitProof {
+                            worker,
+                            blocker: txn.clone(),
+                            query_sha256: query_digest(&query),
+                        },
+                        actual_rows: raw,
+                        worker_isolation: isolation,
+                        actual_query_kind: observed_query_kind(
+                            DatabaseProfile::CockroachDb,
+                            &query,
+                        ),
+                    })
+                }
+            }
+        }
+        fn wait_for_reservation(
+            control: &mut Client,
+            application: &str,
+            holder: &AnyHolder,
+            case: AnyCase,
+            receive: &Receiver<Outcome>,
+            outcome: &mut Option<Outcome>,
+            started: Instant,
+        ) -> AnyWait {
+            loop {
+                assert!(
+                    started.elapsed() < CAUSAL_BUDGET,
+                    "Any native wait was not observed within original four-second causal budget"
+                );
+                if let Some(proof) = observe_wait(control, application, holder, case) {
+                    assert!(started.elapsed() < CAUSAL_BUDGET);
+                    return proof;
+                }
+                match receive.try_recv() {
+                    Ok(actual) => {
+                        *outcome = Some(actual);
+                        panic!("Any worker completed before actual reservation wait");
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        panic!("Any worker disconnected before native wait")
+                    }
+                    Err(TryRecvError::Empty) => std::thread::yield_now(),
+                }
+            }
+        }
+        fn seed_unknown(control: &mut Client, key: &StorageObjectKey, token_request: &[u8]) {
+            // Controlled synthetic unknown-origin data. The manifest digest is
+            // only a nonzero synthetic fixture value, never import custody.
+            let projected = native(control, C);
+            let sha = IntegrityDigest::from_value(&projected).get();
+            let token = ContentVersion::from_value(token_request);
+            let manifest = [0xc7_u8; 32];
+            let create = StorageTimestamp::new(-1, 123_456_000).unwrap();
+            let update = StorageTimestamp::new(951_827_696, 654_321_000).unwrap();
+            assert_eq!(control.execute("UPDATE public.trnm_storage_objects SET value_jsonb=$4::TEXT::JSONB,value_bytes=NULL,version_digest=NULL,public_version=$5,value_projection_digest=$6,value_origin='nakama-export-unknown-request',source_manifest_digest=$7,create_time=$8,update_time=$9 WHERE collection=$1 AND object_key=$2 AND user_id=$3",&[&key.collection(),&key.key(),&key.user_id().as_bytes().as_slice(),&std::str::from_utf8(C).unwrap(),&token.as_str(),&sha.as_bytes().as_slice(),&manifest.as_slice(),&create,&update]).unwrap(),1);
+        }
+        fn creator_insert(
+            tx: &mut Transaction<'_>,
+            key: &StorageObjectKey,
+            projected: &[u8],
+        ) -> RawRow {
+            tx.batch_execute("SET LOCAL idle_in_transaction_session_timeout='10s'")
+                .unwrap();
+            let request_digest = IntegrityDigest::from_value(A).get();
+            let projection_digest = IntegrityDigest::from_value(projected).get();
+            let token = ContentVersion::from_value(A);
+            let read = ReadPermission::OWNER.get();
+            let write = WritePermission::OWNER.get();
+            let clock = 601_i64;
+            let row=tx.query_one("INSERT INTO public.trnm_storage_objects (collection,object_key,user_id,value_jsonb,value_bytes,version_digest,public_version,value_projection_digest,value_origin,source_manifest_digest,read_permission,write_permission,updated_at_ms,create_time,update_time) VALUES ($1,$2,$3,$4::TEXT::JSONB,$5,$6,$7,$8,'write-request-bytes',NULL,$9,$10,$11,pg_catalog.now(),pg_catalog.now()) RETURNING collection,object_key,user_id,value_jsonb::TEXT,value_bytes,version_digest,public_version::TEXT,value_projection_digest,value_origin,source_manifest_digest,read_permission,write_permission,updated_at_ms,create_time,update_time",&[&key.collection(),&key.key(),&key.user_id().as_bytes().as_slice(),&std::str::from_utf8(A).unwrap(),&A,&request_digest.as_bytes().as_slice(),&token.as_str(),&projection_digest.as_bytes().as_slice(),&read,&write,&clock]).unwrap_or_else(|error|panic!("Any own creator INSERT failed actual_sqlstate={}",sqlstate(&error)));
+            RawRow {
+                collection: row.get(0),
+                key: row.get(1),
+                owner: row.get(2),
+                native: row.get(3),
+                raw: row.get(4),
+                request_sha: row.get(5),
+                public_version: row.get(6),
+                projection_sha: row.get(7),
+                origin: row.get(8),
+                manifest_sha: row.get(9),
+                read: row.get(10),
+                write: row.get(11),
+                updated_at_ms: row.get(12),
+                create: row.get(13),
+                update: row.get(14),
+            }
+        }
+        fn tuple_json(row: &RawRow) -> serde_json::Value {
+            let hex = |bytes: &[u8]| {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                let mut out = String::with_capacity(bytes.len() * 2);
+                for byte in bytes {
+                    out.push(char::from(HEX[usize::from(byte >> 4)]));
+                    out.push(char::from(HEX[usize::from(byte & 15)]));
+                }
+                out
+            };
+            let time = |value: Option<StorageTimestamp>| {
+                value.map(|timestamp| serde_json::json!([timestamp.seconds, timestamp.nanos]))
+            };
+            serde_json::json!([
+                row.collection,
+                row.key,
+                hex(&row.owner),
+                row.native,
+                row.raw.as_deref().map(hex),
+                row.request_sha.as_deref().map(hex),
+                row.public_version,
+                hex(&row.projection_sha),
+                row.origin,
+                row.manifest_sha.as_deref().map(hex),
+                row.read,
+                row.write,
+                row.updated_at_ms,
+                time(row.create),
+                time(row.update)
+            ])
+        }
+        fn log_actual(profile: DatabaseProfile, case: &str, outcome: &Outcome, late: bool) {
+            let (code, reason, retry, receipts) = match &outcome.batch {
+                Ok(receipts) => (None, None, None, Some(receipts.len())),
+                Err(error) => (
+                    Some(format!("{:?}", error.code())),
+                    Some(error.reason()),
+                    Some(format!("{:?}", error.retry())),
+                    None,
+                ),
+            };
+            println!(
+                "{}",
+                serde_json::json!({"schema":"local.storage-native-any-actual-result.v1","profile":profile.metadata_value(),"case":case,"actual_domain":code,"actual_reason":reason,"actual_retry":retry,"receipt_count":receipts,"hidden_batch_sqlstate":null,"same_lease_readable":outcome.reused.as_ref().ok(),"late_after_causal_release":late,"accepted":false})
+            );
+        }
+        fn exercise_case(url: &str, profile: DatabaseProfile, collection: &str, case: AnyCase) {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let key = |name: &str| StorageObjectKey::new(collection, name, OWNER).unwrap();
+            let prelude = key("0-prelude");
+            let target = key("a-target");
+            let probe = key("y-probe");
+            let later = key("z-held");
+            let mut control = bounded_control(url);
+            let primary = primary_catalog(&mut control, profile);
+            let mut seed_repo = bounded_repository(url, profile);
+            let mut seeds = vec![
+                write(&prelude, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&probe, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&later, A, VersionCheck::Any, WritePermission::OWNER),
+            ];
+            if !matches!(case, AnyCase::CreatorCommit) {
+                seeds.push(write(
+                    &target,
+                    A,
+                    VersionCheck::Any,
+                    if matches!(case, AnyCase::ExistingPermission) {
+                        WritePermission::NONE
+                    } else {
+                        WritePermission::OWNER
+                    },
+                ));
+            }
+            let seeded = seed_repo
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::Server,
+                    &seeds,
+                    601,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            assert_eq!(seeded.len(), seeds.len());
+            for (operation, receipt) in seeds.iter().zip(&seeded) {
+                let StorageBatchOperation::Write(write) = operation else {
+                    unreachable!()
+                };
+                assert_known_row(
+                    &mut control,
+                    &write.key,
+                    A,
+                    write.read_permission,
+                    write.write_permission,
+                    601,
+                    receipt.times,
+                );
+            }
+            if matches!(case, AnyCase::UnknownNoop | AnyCase::UnknownSurrogate) {
+                seed_unknown(
+                    &mut control,
+                    &target,
+                    if matches!(case, AnyCase::UnknownSurrogate) {
+                        SURROGATE
+                    } else {
+                        B
+                    },
+                );
+            }
+            let before = snapshot(&mut control, collection);
+            assert_eq!(
+                before.len(),
+                if matches!(case, AnyCase::CreatorCommit) {
+                    3
+                } else {
+                    4
+                }
+            );
+            let probe_before = seed_repo
+                .read_storage_object_with_metadata(StorageActor::User(OWNER), &probe)
+                .unwrap();
+            let mut worker_repo = bounded_repository(url, profile);
+            let worker_name = application(case.name(), "w", stamp);
+            worker_repo
+                .execute_migration_batch(&format!("SET application_name='{worker_name}'"))
+                .unwrap();
+            // This independent native render is outside the business worker.
+            // The worker performs no storage-absence read before its Any batch.
+            let prospective_creator = native(&mut control, A);
+            let mut holder_control = bounded_control(url);
+            control_application(&mut holder_control, &application(case.name(), "h", stamp));
+            let started = Instant::now();
+            let mut held = Some(holder_control.transaction().unwrap());
+            let creator = if matches!(case, AnyCase::CreatorCommit) {
+                Some(creator_insert(
+                    held.as_mut().unwrap(),
+                    &target,
+                    &prospective_creator,
+                ))
+            } else {
+                None
+            };
+            let held_key = if matches!(case, AnyCase::UnknownSurrogate) {
+                &later
+            } else {
+                &target
+            };
+            if creator.is_none() {
+                hold_primary(held.as_mut().unwrap(), profile, held_key, &primary);
+            }
+            let holder = capture_holder(
+                held.as_mut().unwrap(),
+                &mut control,
+                profile,
+                held_key,
+                &primary,
+            );
+            assert!(
+                started.elapsed() < CAUSAL_BUDGET,
+                "Any holder setup exhausted original causal budget"
+            );
+            let operations = match case {
+                AnyCase::ExistingPermission => vec![
+                    write(&prelude, B, VersionCheck::Any, WritePermission::OWNER),
+                    write(&target, B, VersionCheck::Any, WritePermission::OWNER),
+                ],
+                AnyCase::CreatorCommit | AnyCase::UnknownNoop => {
+                    vec![write(&target, B, VersionCheck::Any, WritePermission::OWNER)]
+                }
+                AnyCase::UnknownSurrogate => vec![
+                    write(
+                        &target,
+                        SURROGATE,
+                        VersionCheck::Any,
+                        WritePermission::OWNER,
+                    ),
+                    write(&later, B, VersionCheck::Any, WritePermission::OWNER),
+                ],
+            };
+            let worker_operations = operations.clone();
+            let worker_probe = probe.clone();
+            let (send, receive) = mpsc::sync_channel(1);
+            let worker = std::thread::spawn(move || {
+                let batch = worker_repo.apply_storage_batch_nakama_with_metadata(
+                    StorageActor::User(OWNER),
+                    &worker_operations,
+                    602,
+                    StorageNakamaBatchKind::Write,
+                );
+                let completed_at = Instant::now();
+                let reused = worker_repo
+                    .read_storage_object_with_metadata(StorageActor::User(OWNER), &worker_probe)
+                    .map(|actual| actual == probe_before);
+                send.send(Outcome {
+                    batch,
+                    reused,
+                    completed_at,
+                })
+                .expect("Any result receiver unavailable");
+            });
+            let mut outcome = None;
+            let mut actual_wait = None;
+            let mut release_ok = true;
+            let mut explicit_release = None;
+            let body = catch_unwind(AssertUnwindSafe(|| {
+                if case.expects_wait() {
+                    let wait = wait_for_reservation(
+                        &mut control,
+                        &worker_name,
+                        &holder,
+                        case,
+                        &receive,
+                        &mut outcome,
+                        started,
+                    );
+                    println!("nakama_native_any_lock_observed profile={} case={} worker={} blocker={} actual_query_sha256={} proof=native-primary-lock-view",profile.metadata_value(),case.name(),wait.proof.worker,wait.proof.blocker,wait.proof.query_sha256);
+                    actual_wait = Some(wait);
+                    if matches!(case, AnyCase::CreatorCommit) {
+                        let transaction = held.take().unwrap();
+                        transaction.commit().unwrap_or_else(|error| {
+                            panic!(
+                                "Any own creator COMMIT failed actual_sqlstate={}",
+                                sqlstate(&error)
+                            )
+                        });
+                        explicit_release = Some("COMMIT");
+                    } else {
+                        release_ok &=
+                            release(&mut held, profile, case.name(), "Any-causal-release");
+                        assert!(release_ok);
+                        explicit_release = Some("ROLLBACK");
+                    }
+                }
+                let actual = receive
+                    .recv_timeout(CAUSAL_BUDGET.saturating_sub(started.elapsed()))
+                    .expect(
+                        "Any public repository actual result absent within original causal budget",
+                    );
+                log_actual(profile, case.name(), &actual, false);
+                outcome = Some(actual);
+                let actual = outcome.as_ref().unwrap();
+                assert!(actual.completed_at.duration_since(started) < CAUSAL_BUDGET);
+                assert_eq!(actual.reused, Ok(true), "Any same owned lease unreadable");
+                if case.commits() {
+                    assert_eq!(
+                        actual.batch.as_ref().map(Vec::len),
+                        Ok(operations.len()),
+                        "Any expected committed step receipts were not returned"
+                    );
+                } else {
+                    let expected = if matches!(case, AnyCase::ExistingPermission) {
+                        DomainError::new(
+                            StableCode::PermissionDenied,
+                            "storage_write_permission_denied",
+                            RetryClass::Never,
+                        )
+                    } else {
+                        DomainError::new(
+                            StableCode::InvalidArgument,
+                            "database_constraint_violation",
+                            RetryClass::Never,
+                        )
+                    };
+                    assert_eq!(
+                        actual.batch.as_ref().err(),
+                        Some(&expected),
+                        "Any native/semantic error changed or returned partial receipts"
+                    );
+                }
+                if !case.expects_wait() {
+                    let current = fresh_granted(&mut control, held_key, &holder);
+                    assert_eq!(
+                        current, holder.actual_granted_rows,
+                        "Any native priority completed only after the owned holder changed"
+                    );
+                }
+                assert!(
+                    started.elapsed() < CAUSAL_BUDGET,
+                    "Any causal readback exceeded original budget"
+                );
+            }));
+            let settling_started = Instant::now();
+            if held.is_some() {
+                release_ok &= release(&mut held, profile, case.name(), "Any-cleanup");
+                if explicit_release.is_none() {
+                    explicit_release = Some("ROLLBACK-cleanup");
+                }
+            }
+            let joined = settle(
+                worker,
+                &receive,
+                &mut outcome,
+                settling_started,
+                profile,
+                case.name(),
+            );
+            let after_read = catch_unwind(AssertUnwindSafe(|| snapshot(&mut control, collection)));
+            let after = after_read.as_ref().ok();
+            let state =
+                if release_ok && joined.as_ref().is_some_and(Result::is_ok) && after.is_some() {
+                    Some(catch_unwind(AssertUnwindSafe(|| {
+                        if matches!(case, AnyCase::CreatorCommit) {
+                            let actual = outcome.as_ref().unwrap().batch.as_ref().unwrap();
+                            assert_eq!(actual.len(), 1);
+                            let receipt = &actual[0];
+                            let old = creator.as_ref().unwrap();
+                            assert_eq!(receipt.receipt.key, target);
+                            assert_eq!(
+                                receipt
+                                    .receipt
+                                    .previous_version
+                                    .as_ref()
+                                    .map(|value| value.as_str()),
+                                Some(old.public_version.as_str())
+                            );
+                            assert_eq!(
+                                receipt.receipt.current_version,
+                                Some(ContentVersion::from_value(B))
+                            );
+                            assert_eq!(receipt.times.create, old.create);
+                            assert!(receipt.times.update.is_some());
+                            let next = expected_known_row(
+                                &mut control,
+                                &target,
+                                B,
+                                ReadPermission::OWNER,
+                                WritePermission::OWNER,
+                                602,
+                                receipt.times,
+                            );
+                            let mut expected = before.clone();
+                            expected.push(next);
+                            expected.sort_by(|a, b| {
+                                (&a.collection, &a.key, &a.owner).cmp(&(
+                                    &b.collection,
+                                    &b.key,
+                                    &b.owner,
+                                ))
+                            });
+                            assert_eq!(
+                                after.unwrap(),
+                                &expected,
+                                "Any concurrent creator prior/creation/full15 state changed"
+                            );
+                        } else {
+                            assert_eq!(
+                                after.unwrap(),
+                                &before,
+                                "Any rejected/no-op changed one of four actual raw15 tuples"
+                            );
+                            if matches!(case, AnyCase::UnknownNoop) {
+                                let receipts = outcome.as_ref().unwrap().batch.as_ref().unwrap();
+                                assert_eq!(receipts.len(), 1);
+                                let old =
+                                    before.iter().find(|row| row.key == target.key()).unwrap();
+                                assert_eq!(receipts[0].receipt.key, target);
+                                assert_eq!(
+                                    receipts[0]
+                                        .receipt
+                                        .previous_version
+                                        .as_ref()
+                                        .map(|version| version.as_str()),
+                                    Some(old.public_version.as_str())
+                                );
+                                assert_eq!(
+                                    receipts[0].receipt.current_version,
+                                    Some(ContentVersion::from_value(B))
+                                );
+                                assert_eq!(
+                                    receipts[0].times,
+                                    StorageTimes {
+                                        create: old.create,
+                                        update: old.update
+                                    }
+                                );
+                                assert!(
+                                    old.raw.is_none()
+                                        && old.request_sha.is_none()
+                                        && old.manifest_sha.is_some()
+                                );
+                                assert_ne!(
+                                    old.native,
+                                    String::from_utf8(native(&mut control, B)).unwrap()
+                                );
+                            }
+                        }
+                    })))
+                } else {
+                    None
+                };
+            let receipts=outcome.as_ref().and_then(|actual|actual.batch.as_ref().ok()).map(|receipts|receipts.iter().map(|receipt|serde_json::json!({"key":receipt.receipt.key.key(),"previous":receipt.receipt.previous_version.as_ref().map(|version|version.as_str()),"current":receipt.receipt.current_version.as_ref().map(|version|version.as_str()),"create":receipt.times.create.map(|time|[time.seconds,i64::from(time.nanos)]),"update":receipt.times.update.map(|time|[time.seconds,i64::from(time.nanos)])})).collect::<Vec<_>>());
+            let packet = serde_json::json!({"schema":"local.storage-native-any-state.v1","profile":profile.metadata_value(),"case":case.name(),"fields":15,"before":before.iter().map(tuple_json).collect::<Vec<_>>(),"after":after.map(|rows|rows.iter().map(tuple_json).collect::<Vec<_>>()),"creator_uncommitted_actual_row":creator.as_ref().map(tuple_json),"holder_actual_granted_rows":holder.actual_granted_rows,"actual_primary":[holder.table_id,holder.index_id,holder.primary_name],"actual_wait_rows":actual_wait.as_ref().map(|proof|&proof.actual_rows),"actual_wait_query_kind":actual_wait.as_ref().map(|proof|proof.actual_query_kind),"cr_access_wire_sql":if matches!(profile,DatabaseProfile::CockroachDb){Some(CR_ACCESS_SQL)}else{None},"worker_isolation_observed":actual_wait.as_ref().and_then(|proof|proof.worker_isolation.as_deref()),"worker_isolation_source":if matches!(profile,DatabaseProfile::PostgreSql){"unobserved"}else{"same-worker-native-lock-view-or-unobserved"},"explicit_holder_release":explicit_release,"actual_receipts":receipts,"no_receipts":outcome.as_ref().map(|actual|actual.batch.is_err()),"causal_body_passed":body.is_ok(),"state_check_passed":state.as_ref().map(|result|result.is_ok()),"same_lease_readable":outcome.as_ref().and_then(|actual|actual.reused.as_ref().ok()).copied(),"hidden_batch_sqlstate":null,"synthetic_unknown_manifest_is_import_custody":false,"automatic_mutation_retry":false,"accepted":false,"compatibility_credit":false,"production_ready":false,"full_nakama_replacement":false});
+            let encoded = serde_json::to_string(&packet).unwrap();
+            assert!(
+                encoded.len() <= 65536,
+                "Any fixture raw tuple packet exceeded64KiB"
+            );
+            println!("{encoded}");
+            if let Err(payload) = body {
+                if let Some(actual) = &outcome {
+                    log_actual(profile, case.name(), actual, true);
+                }
+                if after_read.is_err() || state.as_ref().is_some_and(Result::is_err) {
+                    eprintln!("Any secondary full15 snapshot failure; primary assertion retained");
+                }
+                resume_unwind(payload);
+            }
+            match joined {
+                Some(Ok(())) => {}
+                Some(Err(payload)) => resume_unwind(payload),
+                None => panic!("Any worker unsettled; external process-group deadline required"),
+            }
+            assert!(release_ok, "Any native holder cleanup failed");
+            if let Err(payload) = after_read {
+                resume_unwind(payload);
+            }
+            match state {
+                Some(Ok(())) => {}
+                Some(Err(payload)) => resume_unwind(payload),
+                None => panic!("Any full15 tuple comparison unavailable"),
+            }
+            println!("nakama_native_any_case_executed profile={} case={} native_wait={} committed={} fields=15",profile.metadata_value(),case.name(),case.expects_wait(),case.commits());
+        }
+
+        fn step_receipts(url: &str, profile: DatabaseProfile, collection: &str) {
+            let mut control = bounded_control(url);
+            let mut repository = bounded_repository(url, profile);
+            let known = StorageObjectKey::new(collection, "known-duplicate", OWNER).unwrap();
+            let unknown = StorageObjectKey::new(collection, "unknown-duplicate", OWNER).unwrap();
+            let aba = StorageObjectKey::new(collection, "own-aba-delete-reinsert", OWNER).unwrap();
+            let seeds = [
+                write(&known, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&unknown, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&aba, A, VersionCheck::Any, WritePermission::OWNER),
+            ];
+            let seed = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::Server,
+                    &seeds,
+                    701,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            assert_eq!(seed.len(), 3);
+            seed_unknown(&mut control, &unknown, B);
+            let before = snapshot(&mut control, collection);
+            assert_eq!(before.len(), 3);
+            let ops = [
+                write(&known, B, VersionCheck::Any, WritePermission::OWNER),
+                write(&known, C, VersionCheck::Any, WritePermission::OWNER),
+                write(&known, C, VersionCheck::Any, WritePermission::OWNER),
+            ];
+            let receipts = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::User(OWNER),
+                    &ops,
+                    702,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            check_step_acks(&receipts, &[B, C, C]);
+            assert_eq!(
+                receipts[0]
+                    .receipt
+                    .previous_version
+                    .as_ref()
+                    .map(|value| value.as_str()),
+                Some(ContentVersion::from_value(A).as_str())
+            );
+            assert_eq!(receipts[0].times.create, seed[0].times.create);
+            assert_known_row(
+                &mut control,
+                &known,
+                C,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
+                702,
+                receipts[2].times,
+            );
+            let unknown_before = snapshot(&mut control, collection)
+                .into_iter()
+                .find(|row| row.key == unknown.key())
+                .unwrap();
+            let ops = [
+                write(&unknown, B, VersionCheck::Any, WritePermission::OWNER),
+                write(&unknown, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&unknown, B, VersionCheck::Any, WritePermission::OWNER),
+            ];
+            let receipts = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::User(OWNER),
+                    &ops,
+                    703,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            assert_eq!(receipts.len(), 3);
+            for (index, value) in [B, A, B].into_iter().enumerate() {
+                assert_eq!(receipts[index].receipt.key, unknown);
+                assert_eq!(
+                    receipts[index].receipt.current_version,
+                    Some(ContentVersion::from_value(value))
+                );
+            }
+            for (index, previous) in [B, B, A].into_iter().enumerate() {
+                assert_eq!(
+                    receipts[index]
+                        .receipt
+                        .previous_version
+                        .as_ref()
+                        .map(|value| value.as_str()),
+                    Some(ContentVersion::from_value(previous).as_str())
+                );
+            }
+            assert_eq!(
+                receipts[0].times,
+                StorageTimes {
+                    create: unknown_before.create,
+                    update: unknown_before.update
+                }
+            );
+            assert_eq!(receipts[2].times.create, unknown_before.create);
+            assert_known_row(
+                &mut control,
+                &unknown,
+                B,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
+                703,
+                receipts[2].times,
+            );
+            let aba_before = snapshot(&mut control, collection)
+                .into_iter()
+                .find(|row| row.key == aba.key())
+                .unwrap();
+            let ops = [
+                write(&aba, B, VersionCheck::Any, WritePermission::OWNER),
+                write(&aba, A, VersionCheck::Any, WritePermission::OWNER),
+            ];
+            let receipts = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::User(OWNER),
+                    &ops,
+                    704,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            check_step_acks(&receipts, &[B, A]);
+            assert_eq!(
+                receipts[0]
+                    .receipt
+                    .previous_version
+                    .as_ref()
+                    .map(|value| value.as_str()),
+                Some(aba_before.public_version.as_str())
+            );
+            assert_eq!(receipts[1].times.create, aba_before.create);
+            assert_known_row(
+                &mut control,
+                &aba,
+                A,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
+                704,
+                receipts[1].times,
+            );
+            let removed = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::User(OWNER),
+                    &[delete(&aba, Some(ContentVersion::from_value(A).into()))],
+                    705,
+                    StorageNakamaBatchKind::Delete,
+                )
+                .unwrap();
+            assert_eq!(removed.len(), 1);
+            assert_eq!(
+                removed[0]
+                    .receipt
+                    .previous_version
+                    .as_ref()
+                    .map(|value| value.as_str()),
+                Some(ContentVersion::from_value(A).as_str())
+            );
+            assert!(removed[0].receipt.current_version.is_none());
+            assert!(!snapshot(&mut control, collection)
+                .iter()
+                .any(|row| row.key == aba.key()));
+            let reinserted = repository
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::User(OWNER),
+                    &[write(&aba, C, VersionCheck::Any, WritePermission::OWNER)],
+                    706,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            assert_eq!(reinserted.len(), 1);
+            assert!(reinserted[0].receipt.previous_version.is_none());
+            assert_eq!(reinserted[0].times.create, reinserted[0].times.update);
+            assert_known_row(
+                &mut control,
+                &aba,
+                C,
+                ReadPermission::OWNER,
+                WritePermission::OWNER,
+                706,
+                reinserted[0].times,
+            );
+            let after = snapshot(&mut control, collection);
+            assert_eq!(after.len(), 3);
+            println!(
+                "{}",
+                serde_json::json!({"schema":"local.storage-native-any-step-state.v1","profile":profile.metadata_value(),"fields":15,"known_duplicate_occurrences":3,"unknown_duplicate_occurrences":3,"aba_occurrences":2,"own_delete_reinsert_sequences":1,"before":before.iter().map(tuple_json).collect::<Vec<_>>(),"after":after.iter().map(tuple_json).collect::<Vec<_>>(),"synthetic_unknown_manifest_is_import_custody":false,"accepted":false,"compatibility_credit":false})
+            );
+            println!("nakama_native_any_steps_executed profile={} known_duplicate=3 unknown_duplicate=3 aba=2 own_delete_reinsert=1 fields=15",profile.metadata_value());
+        }
+        pub(super) fn exercise(url: &str, profile: DatabaseProfile, collection: &str) {
+            for (index, case) in [
+                AnyCase::ExistingPermission,
+                AnyCase::CreatorCommit,
+                AnyCase::UnknownNoop,
+                AnyCase::UnknownSurrogate,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let namespace = format!("{collection}-any{index}");
+                assert!(namespace.len() <= 128);
+                let mut cleaner = bounded_control(url);
+                cleanup(&mut cleaner, &namespace).unwrap();
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    exercise_case(url, profile, &namespace, case)
+                }));
+                preserve_primary_cleanup(result, cleanup(&mut cleaner, &namespace));
+            }
+            let namespace = format!("{collection}-any-steps");
+            assert!(namespace.len() <= 128);
+            let mut cleaner = bounded_control(url);
+            cleanup(&mut cleaner, &namespace).unwrap();
+            let result = catch_unwind(AssertUnwindSafe(|| step_receipts(url, profile, &namespace)));
+            preserve_primary_cleanup(result, cleanup(&mut cleaner, &namespace));
+            println!(
+                "{}",
+                serde_json::json!({"schema":"local.storage-native-any-matrix.v1","profile":profile.metadata_value(),"cases":4,"existing_permission_wait_rollback":1,"concurrent_creator_commit_true_prior":1,"unknown_matching_token_noop":1,"unknown_surrogate_native_priority":1,"known_duplicate_occurrences":3,"unknown_duplicate_occurrences":3,"aba_occurrences":2,"own_delete_reinsert_sequences":1,"tuple_fields":15,"pg_worker_isolation_observed":null,"synthetic_unknown_manifest_is_import_custody":false,"automatic_mutation_retry":false,"accepted":false,"compatibility_credit":false,"production_ready":false,"full_protocol_parity":false,"full_nakama_replacement":false})
+            );
+            println!("nakama_native_any_matrix_executed profile={} cases=4 permission_wait=1 creator_commit=1 unknown_noop=1 surrogate_priority=1 known_duplicate=3 unknown_duplicate=3 aba=2 own_delete_reinsert=1 fields=15 pg_worker_isolation=unobserved",profile.metadata_value());
         }
     }
 }

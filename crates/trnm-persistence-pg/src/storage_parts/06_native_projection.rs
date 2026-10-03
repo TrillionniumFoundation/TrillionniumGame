@@ -488,3 +488,87 @@ mod raw_storage_binding_tests {
         assert!(!format!("{:?}", RawStorageCondition("secret-token")).contains("secret-token"));
     }
 }
+
+fn storage_any_row_columns(profile: DatabaseProfile) -> String {
+    format!(
+        "{}, updated_at_ms, collection, object_key, user_id",
+        storage_row_columns(profile, "TRUE")
+    )
+}
+
+fn storage_any_conflict_lock_clause(profile: DatabaseProfile) -> &'static str {
+    match profile {
+        DatabaseProfile::PostgreSql => "",
+        DatabaseProfile::CockroachDb => " FOR UPDATE",
+    }
+}
+
+fn storage_any_access_query(profile: DatabaseProfile) -> String {
+    let locking = storage_any_conflict_lock_clause(profile);
+    format!(
+        "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects \
+         WHERE collection=$1 AND object_key=$2 AND user_id=$3{locking}"
+    )
+}
+
+fn storage_any_prior_query(profile: DatabaseProfile) -> String {
+    let columns = storage_any_row_columns(profile);
+    let locking = storage_any_conflict_lock_clause(profile);
+    format!(
+        "SELECT {columns} FROM public.trnm_storage_objects \
+         WHERE collection=$1 AND object_key=$2 AND user_id=$3{locking}"
+    )
+}
+
+fn storage_any_native_digest(profile: DatabaseProfile) -> &'static str {
+    match profile {
+        DatabaseProfile::PostgreSql => "pg_catalog.sha256(pg_catalog.convert_to($4::JSONB::TEXT,'UTF8'))",
+        // The pinned CR function returns a hexadecimal STRING; explicitly
+        // decode that native result to BYTES instead of pretending it is BYTEA.
+        DatabaseProfile::CockroachDb => "pg_catalog.decode(pg_catalog.sha256(pg_catalog.convert_to($4::JSONB::TEXT,'UTF8')),'hex')",
+    }
+}
+
+fn storage_any_upsert_query(profile: DatabaseProfile, reserve: bool) -> String {
+    let digest = storage_any_native_digest(profile);
+    let incoming = format!(
+        "$1,$2,$3,$4::JSONB,$5,$6,$7,{digest},'write-request-bytes',NULL,\
+         $8,$9,$10,pg_catalog.now(),pg_catalog.now()"
+    );
+    let source = if reserve {
+        format!("VALUES ({incoming})")
+    } else {
+        format!(
+            "SELECT {incoming} FROM public.trnm_storage_objects AS prior \
+             WHERE prior.collection=$1 AND prior.object_key=$2 AND prior.user_id=$3"
+        )
+    };
+    let predicate = if reserve {
+        "FALSE"
+    } else {
+        "($11::BOOL OR stored.write_permission=1) \
+         AND NOT (stored.public_version::TEXT=$7::TEXT \
+                  AND stored.read_permission=$8 AND stored.write_permission=$9)"
+    };
+    let assignments = if reserve {
+        // WHERE FALSE means this assignment never changes the conflicting row.
+        // It is the measured reservation form, not a gratuitous key UPDATE.
+        "object_key=excluded.object_key".to_owned()
+    } else {
+        format!(
+            "value_jsonb=$4::JSONB,value_bytes=$5,version_digest=$6,public_version=$7,\
+             value_projection_digest={digest},value_origin='write-request-bytes',\
+             source_manifest_digest=NULL,read_permission=$8,write_permission=$9,\
+             updated_at_ms=$10,update_time=pg_catalog.now()"
+        )
+    };
+    let columns = storage_any_row_columns(profile);
+    format!(
+        "INSERT INTO public.trnm_storage_objects AS stored \
+         (collection,object_key,user_id,value_jsonb,value_bytes,version_digest,\
+          public_version,value_projection_digest,value_origin,source_manifest_digest,\
+          read_permission,write_permission,updated_at_ms,create_time,update_time) \
+         {source} ON CONFLICT (collection,object_key,user_id) DO UPDATE \
+         SET {assignments} WHERE {predicate} RETURNING {columns}"
+    )
+}

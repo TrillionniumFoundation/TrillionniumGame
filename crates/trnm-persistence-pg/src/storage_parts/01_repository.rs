@@ -349,10 +349,11 @@ impl PgRepository {
             authorize_write_permission(actor, operation.key(), None)?;
         }
         let updated_at_i64 = to_i64(updated_at_ms)?;
+        let isolation = storage_batch_isolation(self.profile, kind, operations);
         let mut transaction = self
             .client
             .build_transaction()
-            .isolation_level(IsolationLevel::Serializable)
+            .isolation_level(isolation)
             .start()
             .map_err(map_postgres_error)?;
         crate::storage_import::verify_business_storage_import_serving(
@@ -373,6 +374,27 @@ impl PgRepository {
         for ordinal in order {
             let operation = &operations[ordinal];
             let occurrence = (|| -> Result<Option<StoredStorageMutationReceipt>, DomainError> {
+                if let Some(write) = nakama_any_write(kind, operation) {
+                    // Every occurrence obtains its actual native prior under a
+                    // real profile-specific lock after reservation. The staged
+                    // map is only a bounded result cache, never prior authority.
+                    let step = apply_nakama_any_write(
+                        &mut transaction,
+                        &mut staged,
+                        actor,
+                        write,
+                        updated_at_i64,
+                        self.profile,
+                    )?;
+                    verify_storage_staged_budget(&staged)?;
+                    return match step {
+                        AnyWriteStep::Applied(receipt) => Ok(Some(receipt)),
+                        AnyWriteStep::Semantic(rejection) => {
+                            first_write_rejection.get_or_insert(rejection);
+                            Ok(None)
+                        }
+                    };
+                }
                 if let Some(write) = nakama_insert_only_write(kind, operation) {
                     // Owner authority was checked for the whole request before
                     // this transaction. Star uses a real ordinary INSERT, without
@@ -508,6 +530,43 @@ impl PgRepository {
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().map_err(map_postgres_error)?;
         Ok(receipts)
+    }
+}
+
+// This is an explicit transaction policy for a validated, nonempty canonical
+// all-Any PostgreSQL write batch. Mixed versions, typed/internal, delete and all
+// CockroachDB calls retain Serializable. Select before starting the transaction
+// and its metadata/import admission; never change isolation per occurrence.
+fn storage_batch_isolation(
+    profile: DatabaseProfile,
+    kind: Option<NakamaBatchKind>,
+    operations: &[BatchOperation],
+) -> IsolationLevel {
+    if profile == DatabaseProfile::PostgreSql
+        && kind == Some(NakamaBatchKind::Write)
+        && !operations.is_empty()
+        && operations.len() <= MAX_BATCH_OPERATIONS
+        && operations.iter().all(|operation| {
+            matches!(operation, BatchOperation::Write(write) if write.expected == VersionCheck::Any)
+        })
+    {
+        IsolationLevel::ReadCommitted
+    } else {
+        IsolationLevel::Serializable
+    }
+}
+
+fn nakama_any_write(
+    kind: Option<NakamaBatchKind>,
+    operation: &BatchOperation,
+) -> Option<&WriteOperation> {
+    match (kind, operation) {
+        (Some(NakamaBatchKind::Write), BatchOperation::Write(write))
+            if write.expected == VersionCheck::Any =>
+        {
+            Some(write)
+        }
+        _ => None,
     }
 }
 
