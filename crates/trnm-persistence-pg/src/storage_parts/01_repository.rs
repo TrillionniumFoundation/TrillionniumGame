@@ -373,6 +373,25 @@ impl PgRepository {
         for ordinal in order {
             let operation = &operations[ordinal];
             let occurrence = (|| -> Result<Option<StoredStorageMutationReceipt>, DomainError> {
+                if let Some(write) = nakama_insert_only_write(kind, operation) {
+                    // Owner authority was checked for the whole request before
+                    // this transaction. Star uses a real ordinary INSERT, without
+                    // reading or locking the previous row or consulting its ACL.
+                    // None is explicit insert-mode input, not proof of absence;
+                    // native uniqueness determines whether this occurrence exists.
+                    staged.insert(write.key.clone(), None);
+                    verify_storage_staged_budget(&staged)?;
+                    let receipt = apply_nakama_write(
+                        &mut transaction,
+                        &mut staged,
+                        actor,
+                        write,
+                        updated_at_i64,
+                        self.profile,
+                    )?;
+                    verify_storage_staged_budget(&staged)?;
+                    return Ok(Some(receipt));
+                }
                 // The canonical occurrence plan already orders every key. Lock and
                 // validate only this occurrence before advancing to a later key;
                 // never reuse an initial ACL/version as later occurrence authority.
@@ -489,6 +508,20 @@ impl PgRepository {
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().map_err(map_postgres_error)?;
         Ok(receipts)
+    }
+}
+
+fn nakama_insert_only_write(
+    kind: Option<NakamaBatchKind>,
+    operation: &BatchOperation,
+) -> Option<&WriteOperation> {
+    match (kind, operation) {
+        (Some(NakamaBatchKind::Write), BatchOperation::Write(write))
+            if write.expected == VersionCheck::MustNotExist =>
+        {
+            Some(write)
+        }
+        _ => None,
     }
 }
 

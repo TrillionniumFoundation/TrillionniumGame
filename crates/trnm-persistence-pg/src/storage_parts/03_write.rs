@@ -136,14 +136,22 @@ fn apply_write_with_binding(
             });
         }
     }
-    let projected = project_storage_request(transaction, &operation.value)?;
+    let projected = if binding == StorageWriteBinding::Nakama {
+        // Native JSONB text input also applies to insert-only, which deliberately
+        // skipped the previous-row acquisition query. Typed projection retains
+        // its separate TEXT input policy.
+        project_nakama_storage_request(transaction, &operation.value)?
+    } else {
+        project_storage_request(transaction, &operation.value)?
+    };
     let projection_digest = IntegrityDigest::from_value(&projected).get();
     let request_digest = IntegrityDigest::from_value(&operation.value).get();
     let native_payload = RawStorageJsonb::new(&operation.value)?;
     let request_text = if binding == StorageWriteBinding::Typed {
         std::str::from_utf8(&operation.value).map_err(|_| invalid("invalid_storage_value_utf8"))?
     } else {
-        // The Nakama acquisition already bound these original bytes as JSONB.
+        // Nakama projection already bound these original bytes as JSONB,
+        // including insert-only without a previous-row acquisition query.
         // The DML repeats that same native input instead of binding a TEXT cast.
         ""
     };
@@ -222,7 +230,18 @@ fn apply_write_with_binding(
     }
     let returned = transaction
         .query_opt(&query, &parameters)
-        .map_err(map_postgres_error)?
+        .map_err(|source| {
+            // Only this actual ordinary INSERT's native unique violation is an
+            // insert-only version rejection. Projection, typed, UPDATE and every
+            // other SQLSTATE retain their existing classification.
+            let rejection = nakama_insert_only_unique_rejection(
+                binding,
+                &operation.expected,
+                previous.is_some(),
+                source.code().map(|code| code.code()),
+            );
+            rejection.unwrap_or_else(|| map_postgres_error(source))
+        })?
         .ok_or_else(|| data_loss("storage_write_row_count_mismatch"))?;
     let next = decode_stored_storage_object(operation.key.clone(), &returned)?;
     let times = next.times;
@@ -255,4 +274,25 @@ fn apply_write_with_binding(
         },
         times,
     })
+}
+
+fn nakama_insert_only_unique_rejection(
+    binding: StorageWriteBinding,
+    expected: &VersionCheck,
+    previous_exists: bool,
+    sqlstate: Option<&str>,
+) -> Option<DomainError> {
+    if binding == StorageWriteBinding::Nakama
+        && *expected == VersionCheck::MustNotExist
+        && !previous_exists
+        && sqlstate == Some("23505")
+    {
+        Some(error(
+            StableCode::AlreadyExists,
+            "storage_object_already_exists",
+            RetryClass::Never,
+        ))
+    } else {
+        None
+    }
 }

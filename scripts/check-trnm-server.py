@@ -47,6 +47,7 @@ REQUIRED_FILES = {
     PERSISTENCE_ROOT / "session.rs",
     PERSISTENCE_ROOT / "storage.rs",
     *STORAGE_PARTS,
+    PERSISTENCE_ROOT / "storage_parts/94_test_integrity.rs",
     AUTHORITY_STORAGE_ROOT,
     *AUTHORITY_STORAGE_PARTS,
     PERSISTENCE_ROOT / "auth.rs",
@@ -147,6 +148,10 @@ STORAGE_DUPLICATE_MARKERS = (
         " held_wait_cases=2 early_reject_cases=3 fields=15",
     ),
     (
+        'nakama_native_insert_only_matrix_executed',
+        ' cases=3',
+    ),
+    (
         'nakama_native_jsonb_exact_matrix_executed',
         ' cases=11 late_exact_excluded=2 matched_wait_commit=2 missing_exact_drain_wait=1 literal_native_text=1 escaped_nul=1 both_bad_input=1 both_bad_input_vectors=2 surrogate_bind=1 duplicate_exact=1 typed_policy=2 fields=15',
     ),
@@ -157,15 +162,23 @@ STORAGE_DUPLICATE_MARKERS = (
 )
 STORAGE_LATE_EXACT_PROFILE_COUNTERS = {"postgresql": (0, 2), "cockroachdb": (2, 0)}
 STORAGE_LATE_EXACT_SHELL_SUFFIX = ' late_exact_wait=${storage_late_exact_wait_cases} late_exact_no_wait=${storage_late_exact_no_wait_cases}'
+STORAGE_INSERT_ONLY_PROFILE_COUNTERS = {"postgresql": (0, 1), "cockroachdb": (1, 0)}
+STORAGE_INSERT_ONLY_SHELL_SUFFIX = ' committed_existing_wait=${storage_insert_only_committed_wait_cases} committed_existing_no_wait=${storage_insert_only_committed_no_wait_cases} uncommitted_delete_wait=1 fields=15'
 
 
 def storage_duplicate_markers(profile: str) -> tuple[tuple[str, str], ...]:
     if profile not in STORAGE_LATE_EXACT_PROFILE_COUNTERS:
         fail("unsupported native Exact profile")
     wait, no_wait = STORAGE_LATE_EXACT_PROFILE_COUNTERS[profile]
-    return tuple((marker, suffix + (f" late_exact_wait={wait} late_exact_no_wait={no_wait}"
-                  if marker == "nakama_native_jsonb_exact_matrix_executed" else ""))
-                 for marker, suffix in STORAGE_DUPLICATE_MARKERS)
+    insert_wait, insert_no_wait = STORAGE_INSERT_ONLY_PROFILE_COUNTERS[profile]
+    def bound_suffix(marker: str, suffix: str) -> str:
+        if marker == "nakama_native_jsonb_exact_matrix_executed":
+            return suffix + f" late_exact_wait={wait} late_exact_no_wait={no_wait}"
+        if marker == "nakama_native_insert_only_matrix_executed":
+            return suffix + (f" committed_existing_wait={insert_wait} committed_existing_no_wait={insert_no_wait}"
+                             " uncommitted_delete_wait=1 fields=15")
+        return suffix
+    return tuple((marker, bound_suffix(marker, suffix)) for marker, suffix in STORAGE_DUPLICATE_MARKERS)
 
 
 def validate_late_exact_policy_counters(policy: dict[str, object]) -> None:
@@ -177,9 +190,21 @@ def validate_late_exact_policy_counters(policy: dict[str, object]) -> None:
             fail("native Exact policy profile counters must be integers")
 
 
+def validate_insert_only_policy_counters(policy: dict[str, object]) -> None:
+    for field in ("insert_only_committed_existing_wait_cases",
+                  "insert_only_committed_existing_no_wait_cases",
+                  "insert_only_uncommitted_delete_wait_cases"):
+        observed = policy.get(field)
+        if not isinstance(observed, dict) or set(observed) != {"postgresql", "cockroachdb"} or any(
+            type(value) is not int for value in observed.values()
+        ):
+            fail("native insert-only policy profile counters must be integers")
+
+
 def storage_duplicate_shell_markers() -> tuple[tuple[str, str], ...]:
     return tuple((marker, suffix + (STORAGE_LATE_EXACT_SHELL_SUFFIX
-                  if marker == "nakama_native_jsonb_exact_matrix_executed" else ""))
+                  if marker == "nakama_native_jsonb_exact_matrix_executed" else
+                  STORAGE_INSERT_ONLY_SHELL_SUFFIX if marker == "nakama_native_insert_only_matrix_executed" else ""))
                  for marker, suffix in STORAGE_DUPLICATE_MARKERS)
 
 
@@ -227,9 +252,18 @@ STORAGE_HOMOGENEOUS_POLICY = {
     'late_exact_wait_cases': {'postgresql': 0, 'cockroachdb': 2},
     'late_exact_no_wait_cases': {'postgresql': 2, 'cockroachdb': 0},
     'literal_nul_condition_tail_policy': {'postgresql': 'native-text-hard-rejection-no-tail', 'cockroachdb': 'native-text-accepted-first-acl-rejection-real-later-any-wait'},
+    'insert_only_acquisition_policy': 'no-existing-row-select-native-jsonb-projection-then-plain-insert',
+    'insert_only_unique_error_policy': 'plain-insert-native-unique-hard-stop-keeps-existing-version-rejection',
+    'insert_only_native_main_cases': 3,
+    'insert_only_committed_existing_wait_cases': {'postgresql': 0, 'cockroachdb': 1},
+    'insert_only_committed_existing_no_wait_cases': {'postgresql': 1, 'cockroachdb': 0},
+    'insert_only_uncommitted_delete_wait_cases': {'postgresql': 1, 'cockroachdb': 1},
+    'native_insert_only_statement_schedule_qualified': False,
 }
 
 REQUIRED_TESTS = {
+    "nakama_insert_only_route_excludes_typed_any_exact_and_delete_policies",
+    "native_insert_only_unique_rejection_is_scoped_to_plain_nakama_insert",
     'raw_jsonb_text_binding_preserves_bytes_and_rejects_wrong_type_or_budget',
     'raw_condition_text_binding_preserves_long_unicode_star_empty_and_nul',
     'storage_write_native_constraint_errors_are_internal_at_http_boundary',
@@ -674,6 +708,16 @@ def validate_storage_live_harness(source: str) -> None:
             start_guard = once('begin_stage storage-duplicate-batches "$evidence/storage-duplicate-batches.log"')
             if commands[start_guard + 1:start_guard + 1 + len(profile_guard)] != list(profile_guard):
                 fail("storage duplicate native Exact profile counters must remain closed and before execution")
+            insert_profile_guard = (
+                'case "$profile" in',
+                'postgresql) storage_insert_only_committed_wait_cases=0; storage_insert_only_committed_no_wait_cases=1 ;;',
+                'cockroachdb) storage_insert_only_committed_wait_cases=1; storage_insert_only_committed_no_wait_cases=0 ;;',
+                "*) echo 'unsupported storage native insert-only profile' >&2; exit 1 ;;",
+                'esac',
+            )
+            insert_guard_start = start_guard + 1 + len(profile_guard)
+            if commands[insert_guard_start:insert_guard_start + len(insert_profile_guard)] != list(insert_profile_guard):
+                fail("storage duplicate insert-only profile counters must remain closed and before execution")
             terminal = once('test "$(grep -Ec \'^test result:\' '
                             '"$evidence/storage-duplicate-batches.log")" -eq 1')
             if not exact < terminal < executed:
@@ -691,6 +735,10 @@ def validate_storage_live_harness(source: str) -> None:
                 if not previous_marker < marker_position < unique_position < reject_skip:
                     fail("storage duplicate fixture requires all finite unique whole-line profile markers")
                 previous_marker = unique_position
+            insert_skip = once("if grep -Fq 'nakama_native_insert_only_skipped' \"$evidence/storage-duplicate-batches.log\"; then")
+            insert_skip_body = ["echo 'storage insert-only database lane skipped instead of executing' >&2", "exit 1", "fi"]
+            if not previous_marker < insert_skip < reject_skip or commands[insert_skip + 1:insert_skip + 4] != insert_skip_body:
+                fail("storage insert-only skip must terminate the owned fixture before summary credit")
         previous_end = end
     schema_start = once(
         'CARGO_TERM_COLOR=never TRNM_REQUIRE_LIVE_DATABASE=1 '
@@ -778,6 +826,10 @@ def validate_storage_live_harness(source: str) -> None:
         '"storage_v4_import":true', '"storage_homogeneous_batches":true', '"storage_homogeneous_app":true', '"storage_write_tail_drain":true', '"storage_native_jsonb_exact":true', '"storage_jsonb_native_write_failure":true',
         '"late_exact_wait_cases":${storage_late_exact_wait_cases}',
         '"late_exact_no_wait_cases":${storage_late_exact_no_wait_cases}',
+        '"storage_native_insert_only":true',
+        '"insert_only_committed_wait_cases":${storage_insert_only_committed_wait_cases}',
+        '"insert_only_committed_no_wait_cases":${storage_insert_only_committed_no_wait_cases}',
+        '"insert_only_uncommitted_delete_wait_cases":1',
         '"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6}',
         '"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3}',
         '"schema_version":${schema_version}', '"storage_writer_epoch":${storage_writer_epoch}',
@@ -1373,7 +1425,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
         "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
         "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
         "storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain",
-        "storage_native_jsonb_exact", "storage_jsonb_native_write_failure",
+        "storage_native_jsonb_exact", "storage_jsonb_native_write_failure", "storage_native_insert_only",
         "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
         "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
         "process_restart_exact_receipt_replay",
@@ -1388,6 +1440,12 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     for field, expected in (("late_exact_wait_cases", wait), ("late_exact_no_wait_cases", no_wait)):
         if type(summary.get(field)) is not int or summary[field] != expected:
             fail("server packet native Exact profile counter differs: " + field)
+    insert_wait, insert_no_wait = STORAGE_INSERT_ONLY_PROFILE_COUNTERS[profile]
+    for field, expected in (("insert_only_committed_wait_cases", insert_wait),
+                            ("insert_only_committed_no_wait_cases", insert_no_wait),
+                            ("insert_only_uncommitted_delete_wait_cases", 1)):
+        if type(summary.get(field)) is not int or summary[field] != expected:
+            fail("server packet native insert-only profile counter differs: " + field)
     cases = {"history": 6, "opaque_success": 4, "no_op": 2, "resource": 1, "native_input": 3}
     observed = summary.get("storage_jsonb_v3_cases")
     if not isinstance(observed, dict) or observed != cases or any(type(value) is not int for value in observed.values()):
@@ -1531,6 +1589,8 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
     if import_markers != [f"storage_v4_import_live_executed profile={profile}"]:
         fail("native storage v4 import fixture did not execute once for the packet profile")
     duplicate_lines = execution_log(STORAGE_DUPLICATE_LOG, 1, "nakama_duplicate_batches_skipped")
+    if any("nakama_native_insert_only_skipped" in line for line in duplicate_lines):
+        fail("native insert-only fixture skipped instead of executing")
     for marker, suffix in storage_duplicate_markers(profile):
         recorded = [line for line in duplicate_lines if marker + " " in line]
         if recorded != [f"{marker} profile={profile}{suffix}"]:
@@ -1557,6 +1617,7 @@ def validate_storage_live_packet(root: Path, *, profile: str, commit: str, tree:
             "storage_jsonb_v3_cases": cases, "storage_native_jsonb": True, "storage_v4_acl": True,
             "storage_v4_import": True, "storage_homogeneous_batches": True, "storage_homogeneous_app": True, "storage_write_tail_drain": True,
             "storage_native_jsonb_exact": True, "storage_jsonb_native_write_failure": True,
+            "storage_native_insert_only": True,
             "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_V3_CASE_FAMILIES.copy(),
             "compatibility_credit": False, "accepted": False,
             "production_ready": False}
@@ -1572,6 +1633,7 @@ def validate_homogeneous_storage_contract(contract: dict[str, object], source_lo
     ):
         fail("homogeneous storage policy must retain its exact canonical scope, bounds and no-credit flags")
     validate_late_exact_policy_counters(policy)
+    validate_insert_only_policy_counters(policy)
     commit = "c19862e5f8415b4f24b189d065ed739517c548ba"
     expected_files = [
         (
@@ -1788,10 +1850,103 @@ def validate_native_exact_fixture_local_policy(fixture: str) -> None:
         fail("native Exact fixture profile wait calls must drive proof, holder readback and case marker")
 
 
+
+def validate_nakama_insert_only_source(repository: str, write: str, projection: str, fixture: str) -> None:
+    """Reviewed finite source regions only; this grants no native or oracle credit.
+
+    Formatter whitespace and complete line comments are the only ignored source
+    spelling. Regions with block comments or raw literals are outside this finite
+    policy. Whole region equality prevents an unused literal/comment from supplying
+    the executable route, native error scope or query selector.
+    """
+    inputs = {"repository": repository, "write": write, "projection": projection, "fixture": fixture}
+    literal_pattern = re.compile(r'\b(?:br|cr|r)(?P<hashes>#{0,255})"[\s\S]*?"(?P=hashes)|"(?:\\[\s\S]|[^"\\])*"')
+    def actual_regions(pattern: str, source: str) -> list[str]:
+        matches = list(re.finditer(pattern, source))
+        literals = list(literal_pattern.finditer(source))
+        if any(literal.start() <= match.start() < literal.end()
+               for match in matches for literal in literals):
+            fail("insert-only source headers cannot come from a string literal")
+        return [match.group(1) for match in matches]
+    # These two reviewed production files have no block comments, raw strings or
+    # multiline string literals. Keep function headers outside those structures.
+    for source in (repository, write):
+        if "/*" in source or "*/" in source or re.search(r'\b(?:br|cr|r)#{0,255}"', source):
+            fail("insert-only production headers cannot derive from comments or raw literals")
+    if "/*" in fixture or "*/" in fixture:
+        fail("insert-only native headers cannot come from block comments")
+    modules = actual_regions(r"(?m)^    mod native_insert_only \{\n([\s\S]*?)^    // Future-production-candidate-only", fixture)
+    if len(modules) != 1 or "/*" in modules[0] or "*/" in modules[0] or re.search(r'\b(?:br|cr|r)#{0,255}"', modules[0]):
+        fail("insert-only native module headers must remain in the reviewed finite source")
+    def compact(value: str) -> str:
+        # Preserve every literal byte. Only formatter whitespace and complete
+        # code line comments outside those literals may be ignored.
+        pieces = []
+        cursor = 0
+        for literal in literal_pattern.finditer(value):
+            code = re.sub(r"(?m)^[ \t]*//[^\n]*", "", value[cursor:literal.start()])
+            pieces.append(re.sub(r"\s+", "", code))
+            pieces.append(literal.group())
+            cursor = literal.end()
+        code = re.sub(r"(?m)^[ \t]*//[^\n]*", "", value[cursor:])
+        pieces.append(re.sub(r"\s+", "", code))
+        return "".join(pieces)
+    policies = (('insert-only occurrence route', 'repository', '(?m)^                if let Some\\(write\\) = nakama_insert_only_write\\(kind, operation\\) \\{\\n([\\s\\S]*?)^                \\}\\n                // The canonical occurrence plan', '                    // Owner authority was checked for the whole request before\n                    // this transaction. Star uses a real ordinary INSERT, without\n                    // reading or locking the previous row or consulting its ACL.\n                    // None is explicit insert-mode input, not proof of absence;\n                    // native uniqueness determines whether this occurrence exists.\n                    staged.insert(write.key.clone(), None);\n                    verify_storage_staged_budget(&staged)?;\n                    let receipt = apply_nakama_write(\n                        &mut transaction,\n                        &mut staged,\n                        actor,\n                        write,\n                        updated_at_i64,\n                        self.profile,\n                    )?;\n                    verify_storage_staged_budget(&staged)?;\n                    return Ok(Some(receipt));\n'), ('insert-only kind and version scope', 'repository', '(?m)^fn nakama_insert_only_write\\(\\n([\\s\\S]*?)^\\}\\n\\nenum WriteStepValidation', '    kind: Option<NakamaBatchKind>,\n    operation: &BatchOperation,\n) -> Option<&WriteOperation> {\n    match (kind, operation) {\n        (Some(NakamaBatchKind::Write), BatchOperation::Write(write))\n            if write.expected == VersionCheck::MustNotExist =>\n        {\n            Some(write)\n        }\n        _ => None,\n    }\n'), ('plain INSERT unique error scope', 'write', '(?m)^fn nakama_insert_only_unique_rejection\\(\\n([\\s\\S]*?)^\\}\\n?\\Z', '    binding: StorageWriteBinding,\n    expected: &VersionCheck,\n    previous_exists: bool,\n    sqlstate: Option<&str>,\n) -> Option<DomainError> {\n    if binding == StorageWriteBinding::Nakama\n        && *expected == VersionCheck::MustNotExist\n        && !previous_exists\n        && sqlstate == Some("23505")\n    {\n        Some(error(\n            StableCode::AlreadyExists,\n            "storage_object_already_exists",\n            RetryClass::Never,\n        ))\n    } else {\n        None\n    }\n'), ('native DML error call site', 'write', '(?m)^    let returned = transaction\\n([\\s\\S]*?)^    let next = decode_stored_storage_object', '        .query_opt(&query, &parameters)\n        .map_err(|source| {\n            // Only this actual ordinary INSERT\'s native unique violation is an\n            // insert-only version rejection. Projection, typed, UPDATE and every\n            // other SQLSTATE retain their existing classification.\n            let rejection = nakama_insert_only_unique_rejection(\n                binding,\n                &operation.expected,\n                previous.is_some(),\n                source.code().map(|code| code.code()),\n            );\n            rejection.unwrap_or_else(|| map_postgres_error(source))\n        })?\n        .ok_or_else(|| data_loss("storage_write_row_count_mismatch"))?;\n'), ('Nakama substantive projection selector', 'write', '(?m)^    let projected = if binding == StorageWriteBinding::Nakama \\{\\n([\\s\\S]*?)^    let projection_digest = ', '        // Native JSONB text input also applies to insert-only, which deliberately\n        // skipped the previous-row acquisition query. Typed projection retains\n        // its separate TEXT input policy.\n        project_nakama_storage_request(transaction, &operation.value)?\n    } else {\n        project_storage_request(transaction, &operation.value)?\n    };\n'), ('insert-only profile wait policy', 'fixture', '(?m)^            const fn expects_wait\\(self, profile: DatabaseProfile\\) -> bool \\{\\n([\\s\\S]*?)^            \\}\\n            const fn expected_error', '                match self {\n                    Self::AnyPositive | Self::UncommittedDelete => true,\n                    Self::CommittedExisting => matches!(profile, DatabaseProfile::CockroachDb),\n                }\n'), ('native ordinary INSERT query selector', 'fixture', '(?m)^        fn plain_insert_query\\(query: &str\\) -> bool \\{\\n([\\s\\S]*?)^        \\}\\n        fn observe_insert_wait', '            // Inspect the native statement without modifying its bytes. PG\n            // exposes the wire literal; CR exposes its own substituted display.\n            let Some(after_table) = query\n                .trim_start()\n                .strip_prefix("INSERT INTO public.trnm_storage_objects")\n            else {\n                return false;\n            };\n            query.len() <= 8192\n                && after_table.trim_start().starts_with(\'(\')\n                && query.contains(INSERT_COLUMNS)\n                && query.contains("VALUES (")\n                && query.contains("\'write-request-bytes\'")\n                && query.contains("RETURNING ")\n                && query.contains("value_projection_digest")\n                && query.contains("create_time")\n                && query.contains("update_time")\n                && !query.contains("ON CONFLICT")\n                && !query.contains("FOR UPDATE")\n                && !query.contains("WITH upd")\n'), ('insert-only three-case invocation and marker', 'fixture', '(?m)^        pub\\(super\\) fn exercise\\(url: &str, profile: DatabaseProfile, collection: &str\\) \\{\\n([\\s\\S]*?)^        \\}\\n    \\}\\n\\n    // Future-production-candidate-only', '            for case in [\n                InsertCase::AnyPositive,\n                InsertCase::CommittedExisting,\n                InsertCase::UncommittedDelete,\n            ] {\n                exercise_insert_case(url, profile, collection, case);\n            }\n            let (committed_existing_wait, committed_existing_no_wait) = match profile {\n                DatabaseProfile::PostgreSql => (0_u8, 1_u8),\n                DatabaseProfile::CockroachDb => (1_u8, 0_u8),\n            };\n            println!("nakama_native_insert_only_matrix_executed profile={} cases=3 committed_existing_wait={committed_existing_wait} committed_existing_no_wait={committed_existing_no_wait} uncommitted_delete_wait=1 fields=15",profile.metadata_value());\n'), ('native JSONB projection query parameters and decode bound', 'projection', '(?m)^fn project_nakama_storage_request\\(\\n([\\s\\S]*?)^\\}\\n\\nfn validate_storage_request_native', '    transaction: &mut Transaction<\'_>,\n    request: &[u8],\n) -> Result<Vec<u8>, DomainError> {\n    let payload = RawStorageJsonb::new(request)?;\n    let row = transaction\n        .query_one(\n            "SELECT CASE WHEN pg_catalog.octet_length(value) <= $2::INT8 THEN value END, \\\n                    pg_catalog.octet_length(value)::INT8 \\\n             FROM (SELECT $1::JSONB::TEXT AS value) AS native_projection",\n            &[\n                &payload,\n                &i64::try_from(MAX_NATIVE_VALUE_BYTES).expect("constant fits INT8"),\n            ],\n        )\n        .map_err(map_postgres_error)?;\n    decode_native_value(&row, 0)\n'), ('native full-tuple actual outcome claims', 'fixture', '(?m)^            let check_state = if rollback_ok && joined.as_ref\\(\\).is_some_and\\(Result::is_ok\\) \\{\\n([\\s\\S]*?)^            if let Err\\(payload\\) = body \\{', '                Some(catch_unwind(AssertUnwindSafe(|| {\n                    let after = snapshot(&mut control, collection);\n                    assert_eq!(\n                        after, before,\n                        "insert-only failed batch changed complete full15field native rows"\n                    );\n                    let own =\n                        |r: &&RawRow| r.key.starts_with(&format!("native-star-{}-", case.name()));\n                    let b: Vec<_> = before.iter().filter(own).map(tuple_json).collect();\n                    let a: Vec<_> = after.iter().filter(own).map(tuple_json).collect();\n                    assert_eq!(b.len(), 4);\n                    assert_eq!(a, b);\n                    let no_receipts = outcome.as_ref().map(|actual| actual.batch.is_err());\n                    let same_lease_readable =\n                        outcome.as_ref().map(|actual| actual.reused == Ok(true));\n                    let causal_body_passed = body.is_ok();\n                    let packet = serde_json::json!({"schema":"local.storage-native-insert-only-full-tuple.v1","profile":profile.metadata_value(),"case":case.name(),"fields":15,"before":b,"after":a,"holder_primary_catalog":[holder.table_id,holder.index_id,holder.primary_name],"holder_granted_before":holder.granted_rows,"hidden_batch_sqlstate":null,"no_receipts":no_receipts,"same_lease_readable":same_lease_readable,"causal_body_passed":causal_body_passed,"accepted":false,"full_protocol_parity":false});\n                    let bytes = serde_json::to_vec(&packet).unwrap();\n                    assert!(\n                        bytes.len() <= 65536,\n                        "insert-only native proof output exceeds64KiB"\n                    );\n                    println!("{}", String::from_utf8(bytes).unwrap());\n                })))\n            } else {\n                None\n            };\n'))
+    for label, source, pattern, expected in policies:
+        if len(inputs[source].encode("utf-8")) > 1024 * 1024:
+            fail("insert-only source exceeds its finite parsing budget")
+        regions = actual_regions(pattern, inputs[source])
+        if len(regions) != 1:
+            fail(label + " source region is missing or duplicated")
+        region = regions[0]
+        if "/*" in region or "*/" in region or re.search(r'\b(?:br|cr|r)#{0,255}"', region):
+            fail(label + " cannot derive executable policy from comments or raw literals")
+        if compact(region) != compact(expected):
+            fail(label + " differs from the reviewed finite source policy")
+    if repository.index("if let Some(write) = nakama_insert_only_write(kind, operation)") > repository.index("let refreshed_access = "):
+        fail("insert-only must return before previous-row acquisition")
+    projected = actual_regions(r"(?m)^fn project_nakama_storage_request\(\n([\s\S]*?)^\}\n\nfn validate_storage_request_native", projection)
+    if len(projected) != 1:
+        fail("Nakama native projection region must be unique")
+    region = re.sub(r"(?m)^[ \t]*//[^\n]*", "", projected[0])
+    if "/*" in region or "*/" in region or re.search(r'\b(?:br|cr|r)#{0,255}"', region):
+        fail("Nakama native projection must use its actual reviewed query")
+    require_markers("Nakama native projection", region, (
+        "RawStorageJsonb::new(request)?", "FROM (SELECT $1::JSONB::TEXT AS value) AS native_projection",
+        "&payload,", "MAX_NATIVE_VALUE_BYTES", "decode_native_value(&row, 0)",
+    ))
+    if "::TEXT::JSONB" in region or "serde_json" in region or "Format::Binary" in region:
+        fail("Nakama native projection cannot reconstruct original JSONB input")
+    cases = actual_regions(r"(?m)^        fn exercise_insert_case\(\n([\s\S]*?)^        pub\(super\) fn exercise\(", fixture)
+    if len(cases) != 1:
+        fail("insert-only actual case body must be unique")
+    case = cases[0]
+    if "/*" in case or "*/" in case or re.search(r'\b(?:br|cr|r)#{0,255}"', case):
+        fail("insert-only case proof cannot come from comments or raw literals")
+    literals = re.finditer(r'"(?:\\[\s\S]|[^"\\])*"', case)
+    if any("\n" in literal.group() for literal in literals):
+        fail("insert-only case proof cannot come from multiline literals")
+    if case.count("case.expects_wait(profile)") != 3:
+        fail("insert-only needs exactly three actual profile-aware wait sites")
+    wait_sites = re.findall(r"(?m)^                if case\.expects_wait\(profile\) \{\n[ \t]*let proof = loop \{", case)
+    completion_sites = re.findall(r"(?m)^                if !case\.expects_wait\(profile\) \{\n[ \t]*let fresh = fresh_granted\(&mut control, &later, &holder\);", case)
+    marker_sites = re.findall(r'(?m)^            println!\("nakama_native_insert_only_case_executed profile=\{\} case=\{\} native_wait=\{\} fields=15 no_receipts=true same_lease_readable=true hidden_batch_sqlstate=null",profile\.metadata_value\(\),case\.name\(\),case\.expects_wait\(profile\)\);', case)
+    if tuple(map(len, (wait_sites, completion_sites, marker_sites))) != (1, 1, 1):
+        fail("insert-only wait policy must drive actual proof, fresh holder completion and case marker")
+    require_markers("insert-only actual fixture execution", fixture, (
+        "native_insert_only::exercise(url, profile, collection);", "mod native_insert_only {",
+        "local.storage-native-insert-only-full-tuple.v1", "local.storage-native-insert-only-early-completion.v1",
+        "before.iter().filter(own).map(tuple_json)", "after.iter().filter(own).map(tuple_json)",
+        "assert_eq!(a, b)", "assert_eq!(b.len(), 4)", "bytes.len() <= 65536",
+        "plain_insert_query(&query)", "holder.index_id", "holder.table_id", "primary_catalog",
+    ))
+
+
 def validate_nakama_native_write_source(repository: str, write: str, projection: str,
                                        wire: str, fixture: str, app_fixture: str) -> None:
     """Closed source seam only: source checks do not grant native/oracle acceptance."""
     validate_native_exact_fixture_local_policy(fixture)
+    validate_nakama_insert_only_source(repository, write, projection, fixture)
     jsonb = projection.split("struct RawStorageJsonb", 1)[-1].split("struct RawStorageCondition", 1)[0]
     require_markers("raw JSONB text binding", jsonb, (
         "if value.len() > MAX_VALUE_BYTES", "if *kind != postgres::types::Type::JSONB",
@@ -2383,6 +2538,7 @@ def main(arguments: list[str] | None = None) -> int:
     ) or homogeneous_status.get("gap_closed") is not False:
         fail("homogeneous storage status must retain exact source scope and false acceptance")
     validate_late_exact_policy_counters(homogeneous_status)
+    validate_insert_only_policy_counters(homogeneous_status)
     condition_state = status.get("storage_http_mutations", {}).get("condition_version")
     if condition_state != (
         "Original-string ExpectedVersion: write empty is blind, write star is insert-only, "

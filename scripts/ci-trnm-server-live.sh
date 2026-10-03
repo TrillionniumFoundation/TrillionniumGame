@@ -411,6 +411,11 @@ case "$profile" in
   cockroachdb) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;
   *) echo 'unsupported storage native Exact profile' >&2; exit 1 ;;
 esac
+case "$profile" in
+  postgresql) storage_insert_only_committed_wait_cases=0; storage_insert_only_committed_no_wait_cases=1 ;;
+  cockroachdb) storage_insert_only_committed_wait_cases=1; storage_insert_only_committed_no_wait_cases=0 ;;
+  *) echo 'unsupported storage native insert-only profile' >&2; exit 1 ;;
+esac
 CARGO_TERM_COLOR=never \
 TRNM_REQUIRE_LIVE_DATABASE=1 \
 TRNM_DATABASE_URL="$database_url" \
@@ -443,10 +448,16 @@ grep -Fxq "nakama_duplicate_occurrence_locks_executed profile=${profile} missing
 test "$(grep -Ec '^nakama_duplicate_occurrence_locks_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
 grep -Fxq "nakama_write_tail_drain_executed profile=${profile} held_wait_cases=2 early_reject_cases=3 fields=15" "$evidence/storage-duplicate-batches.log"
 test "$(grep -Ec '^nakama_write_tail_drain_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
+grep -Fxq "nakama_native_insert_only_matrix_executed profile=${profile} cases=3 committed_existing_wait=${storage_insert_only_committed_wait_cases} committed_existing_no_wait=${storage_insert_only_committed_no_wait_cases} uncommitted_delete_wait=1 fields=15" "$evidence/storage-duplicate-batches.log"
+test "$(grep -Ec '^nakama_native_insert_only_matrix_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
 grep -Fxq "nakama_native_jsonb_exact_matrix_executed profile=${profile} cases=11 late_exact_excluded=2 matched_wait_commit=2 missing_exact_drain_wait=1 literal_native_text=1 escaped_nul=1 both_bad_input=1 both_bad_input_vectors=2 surrogate_bind=1 duplicate_exact=1 typed_policy=2 fields=15 late_exact_wait=${storage_late_exact_wait_cases} late_exact_no_wait=${storage_late_exact_no_wait_cases}" "$evidence/storage-duplicate-batches.log"
 test "$(grep -Ec '^nakama_native_jsonb_exact_matrix_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
 grep -Fxq "nakama_native_jsonb_exact_subvector_executed profile=${profile} case=both_bad_input_legal_surrogate main_case=both_bad_payload_token_native_priority input=legal_object_escaped_unpaired_surrogate fields=15 actual_domain=InvalidArgument actual_reason=database_constraint_violation retry=Never no_receipts=true same_lease_readable=true hidden_batch_sqlstate=null" "$evidence/storage-duplicate-batches.log"
 test "$(grep -Ec '^nakama_native_jsonb_exact_subvector_executed ' "$evidence/storage-duplicate-batches.log")" -eq 1
+if grep -Fq 'nakama_native_insert_only_skipped' "$evidence/storage-duplicate-batches.log"; then
+  echo 'storage insert-only database lane skipped instead of executing' >&2
+  exit 1
+fi
 if grep -Fq 'nakama_duplicate_batches_skipped' "$evidence/storage-duplicate-batches.log"; then
   echo 'storage duplicate-batch database lane skipped instead of executing' >&2
   exit 1
@@ -690,7 +701,7 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
 
 begin_stage seal "$evidence/summary.json" "$evidence/database-assertions.txt"
 cat > "$evidence/summary.json" <<EOF
-{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,"storage_write_tail_drain":true,"storage_native_jsonb_exact":true,"late_exact_wait_cases":${storage_late_exact_wait_cases},"late_exact_no_wait_cases":${storage_late_exact_no_wait_cases},"storage_jsonb_native_write_failure":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
+{"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,"storage_write_tail_drain":true,"storage_native_jsonb_exact":true,"storage_native_insert_only":true,"insert_only_committed_wait_cases":${storage_insert_only_committed_wait_cases},"insert_only_committed_no_wait_cases":${storage_insert_only_committed_no_wait_cases},"insert_only_uncommitted_delete_wait_cases":1,"late_exact_wait_cases":${storage_late_exact_wait_cases},"late_exact_no_wait_cases":${storage_late_exact_no_wait_cases},"storage_jsonb_native_write_failure":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}
 EOF
 python3 -m json.tool "$evidence/summary.json" >/dev/null
 find "$evidence" -type f ! -name SHA256SUMS -print0 \

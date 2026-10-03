@@ -169,3 +169,117 @@ fn native_result_budget_accumulates_and_rejects_without_wrapping() {
     assert_eq!(error.code(), StableCode::ResourceExhausted);
     assert_eq!(total, MAX_RESULT_VALUE_BYTES);
 }
+
+#[test]
+fn nakama_insert_only_route_excludes_typed_any_exact_and_delete_policies() {
+    let mut operation = match write(1) {
+        BatchOperation::Write(write) => write,
+        BatchOperation::Delete(_) => unreachable!(),
+    };
+    operation.expected = VersionCheck::MustNotExist;
+    let insert_only = BatchOperation::Write(operation.clone());
+    let selected = nakama_insert_only_write(Some(NakamaBatchKind::Write), &insert_only).unwrap();
+    assert!(std::ptr::eq(
+        selected,
+        match &insert_only {
+            BatchOperation::Write(write) => write,
+            BatchOperation::Delete(_) => unreachable!(),
+        },
+    ));
+    assert!(nakama_insert_only_write(None, &insert_only).is_none());
+    assert!(nakama_insert_only_write(Some(NakamaBatchKind::Delete), &insert_only).is_none());
+    for expected in [
+        VersionCheck::Any,
+        VersionCheck::Exact("*".into()),
+        VersionCheck::Exact("raw\0token".into()),
+    ] {
+        operation.expected = expected;
+        let other = BatchOperation::Write(operation.clone());
+        assert!(nakama_insert_only_write(Some(NakamaBatchKind::Write), &other).is_none());
+    }
+    let delete = BatchOperation::Delete(DeleteOperation {
+        key: operation.key,
+        expected_version: Some("*".into()),
+    });
+    for kind in [
+        None,
+        Some(NakamaBatchKind::Write),
+        Some(NakamaBatchKind::Delete),
+    ] {
+        assert!(nakama_insert_only_write(kind, &delete).is_none());
+    }
+}
+
+#[test]
+fn native_insert_only_unique_rejection_is_scoped_to_plain_nakama_insert() {
+    let star = VersionCheck::MustNotExist;
+    let exact = VersionCheck::Exact("literal-token".into());
+    let expected = error(
+        StableCode::AlreadyExists,
+        "storage_object_already_exists",
+        RetryClass::Never,
+    );
+    assert_eq!(
+        nakama_insert_only_unique_rejection(
+            StorageWriteBinding::Nakama,
+            &star,
+            false,
+            Some("23505")
+        ),
+        Some(expected),
+    );
+    for (binding, check, previous_exists) in [
+        (StorageWriteBinding::Typed, &star, false),
+        (StorageWriteBinding::Typed, &star, true),
+        (StorageWriteBinding::Nakama, &VersionCheck::Any, false),
+        (StorageWriteBinding::Nakama, &VersionCheck::Any, true),
+        (StorageWriteBinding::Nakama, &exact, false),
+        (StorageWriteBinding::Nakama, &exact, true),
+        (StorageWriteBinding::Nakama, &star, true),
+    ] {
+        assert!(nakama_insert_only_unique_rejection(
+            binding,
+            check,
+            previous_exists,
+            Some("23505")
+        )
+        .is_none());
+    }
+    for code in [
+        None,
+        Some("40001"),
+        Some("40P01"),
+        Some("23503"),
+        Some("23502"),
+        Some("23514"),
+        Some("22P02"),
+        Some("22021"),
+        Some("08006"),
+    ] {
+        assert!(nakama_insert_only_unique_rejection(
+            StorageWriteBinding::Nakama,
+            &star,
+            false,
+            code
+        )
+        .is_none());
+    }
+    // The generic classifier remains independent, including retries and native
+    // input failures. No native database error is fabricated by this unit test.
+    assert_eq!(
+        crate::classify_sqlstate("23505").reason(),
+        "database_unique_violation"
+    );
+    assert_eq!(
+        crate::classify_sqlstate("40001").retry(),
+        RetryClass::SafeImmediate
+    );
+    assert_eq!(
+        crate::classify_sqlstate("40P01").retry(),
+        RetryClass::SafeBackoff
+    );
+    assert_eq!(
+        crate::classify_sqlstate("22P02").reason(),
+        "database_constraint_violation"
+    );
+}

@@ -224,7 +224,9 @@ find "$evidence" -type f ! -name SHA256SUMS -print0 \\
 '''
 SUFFIX = SUFFIX.replace('"storage_v4_acl":true,', '"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,"storage_write_tail_drain":true,"storage_native_jsonb_exact":true,"storage_jsonb_native_write_failure":true,')
 SUFFIX = SUFFIX.replace('"storage_native_jsonb_exact":true,', '"storage_native_jsonb_exact":true,"late_exact_wait_cases":${storage_late_exact_wait_cases},"late_exact_no_wait_cases":${storage_late_exact_no_wait_cases},')
-DUPLICATES = 'begin_stage storage-duplicate-batches "$evidence/storage-duplicate-batches.log"\n' + 'case "$profile" in\n  postgresql) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;\n  cockroachdb) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;\n  *) echo \'unsupported storage native Exact profile\' >&2; exit 1 ;;\nesac\n' + DUPLICATES
+DUPLICATES = 'begin_stage storage-duplicate-batches "$evidence/storage-duplicate-batches.log"\n' + 'case "$profile" in\n  postgresql) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;\n  cockroachdb) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;\n  *) echo \'unsupported storage native Exact profile\' >&2; exit 1 ;;\nesac\n' + 'case "$profile" in\n  postgresql) storage_insert_only_committed_wait_cases=0; storage_insert_only_committed_no_wait_cases=1 ;;\n  cockroachdb) storage_insert_only_committed_wait_cases=1; storage_insert_only_committed_no_wait_cases=0 ;;\n  *) echo \'unsupported storage native insert-only profile\' >&2; exit 1 ;;\nesac\n' + DUPLICATES
+SUFFIX = SUFFIX.replace('"storage_native_jsonb_exact":true,', '"storage_native_jsonb_exact":true,"storage_native_insert_only":true,"insert_only_committed_wait_cases":${storage_insert_only_committed_wait_cases},"insert_only_committed_no_wait_cases":${storage_insert_only_committed_no_wait_cases},"insert_only_uncommitted_delete_wait_cases":1,')
+DUPLICATES = DUPLICATES.replace("if grep -Fq 'nakama_duplicate_batches_skipped'", "if grep -Fq 'nakama_native_insert_only_skipped' \"$evidence/storage-duplicate-batches.log\"; then\n  echo 'storage insert-only database lane skipped instead of executing' >&2\n  exit 1\nfi\nif grep -Fq 'nakama_duplicate_batches_skipped'")
 FIXTURE = PREFIX + CANONICAL + PROJECTION + OCC + TIMESTAMPS + NATIVE_JSONB + V4_ACL + IMPORT_ANNEX + V4_IMPORT + DUPLICATES + SCHEMA + SCHEMA_V3 + SUFFIX
 
 
@@ -497,6 +499,55 @@ class StorageListLiveContractTests(unittest.TestCase):
                 validate(sort=sorter.replace(marker, "removed", 1))
         with self.assertRaises(SystemExit): validate(n=notice.replace("Copyright 2009 and 2022", "Copyright omitted"))
 
+    def test_insert_only_policy_rejects_boolean_counters_and_unqualified_scope_changes(self) -> None:
+        policy = dict(MODULE.STORAGE_HOMOGENEOUS_POLICY)
+        MODULE.validate_insert_only_policy_counters(policy)
+        contract = json.loads((ROOT / "contracts/storage/nakama-http-storage-v1.json").read_text())
+        source_lock = json.loads((ROOT / "contracts/storage/nakama-sort-source-lock-v1.json").read_text())
+        license_data = (ROOT / "third_party/go-sort/LICENSE").read_bytes()
+        notice = (ROOT / "NOTICE").read_text()
+        sorter = (ROOT / "crates/trnm-storage-core/src/nakama_sort.rs").read_text()
+        def validate(changed):
+            MODULE.validate_homogeneous_storage_contract(changed, source_lock, license_data, notice, sorter)
+        validate(contract)
+        for field in ("insert_only_committed_existing_wait_cases", "insert_only_committed_existing_no_wait_cases", "insert_only_uncommitted_delete_wait_cases"):
+            for observed in ({"postgresql": False, "cockroachdb": True}, {"postgresql": 0.0, "cockroachdb": 1.0},
+                             {"postgresql": 0}, {"postgresql": 0, "cockroachdb": 1, "unknown": 1}):
+                changed = json.loads(json.dumps(contract))
+                changed["homogeneous_mutation_batches"][field] = observed
+                with self.subTest(field=field, observed=observed), self.assertRaises(SystemExit):
+                    validate(changed)
+        for field, value in (("insert_only_native_main_cases", True), ("insert_only_native_main_cases", 2),
+                             ("insert_only_acquisition_policy", "existing-row-for-update"),
+                             ("insert_only_unique_error_policy", "all-23505-map-to-version"),
+                             ("native_insert_only_statement_schedule_qualified", True)):
+            changed = json.loads(json.dumps(contract))
+            changed["homogeneous_mutation_batches"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(SystemExit):
+                validate(changed)
+
+    def test_insert_only_harness_requires_new_marker_and_closed_profile_guard(self) -> None:
+        marker, suffix = next(pair for pair in MODULE.storage_duplicate_shell_markers()
+                              if pair[0] == "nakama_native_insert_only_matrix_executed")
+        guard = f'grep -Fxq "{marker} profile=${{profile}}{suffix}" "$evidence/storage-duplicate-batches.log"\n'
+        unique = f'test "$(grep -Ec \'^{marker} \' "$evidence/storage-duplicate-batches.log")" -eq 1\n'
+        for changed in (FIXTURE.replace(guard, ""), FIXTURE.replace(unique, ""), FIXTURE.replace(guard, guard + guard)):
+            self.reject(changed)
+        for old, new in (
+            ("postgresql) storage_insert_only_committed_wait_cases=0; storage_insert_only_committed_no_wait_cases=1 ;;",
+             "postgresql) storage_insert_only_committed_wait_cases=1; storage_insert_only_committed_no_wait_cases=0 ;;"),
+            ("cockroachdb) storage_insert_only_committed_wait_cases=1; storage_insert_only_committed_no_wait_cases=0 ;;",
+             "cockroachdb) storage_insert_only_committed_wait_cases=0; storage_insert_only_committed_no_wait_cases=1 ;;"),
+            ("*) echo 'unsupported storage native insert-only profile' >&2; exit 1 ;;", "*) true ;;"),
+            ('"storage_native_insert_only":true', '"storage_native_insert_only":false'),
+            ('"insert_only_uncommitted_delete_wait_cases":1', '"insert_only_uncommitted_delete_wait_cases":0'),
+            ("uncommitted_delete_wait=1 fields=15", "uncommitted_delete_wait=0 fields=15"),
+            ("nakama_native_insert_only_skipped", "unchecked_insert_only_skip"),
+            ("echo 'storage insert-only database lane skipped instead of executing' >&2\n  exit 1", "echo 'storage insert-only database lane skipped instead of executing' >&2\n  true"),
+        ):
+            with self.subTest(old=old): self.reject(FIXTURE.replace(old, new))
+
+
     def test_homogeneous_source_seam_requires_occurrences_fresh_acl_and_original_receipts(self) -> None:
         inputs = [(ROOT / path).read_text() for path in (
             "crates/trnm-storage-core/src/lib.rs",
@@ -523,7 +574,7 @@ class StorageListLiveContractTests(unittest.TestCase):
 
 
     def test_write_tail_seventh_marker_and_five_case_guard_are_required(self) -> None:
-        self.assertEqual(len(MODULE.STORAGE_DUPLICATE_MARKERS), 9)
+        self.assertEqual(len(MODULE.STORAGE_DUPLICATE_MARKERS), 10)
         self.assertEqual(MODULE.STORAGE_DUPLICATE_MARKERS[6], (
             "nakama_write_tail_drain_executed",
             " held_wait_cases=2 early_reject_cases=3 fields=15",
@@ -617,7 +668,7 @@ class StorageListLiveContractTests(unittest.TestCase):
 
 
     def test_native_jsonb_exact_matrix_and_surrogate_guards_cannot_be_dropped_or_weakened(self) -> None:
-        self.assertEqual(len(MODULE.STORAGE_DUPLICATE_MARKERS), 9)
+        self.assertEqual(len(MODULE.STORAGE_DUPLICATE_MARKERS), 10)
         for marker, suffix in MODULE.storage_duplicate_shell_markers()[-2:]:
             guard = f'grep -Fxq "{marker} profile=${{profile}}{suffix}" "$evidence/storage-duplicate-batches.log"\n'
             unique = f'test "$(grep -Ec \'^{marker} \' "$evidence/storage-duplicate-batches.log")" -eq 1\n'
@@ -658,6 +709,60 @@ class StorageListLiveContractTests(unittest.TestCase):
         guard = "case \"$profile\" in\n  postgresql) storage_late_exact_wait_cases=0; storage_late_exact_no_wait_cases=2 ;;\n  cockroachdb) storage_late_exact_wait_cases=2; storage_late_exact_no_wait_cases=0 ;;\n  *) echo 'unsupported storage native Exact profile' >&2; exit 1 ;;\nesac\n"
         self.reject(FIXTURE.replace(guard, ""))
         self.reject(FIXTURE.replace(guard, "\n".join("# " + line for line in guard.splitlines()) + "\n"))
+
+    def test_insert_only_real_route_projection_unique_error_and_native_selector_reject_mutants(self) -> None:
+        sources = native_write_source_inputs()
+        inputs = [sources[i] for i in (0, 1, 2, 4)]
+        MODULE.validate_nakama_insert_only_source(*inputs)
+        for index, old, new in (
+            (0, "(Some(NakamaBatchKind::Write), BatchOperation::Write(write))", "(None, BatchOperation::Write(write))"),
+            (0, "if write.expected == VersionCheck::MustNotExist", "if write.expected == VersionCheck::Any"),
+            (0, "staged.insert(write.key.clone(), None);", "staged.insert(write.key.clone(), load_for_update(&mut transaction, &write.key, self.profile)?);"),
+            (0, "return Ok(Some(receipt));", "let ignored_receipt = receipt;"),
+            (1, 'sqlstate == Some("23505")', 'sqlstate == Some("40001")'),
+            (1, 'sqlstate == Some("23505")', 'sqlstate == Some("23 505")'),
+            (1, "&& !previous_exists", "&& previous_exists"),
+            (1, "binding == StorageWriteBinding::Nakama\n        &&", "binding == StorageWriteBinding::Typed\n        &&"),
+            (1, "source.code().map(|code| code.code())", 'Some("23505")'),
+            (1, "project_nakama_storage_request(transaction, &operation.value)?", "project_storage_request(transaction, &operation.value)?"),
+            (2, "FROM (SELECT $1::JSONB::TEXT AS value) AS native_projection", "FROM (SELECT $1::TEXT::JSONB::TEXT AS value) AS native_projection"),
+            (2, "CASE WHEN pg_catalog.octet_length(value) <= $2::INT8 THEN value END", "CASE WHEN TRUE OR pg_catalog.octet_length(value) <= $2::INT8 THEN value END"),
+            (2, "decode_native_value(&row, 0)", "Ok(Vec::new())"),
+            (3, "Self::CommittedExisting => matches!(profile, DatabaseProfile::CockroachDb)", "Self::CommittedExisting => true"),
+            (3, '!query.contains("ON CONFLICT")', 'query.contains("ON CONFLICT")'),
+            (3, 'strip_prefix("INSERT INTO public.trnm_storage_objects")', 'strip_prefix("SELECT public_version::TEXT")'),
+            (3, "if case.expects_wait(profile) {", "if true {"),
+            (3, "if !case.expects_wait(profile) {", "if false {"),
+            (3, "exercise_insert_case(url, profile, collection, case);", "let _ = (url, profile, collection, case);"),
+            (3, "outcome.as_ref().map(|actual| actual.batch.is_err())", "Some(true)"),
+            (3, ".map(|actual| actual.reused == Ok(true))", ".map(|_| true)"),
+            (3, "let causal_body_passed = body.is_ok();", "let causal_body_passed = true;"),
+        ):
+            self.assertIn(old, inputs[index])
+            changed = inputs.copy()
+            if index == 2:
+                prefix, native = changed[index].split("fn project_nakama_storage_request(", 1)
+                self.assertIn(old, native)
+                changed[index] = prefix + "fn project_nakama_storage_request(" + native.replace(old, new, 1)
+            else:
+                changed[index] = changed[index].replace(old, new, 1)
+            with self.subTest(index=index, old=old), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_insert_only_source(*changed)
+
+    def test_insert_only_source_headers_cannot_be_supplied_by_comment_or_literal_wrappers(self) -> None:
+        sources = native_write_source_inputs()
+        inputs = [sources[i] for i in (0, 1, 2, 4)]
+        MODULE.validate_nakama_insert_only_source(*inputs)
+        for index, prefix, suffix in (
+            (0, "/*\n", "\n*/\n"), (1, "/*\n", "\n*/\n"),
+            (0, 'const SPOOF: &str = r###"\n', '\n"###;\n'),
+            (1, 'const SPOOF: &str = r###"\n', '\n"###;\n'),
+            (3, "/*\n", "\n*/\n"),
+            (3, 'const SPOOF: &str = r###"\n', '\n"###;\n'),
+        ):
+            changed = inputs.copy(); changed[index] = prefix + changed[index] + suffix
+            with self.subTest(index=index, prefix=prefix), self.assertRaises(SystemExit):
+                MODULE.validate_nakama_insert_only_source(*changed)
 
     def test_native_jsonb_exact_binding_predicate_fallback_and_facade_source_are_closed(self) -> None:
         names = (
@@ -1028,6 +1133,30 @@ cargo() { cat "$MOCK_ROOT/input.log"; return "$MOCK_CARGO_STATUS"; }
                     self.assertNotEqual(self.run_block(block, changed, profile=profile).returncode, 0)
         self.assertNotEqual(self.run_block(block, lines, profile="unknown").returncode, 0)
 
+    def test_real_insert_only_guard_requires_plain_profile_counters_and_full_tuple_marker(self) -> None:
+        block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage storage-duplicate-batches"):
+                               ACTUAL_HARNESS.index("begin_stage schema-upgrade")]
+        terminal = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 filtered out; finished in 0.01s"
+        for profile, expected, wrong in (("postgresql", "committed_existing_wait=0 committed_existing_no_wait=1", "committed_existing_wait=1 committed_existing_no_wait=0"),
+                                         ("cockroachdb", "committed_existing_wait=1 committed_existing_no_wait=0", "committed_existing_wait=0 committed_existing_no_wait=1")):
+            lines = [f"{marker} profile={profile}{suffix}" for marker, suffix in MODULE.storage_duplicate_markers(profile)] + [terminal]
+            marker = next(line for line in lines if line.startswith("nakama_native_insert_only_matrix_executed "))
+            self.assertEqual(self.run_block(block, lines, profile=profile).returncode, 0)
+            for changed in (
+                [line for line in lines if line != marker], lines + [marker],
+                [line.replace(expected, wrong) for line in lines],
+                [line.replace(expected, "committed_existing_wait=true committed_existing_no_wait=false") for line in lines],
+                [line.replace("uncommitted_delete_wait=1", "uncommitted_delete_wait=0") for line in lines],
+                [line.replace(marker, marker.replace("cases=3", "cases=2")) for line in lines],
+                [line.replace(marker, marker.replace("fields=15", "fields=14")) for line in lines],
+                [line.replace(marker, "test prefix ... " + marker) for line in lines],
+                lines + ["nakama_native_insert_only_skipped reason=no_native_execution"],
+            ):
+                with self.subTest(profile=profile, changed=changed):
+                    self.assertNotEqual(self.run_block(block, changed, profile=profile).returncode, 0)
+        self.assertNotEqual(self.run_block(block, lines, profile="unknown").returncode, 0)
+
+
     def test_real_canonical_block_rejects_missing_or_forged_native_write_failure_observation(self) -> None:
         block = ACTUAL_HARNESS[ACTUAL_HARNESS.index("begin_stage canonical-storage-app"):
                                ACTUAL_HARNESS.index("begin_stage nakama-client-list-projection")]
@@ -1100,7 +1229,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                 "raw_version_conditions", "storage_timestamps", "schema_upgrade", "storage_jsonb_v3_projection",
                 "storage_native_jsonb", "storage_v4_acl", "storage_v4_import",
                 "storage_homogeneous_batches", "storage_homogeneous_app", "storage_write_tail_drain",
-                "storage_native_jsonb_exact", "storage_jsonb_native_write_failure",
+                "storage_native_jsonb_exact", "storage_jsonb_native_write_failure", "storage_native_insert_only",
                 "health_ready", "unauthenticated_mutation_rejected", "http_bootstrap_commit_duplicate_conflict",
                 "websocket_json_commit", "response_loss_exact_receipt_replay", "authenticated_drain",
                 "process_restart_exact_receipt_replay",
@@ -1112,6 +1241,8 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             **{field: 4 for field in ("schema_version", "storage_writer_epoch", "authoritative_migrations_count")},
             "storage_jsonb_v3_cases": {"history": 6, "opaque_success": 4, "no_op": 2, "resource": 1, "native_input": 3},
             "late_exact_wait_cases": 0, "late_exact_no_wait_cases": 2,
+            "insert_only_committed_wait_cases": 0, "insert_only_committed_no_wait_cases": 1,
+            "insert_only_uncommitted_delete_wait_cases": 1,
             "schema_v3_extra_cases": 41, "schema_v3_case_families": SCHEMA_FAMILIES.copy(),
             **{field: False for field in (
                 "production_pitr", "multi_node", "wire_compatible", "compatibility_credit", "accepted", "production_ready",
@@ -1681,7 +1812,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
     def test_cockroach_archive_uses_its_own_source_chain_and_observed_input_outcomes(self) -> None:
         self.profile = "cockroachdb"
         self.write_native_fixture()
-        self.write_json("summary.json", {**self.summary, "profile": self.profile, "late_exact_wait_cases": 2, "late_exact_no_wait_cases": 0})
+        self.write_json("summary.json", {**self.summary, "profile": self.profile, "late_exact_wait_cases": 2, "late_exact_no_wait_cases": 0, "insert_only_committed_wait_cases": 1, "insert_only_committed_no_wait_cases": 0})
         self.write_json("storage-v4-import-source.json", {**self.import_source, "profile": self.profile})
         self.write_json("schema-identity.json", {**self.identity, "profile": self.profile,
                                                  "chain_digest": self.chain_digest(self.profile)})
@@ -1703,7 +1834,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
         self.write_named_log("storage-v4-import.log", [line.replace("profile=postgresql", "profile=cockroachdb")
                                                       for line in self.v4_import_lines])
         self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG,
-                             [line.replace("profile=postgresql", "profile=cockroachdb").replace("late_exact_wait=0 late_exact_no_wait=2", "late_exact_wait=2 late_exact_no_wait=0") for line in self.duplicate_lines])
+                             [line.replace("profile=postgresql", "profile=cockroachdb").replace("late_exact_wait=0 late_exact_no_wait=2", "late_exact_wait=2 late_exact_no_wait=0").replace("committed_existing_wait=0 committed_existing_no_wait=1", "committed_existing_wait=1 committed_existing_no_wait=0") for line in self.duplicate_lines])
         for condition, payload in (("accepted", "accepted"), ("accepted", "rejected"),
                                    ("rejected", "accepted"), ("rejected", "rejected")):
             with self.subTest(condition=condition, payload=payload):
@@ -1721,7 +1852,7 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
                     self.write_json("summary.json", changed)
                     self.reject()
         self.write_json("summary.json", good_summary)
-        cr_duplicates = [line.replace("profile=postgresql", "profile=cockroachdb").replace("late_exact_wait=0 late_exact_no_wait=2", "late_exact_wait=2 late_exact_no_wait=0") for line in self.duplicate_lines]
+        cr_duplicates = [line.replace("profile=postgresql", "profile=cockroachdb").replace("late_exact_wait=0 late_exact_no_wait=2", "late_exact_wait=2 late_exact_no_wait=0").replace("committed_existing_wait=0 committed_existing_no_wait=1", "committed_existing_wait=1 committed_existing_no_wait=0") for line in self.duplicate_lines]
         self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, [line.replace("late_exact_wait=2 late_exact_no_wait=0", "late_exact_wait=0 late_exact_no_wait=2") for line in cr_duplicates])
         self.reject()
         self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, cr_duplicates)
@@ -1931,6 +2062,36 @@ class StorageV3LivePacketContractTests(unittest.TestCase):
             self.reject()
         self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, self.duplicate_lines)
         self.assertEqual(self.validate()["profile"], "postgresql")
+
+    def test_insert_only_packet_rejects_integer_aliases_missing_execution_and_forged_matrix(self) -> None:
+        self.assertIs(self.validate()["storage_native_insert_only"], True)
+        for field, expected in (("insert_only_committed_wait_cases", 0), ("insert_only_committed_no_wait_cases", 1),
+                                ("insert_only_uncommitted_delete_wait_cases", 1)):
+            for value in (None, True, False, str(expected), float(expected), 2, 1 - expected):
+                changed = {**self.summary, field: value}
+                if value is None: changed.pop(field)
+                with self.subTest(field=field, value=value):
+                    self.write_json("summary.json", changed); self.reject()
+        for value in (None, False, 1, "true"):
+            changed = {**self.summary, "storage_native_insert_only": value}
+            if value is None: changed.pop("storage_native_insert_only")
+            self.write_json("summary.json", changed); self.reject()
+        self.write_json("summary.json", self.summary)
+        marker = next(line for line in self.duplicate_lines if line.startswith("nakama_native_insert_only_matrix_executed "))
+        for changed in (
+            [line for line in self.duplicate_lines if line != marker], self.duplicate_lines + [marker],
+            self.duplicate_lines + ["nakama_native_insert_only_skipped reason=no_native_execution"],
+            [line.replace(marker, "test prefix ... " + marker) for line in self.duplicate_lines],
+            [line.replace(marker, marker.replace("profile=postgresql", "profile=cockroachdb")) for line in self.duplicate_lines],
+            [line.replace(marker, marker.replace("cases=3", "cases=2")) for line in self.duplicate_lines],
+            [line.replace(marker, marker.replace("fields=15", "fields=14")) for line in self.duplicate_lines],
+            [line.replace(marker, marker.replace("committed_existing_wait=0 committed_existing_no_wait=1", "committed_existing_wait=1 committed_existing_no_wait=0")) for line in self.duplicate_lines],
+            [line.replace(marker, marker.replace("uncommitted_delete_wait=1", "uncommitted_delete_wait=0")) for line in self.duplicate_lines],
+        ):
+            self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, changed); self.reject()
+        self.write_named_log(MODULE.STORAGE_DUPLICATE_LOG, self.duplicate_lines)
+        self.assertIs(self.validate()["storage_native_insert_only"], True)
+
 
     def test_native_jsonb_exact_packet_rejects_wrong_counters_app_native_error_and_summary(self) -> None:
         for field in ("storage_native_jsonb_exact", "storage_jsonb_native_write_failure"):

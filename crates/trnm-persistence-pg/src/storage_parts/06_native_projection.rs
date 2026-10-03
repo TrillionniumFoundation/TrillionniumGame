@@ -74,6 +74,25 @@ fn project_storage_request(
     decode_native_value(&row, 0)
 }
 
+fn project_nakama_storage_request(
+    transaction: &mut Transaction<'_>,
+    request: &[u8],
+) -> Result<Vec<u8>, DomainError> {
+    let payload = RawStorageJsonb::new(request)?;
+    let row = transaction
+        .query_one(
+            "SELECT CASE WHEN pg_catalog.octet_length(value) <= $2::INT8 THEN value END, \
+                    pg_catalog.octet_length(value)::INT8 \
+             FROM (SELECT $1::JSONB::TEXT AS value) AS native_projection",
+            &[
+                &payload,
+                &i64::try_from(MAX_NATIVE_VALUE_BYTES).expect("constant fits INT8"),
+            ],
+        )
+        .map_err(map_postgres_error)?;
+    decode_native_value(&row, 0)
+}
+
 fn validate_storage_request_native(
     transaction: &mut Transaction<'_>,
     request: &[u8],
@@ -293,8 +312,9 @@ fn acquire_nakama_write_access(
 ) -> Result<Option<LockedStorageAccess>, DomainError> {
     let payload = RawStorageJsonb::new(&operation.value)?;
     let VersionCheck::Exact(token) = &operation.expected else {
-        // Any/star retain the existing lock approximation, with payload input
+        // Any retains the existing lock approximation, with payload input
         // validated at native Bind before that lock or host ACL/OCC decision.
+        // The Nakama insert-only policy branches before this acquisition.
         return transaction
             .query_opt(
                 "SELECT public_version::TEXT, write_permission FROM public.trnm_storage_objects \

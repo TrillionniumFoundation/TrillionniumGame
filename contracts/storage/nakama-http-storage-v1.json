@@ -316,6 +316,22 @@
     "literal_nul_condition_tail_policy": {
       "postgresql": "native-text-hard-rejection-no-tail",
       "cockroachdb": "native-text-accepted-first-acl-rejection-real-later-any-wait"
-    }
+    },
+    "insert_only_acquisition_policy": "no-existing-row-select-native-jsonb-projection-then-plain-insert",
+    "insert_only_unique_error_policy": "plain-insert-native-unique-hard-stop-keeps-existing-version-rejection",
+    "insert_only_native_main_cases": 3,
+    "insert_only_committed_existing_wait_cases": {
+      "postgresql": 0,
+      "cockroachdb": 1
+    },
+    "insert_only_committed_existing_no_wait_cases": {
+      "postgresql": 1,
+      "cockroachdb": 0
+    },
+    "insert_only_uncommitted_delete_wait_cases": {
+      "postgresql": 1,
+      "cockroachdb": 1
+    },
+    "native_insert_only_statement_schedule_qualified": false
   }
 }

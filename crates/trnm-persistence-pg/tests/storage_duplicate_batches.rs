@@ -2220,7 +2220,658 @@ mod write_tail_drain {
             exercise_case(url, profile, collection, case);
         }
         println!("nakama_write_tail_drain_executed profile={} held_wait_cases=2 early_reject_cases=3 fields=15", profile.metadata_value());
+        native_insert_only::exercise(url, profile, collection);
         native_exact_input::exercise(url, profile, collection);
+    }
+
+    // Source-bound, finite insert-only matrix. The official source PG/CR
+    // packets qualify different committed-existing footprints. They do not
+    // establish pgx pipeline, hidden SQLSTATE or complete isolation parity.
+    mod native_insert_only {
+        use super::*;
+
+        const INSERT_COLUMNS: &str = "collection, object_key, user_id, value_jsonb, value_bytes, version_digest, public_version, value_projection_digest, value_origin, source_manifest_digest, read_permission, write_permission, updated_at_ms, create_time, update_time";
+
+        #[derive(Clone, Copy)]
+        enum InsertCase {
+            AnyPositive,
+            CommittedExisting,
+            UncommittedDelete,
+        }
+        impl InsertCase {
+            const fn name(self) -> &'static str {
+                match self {
+                    Self::AnyPositive => "any_positive",
+                    Self::CommittedExisting => "committed_existing",
+                    Self::UncommittedDelete => "uncommitted_delete",
+                }
+            }
+            const fn expects_wait(self, profile: DatabaseProfile) -> bool {
+                match self {
+                    Self::AnyPositive | Self::UncommittedDelete => true,
+                    Self::CommittedExisting => matches!(profile, DatabaseProfile::CockroachDb),
+                }
+            }
+            const fn expected_error(self) -> DomainError {
+                match self {
+                    Self::AnyPositive => DomainError::new(
+                        StableCode::PermissionDenied,
+                        "storage_write_permission_denied",
+                        RetryClass::Never,
+                    ),
+                    Self::CommittedExisting | Self::UncommittedDelete => DomainError::new(
+                        StableCode::AlreadyExists,
+                        "storage_object_already_exists",
+                        RetryClass::Never,
+                    ),
+                }
+            }
+        }
+        struct InsertHolder {
+            identity: Holder,
+            table_id: i64,
+            index_id: i64,
+            primary_name: String,
+            granted_rows: serde_json::Value,
+        }
+        fn insert_application(case: InsertCase, role: &str, stamp: u128) -> String {
+            let name = format!("star_{}_{}_{stamp:x}", case.name(), role);
+            assert!(name.len() < 64);
+            assert!(name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+            name
+        }
+        fn primary_catalog(control: &mut Client, profile: DatabaseProfile) -> (i64, i64, String) {
+            let rows = match profile {
+                DatabaseProfile::PostgreSql => control.query(
+                    "SELECT c.oid::INT8, i.indexrelid::INT8, ci.relname::TEXT FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_index i ON i.indrelid=c.oid JOIN pg_catalog.pg_class ci ON ci.oid=i.indexrelid WHERE n.nspname='public' AND c.relname='trnm_storage_objects' AND i.indisprimary LIMIT 2", &[]),
+                DatabaseProfile::CockroachDb => {
+                    // This setting applies only to this fixture observer session.
+                    // It does not fabricate the native view's empty index_name.
+                    control.batch_execute("SET allow_unsafe_internals=true").unwrap();
+                    control.query("SELECT descriptor_id::INT8, index_id::INT8, index_name::TEXT FROM crdb_internal.table_indexes WHERE descriptor_name='trnm_storage_objects' AND index_type='primary' LIMIT 2", &[])
+                }
+            }.unwrap_or_else(|error| panic!("insert-only primary catalog failed sqlstate={}", sqlstate(&error)));
+            assert_eq!(
+                rows.len(),
+                1,
+                "insert-only actual primary catalog was ambiguous"
+            );
+            let found = (
+                rows[0].get::<_, i64>(0),
+                rows[0].get::<_, i64>(1),
+                rows[0].get::<_, String>(2),
+            );
+            assert!(found.0 > 0 && found.1 > 0 && !found.2.is_empty() && found.2.len() <= 128);
+            if matches!(profile, DatabaseProfile::CockroachDb) {
+                assert_eq!(found.1, 1);
+            }
+            found
+        }
+        fn fresh_granted(
+            control: &mut Client,
+            key: &StorageObjectKey,
+            holder: &InsertHolder,
+        ) -> serde_json::Value {
+            match &holder.identity {
+                Holder::PostgreSql { pid, xid } => {
+                    let rows = control.query("SELECT a.pid::INTEGER, a.backend_xid::TEXT, a.state::TEXT, l.locktype::TEXT, l.transactionid::TEXT, l.mode::TEXT, l.granted FROM pg_catalog.pg_stat_activity a JOIN pg_catalog.pg_locks l ON l.pid=a.pid WHERE a.datname=current_database() AND a.pid=$1 AND l.locktype='transactionid' AND l.transactionid::TEXT=$2 AND l.mode='ExclusiveLock' AND l.granted LIMIT 2", &[pid, xid]).unwrap();
+                    assert_eq!(
+                        rows.len(),
+                        1,
+                        "insert-only same native holder no longer granted"
+                    );
+                    let r = &rows[0];
+                    assert_eq!(r.get::<_, i32>(0), *pid);
+                    assert_eq!(r.get::<_, String>(1), *xid);
+                    assert_eq!(r.get::<_, String>(2), "idle in transaction");
+                    assert_eq!(r.get::<_, String>(3), "transactionid");
+                    assert_eq!(r.get::<_, String>(4), *xid);
+                    assert_eq!(r.get::<_, String>(5), "ExclusiveLock");
+                    assert!(r.get::<_, bool>(6));
+                    serde_json::json!([[
+                        pid,
+                        xid,
+                        "idle in transaction",
+                        "transactionid",
+                        xid,
+                        "ExclusiveLock",
+                        true
+                    ]])
+                }
+                Holder::CockroachDb { txn, keys } => {
+                    let prefix = format!("/Table/{}/1/", holder.table_id);
+                    let rows=control.query("SELECT txn_id::TEXT, lock_key_pretty::TEXT, table_id::INT8, index_name::TEXT, lock_strength::TEXT, isolation_level::TEXT FROM crdb_internal.cluster_locks WHERE database_name=current_database() AND schema_name='public' AND table_name='trnm_storage_objects' AND table_id::INT8=$1::INT8 AND granted AND txn_id::TEXT=$2 AND lock_key_pretty=ANY($3::TEXT[]) ORDER BY lock_key_pretty LIMIT 64", &[&holder.table_id,txn,keys]).unwrap();
+                    assert_eq!(
+                        rows.len(),
+                        keys.len(),
+                        "insert-only native primary holder readback changed"
+                    );
+                    let mut raw = Vec::new();
+                    for r in rows {
+                        let t: String = r.get(0);
+                        let k: String = r.get(1);
+                        let id: i64 = r.get(2);
+                        let name: Option<String> = r.get(3);
+                        let strength: String = r.get(4);
+                        let isolation: String = r.get(5);
+                        assert_eq!(t, *txn);
+                        assert!(
+                            keys.contains(&k)
+                                && k.starts_with(&prefix)
+                                && k.contains(key.collection())
+                                && k.contains(key.key())
+                        );
+                        assert_eq!(id, holder.table_id);
+                        assert_eq!(strength, "Exclusive");
+                        assert_eq!(isolation, "SERIALIZABLE");
+                        raw.push(serde_json::json!([t, k, id, name, strength, isolation]));
+                    }
+                    serde_json::Value::Array(raw)
+                }
+            }
+        }
+        fn hold_insert_key(
+            tx: &mut Transaction<'_>,
+            control: &mut Client,
+            profile: DatabaseProfile,
+            key: &StorageObjectKey,
+            delete_row: bool,
+            primary: &(i64, i64, String),
+        ) -> InsertHolder {
+            tx.batch_execute("SET LOCAL idle_in_transaction_session_timeout='10s'")
+                .unwrap();
+            let relation = if matches!(profile, DatabaseProfile::CockroachDb) {
+                assert!(primary
+                    .2
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+                format!("public.trnm_storage_objects@\"{}\"", primary.2)
+            } else {
+                "public.trnm_storage_objects".to_owned()
+            };
+            let row=tx.query_one(&format!("SELECT collection, object_key, user_id FROM {relation} WHERE collection=$1 AND object_key=$2 AND user_id=$3 FOR UPDATE"), &[&key.collection(),&key.key(),&key.user_id().as_bytes().as_slice()]).unwrap();
+            assert_eq!(row.get::<_, String>(0), key.collection());
+            assert_eq!(row.get::<_, String>(1), key.key());
+            assert_eq!(
+                row.get::<_, Vec<u8>>(2).as_slice(),
+                key.user_id().as_bytes().as_slice()
+            );
+            if delete_row {
+                let deleted=tx.query_one("DELETE FROM public.trnm_storage_objects WHERE collection=$1 AND object_key=$2 AND user_id=$3 RETURNING collection, object_key, user_id", &[&key.collection(),&key.key(),&key.user_id().as_bytes().as_slice()]).unwrap();
+                assert_eq!(deleted.get::<_, String>(0), key.collection());
+                assert_eq!(deleted.get::<_, String>(1), key.key());
+                assert_eq!(
+                    deleted.get::<_, Vec<u8>>(2).as_slice(),
+                    key.user_id().as_bytes().as_slice()
+                );
+            }
+            let remaining=tx.query_one("SELECT count(*)::INT8 FROM public.trnm_storage_objects WHERE collection=$1 AND object_key=$2 AND user_id=$3", &[&key.collection(),&key.key(),&key.user_id().as_bytes().as_slice()]).unwrap().get::<_,i64>(0);
+            assert_eq!(remaining, if delete_row { 0 } else { 1 });
+            let identity = match profile {
+                DatabaseProfile::PostgreSql => {
+                    let r = tx
+                        .query_one("SELECT pg_backend_pid(), pg_current_xact_id()::TEXT", &[])
+                        .unwrap();
+                    Holder::PostgreSql {
+                        pid: r.get(0),
+                        xid: r.get(1),
+                    }
+                }
+                DatabaseProfile::CockroachDb => {
+                    let prefix = format!("/Table/{}/1/", primary.0);
+                    let rows=control.query("SELECT txn_id::TEXT, lock_key_pretty::TEXT FROM crdb_internal.cluster_locks WHERE database_name=current_database() AND schema_name='public' AND table_name='trnm_storage_objects' AND table_id::INT8=$1::INT8 AND granted AND strpos(lock_key_pretty,$2)=1 AND strpos(lock_key_pretty,$3)>0 AND strpos(lock_key_pretty,$4)>0 ORDER BY txn_id::TEXT,lock_key_pretty LIMIT 64", &[&primary.0,&prefix,&key.collection(),&key.key()]).unwrap();
+                    assert!(
+                        !rows.is_empty() && rows.len() < 64,
+                        "insert-only owned PRIMARY holder missing"
+                    );
+                    let txn: String = rows[0].get(0);
+                    assert!(!txn.is_empty() && txn.len() <= 128);
+                    let mut keys = Vec::new();
+                    for r in rows {
+                        assert_eq!(
+                            r.get::<_, String>(0),
+                            txn,
+                            "insert-only primary key had distinct holders"
+                        );
+                        let k: String = r.get(1);
+                        assert!(k.starts_with(&prefix) && k.len() <= 8192);
+                        keys.push(k);
+                    }
+                    keys.sort();
+                    keys.dedup();
+                    Holder::CockroachDb { txn, keys }
+                }
+            };
+            let mut holder = InsertHolder {
+                identity,
+                table_id: primary.0,
+                index_id: primary.1,
+                primary_name: primary.2.clone(),
+                granted_rows: serde_json::Value::Null,
+            };
+            holder.granted_rows = fresh_granted(control, key, &holder);
+            holder
+        }
+        fn plain_insert_query(query: &str) -> bool {
+            // Inspect the native statement without modifying its bytes. PG
+            // exposes the wire literal; CR exposes its own substituted display.
+            let Some(after_table) = query
+                .trim_start()
+                .strip_prefix("INSERT INTO public.trnm_storage_objects")
+            else {
+                return false;
+            };
+            query.len() <= 8192
+                && after_table.trim_start().starts_with('(')
+                && query.contains(INSERT_COLUMNS)
+                && query.contains("VALUES (")
+                && query.contains("'write-request-bytes'")
+                && query.contains("RETURNING ")
+                && query.contains("value_projection_digest")
+                && query.contains("create_time")
+                && query.contains("update_time")
+                && !query.contains("ON CONFLICT")
+                && !query.contains("FOR UPDATE")
+                && !query.contains("WITH upd")
+        }
+        fn observe_insert_wait(
+            control: &mut Client,
+            application: &str,
+            holder: &InsertHolder,
+            case: InsertCase,
+        ) -> Option<WaitProof> {
+            if matches!(case, InsertCase::AnyPositive) {
+                return observe_wait(control, application, &holder.identity, ACCESS_SQL);
+            }
+            match &holder.identity {
+                Holder::PostgreSql { pid, xid } => {
+                    let rows=control.query("SELECT a.pid::INTEGER, a.backend_xid::TEXT, a.query::TEXT, a.state::TEXT, a.wait_event_type::TEXT, a.wait_event::TEXT, pg_blocking_pids(a.pid), l.locktype::TEXT, l.transactionid::TEXT, l.granted, h.pid::INTEGER, h.mode::TEXT, h.granted FROM pg_catalog.pg_stat_activity a JOIN pg_catalog.pg_locks l ON l.pid=a.pid JOIN pg_catalog.pg_locks h ON h.locktype=l.locktype AND h.transactionid=l.transactionid WHERE a.datname=current_database() AND a.application_name=$1 AND a.pid<>$2 AND $2=ANY(pg_blocking_pids(a.pid)) AND a.wait_event_type='Lock' AND l.locktype='transactionid' AND NOT l.granted AND h.pid=$2 AND h.transactionid::TEXT=$3 AND h.mode='ExclusiveLock' AND h.granted LIMIT 2", &[&application,pid,xid]).unwrap();
+                    if rows.is_empty() {
+                        return None;
+                    }
+                    assert_eq!(rows.len(), 1, "insert-only PG worker ambiguous");
+                    let r = &rows[0];
+                    let worker: i32 = r.get(0);
+                    let worker_xid: Option<String> = r.get(1);
+                    let query: String = r.get(2);
+                    let phase: String = r.get(3);
+                    let wait_type: String = r.get(4);
+                    let wait: Option<String> = r.get(5);
+                    let blocking: Vec<i32> = r.get(6);
+                    let kind: String = r.get(7);
+                    let blocked_xid: String = r.get(8);
+                    let granted: bool = r.get(9);
+                    let blocker: i32 = r.get(10);
+                    let mode: String = r.get(11);
+                    let blocker_granted: bool = r.get(12);
+                    assert_ne!(worker, *pid);
+                    assert!(worker_xid.as_ref().is_some_and(|x| x != xid));
+                    assert_eq!(wait_type, "Lock");
+                    assert!(blocking.contains(pid));
+                    assert_eq!(kind, "transactionid");
+                    assert_eq!(blocked_xid, *xid);
+                    assert!(!granted);
+                    assert_eq!(blocker, *pid);
+                    assert_eq!(mode, "ExclusiveLock");
+                    assert!(blocker_granted);
+                    assert!(
+                        plain_insert_query(&query),
+                        "insert-only PG wait did not execute native plain INSERT"
+                    );
+                    println!(
+                        "{}",
+                        serde_json::json!({"schema":"local.storage-native-insert-only-lock-query.v1","profile":"postgresql","case":case.name(),"actual_native_query":query,"actual_native_query_sha256":query_digest(&query),"native_fields":[worker,worker_xid,query,phase,wait_type,wait,blocking,kind,blocked_xid,granted,blocker,mode,blocker_granted],"wire_literal_normalized":false,"hidden_batch_sqlstate":null,"accepted":false})
+                    );
+                    Some(WaitProof {
+                        worker: worker.to_string(),
+                        blocker: pid.to_string(),
+                        query_sha256: query_digest(&query),
+                    })
+                }
+                Holder::CockroachDb { txn, keys } => {
+                    let rows=control.query("SELECT q.query_id::TEXT, q.txn_id::TEXT, q.query::TEXT, q.phase::TEXT, l.lock_key_pretty::TEXT, l.granted, l.contended, h.txn_id::TEXT, h.granted, l.table_id::INT8, l.index_name::TEXT, h.index_name::TEXT FROM crdb_internal.cluster_queries q JOIN crdb_internal.cluster_locks l ON q.txn_id::TEXT=l.txn_id::TEXT JOIN crdb_internal.cluster_locks h ON h.database_name=l.database_name AND h.schema_name=l.schema_name AND h.table_name=l.table_name AND h.lock_key_pretty=l.lock_key_pretty WHERE q.application_name=$1 AND l.database_name=current_database() AND l.schema_name='public' AND l.table_name='trnm_storage_objects' AND l.table_id::INT8=$4::INT8 AND l.lock_key_pretty=ANY($2::TEXT[]) AND NOT l.granted AND l.contended AND l.txn_id::TEXT<>$3 AND h.txn_id::TEXT=$3 AND h.granted ORDER BY q.query_id::TEXT,l.lock_key_pretty LIMIT 64", &[&application,keys,txn,&holder.table_id]).unwrap();
+                    if rows.is_empty() {
+                        return None;
+                    }
+                    assert!(rows.len() < 64);
+                    let worker: String = rows[0].get(1);
+                    assert_ne!(worker, *txn);
+                    assert!(!worker.is_empty() && worker.len() <= 128);
+                    let query: String = rows[0].get(2);
+                    assert!(
+                        plain_insert_query(&query),
+                        "insert-only CR wait did not execute native plain INSERT"
+                    );
+                    let mut raw = Vec::new();
+                    for r in rows {
+                        let id: String = r.get(0);
+                        let t: String = r.get(1);
+                        let q: String = r.get(2);
+                        let phase: String = r.get(3);
+                        let key: String = r.get(4);
+                        let granted: bool = r.get(5);
+                        let contended: bool = r.get(6);
+                        let h: String = r.get(7);
+                        let hg: bool = r.get(8);
+                        let table: i64 = r.get(9);
+                        let name: Option<String> = r.get(10);
+                        let hname: Option<String> = r.get(11);
+                        assert!(!id.is_empty() && id.len() <= 128 && phase.len() <= 128);
+                        assert_eq!(t, worker);
+                        assert_eq!(q, query);
+                        assert!(
+                            keys.contains(&key)
+                                && key.starts_with(&format!("/Table/{}/1/", holder.table_id))
+                        );
+                        assert!(!granted && contended && hg);
+                        assert_eq!(h, *txn);
+                        assert_eq!(table, holder.table_id);
+                        raw.push(serde_json::json!([
+                            id, t, q, phase, key, granted, contended, h, hg, table, name, hname
+                        ]));
+                    }
+                    println!(
+                        "{}",
+                        serde_json::json!({"schema":"local.storage-native-insert-only-lock-query.v1","profile":"cockroachdb","case":case.name(),"actual_native_query":query,"actual_native_query_sha256":query_digest(&query),"native_fields":raw,"wire_literal_normalized":false,"hidden_batch_sqlstate":null,"accepted":false})
+                    );
+                    Some(WaitProof {
+                        worker,
+                        blocker: txn.clone(),
+                        query_sha256: query_digest(&query),
+                    })
+                }
+            }
+        }
+        fn hex_bytes(bytes: &[u8]) -> String {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut result = String::with_capacity(bytes.len() * 2);
+            for byte in bytes {
+                result.push(HEX[usize::from(byte >> 4)] as char);
+                result.push(HEX[usize::from(byte & 0x0f)] as char);
+            }
+            result
+        }
+        fn tuple_json(r: &RawRow) -> serde_json::Value {
+            serde_json::json!([
+                r.collection,
+                r.key,
+                hex_bytes(&r.owner),
+                r.native,
+                r.raw.as_deref().map(hex_bytes),
+                r.request_sha.as_deref().map(hex_bytes),
+                r.public_version,
+                hex_bytes(&r.projection_sha),
+                r.origin,
+                r.manifest_sha.as_deref().map(hex_bytes),
+                r.read,
+                r.write,
+                r.updated_at_ms,
+                r.create.map(|v| serde_json::json!([v.seconds, v.nanos])),
+                r.update.map(|v| serde_json::json!([v.seconds, v.nanos]))
+            ])
+        }
+        fn exercise_insert_case(
+            url: &str,
+            profile: DatabaseProfile,
+            collection: &str,
+            case: InsertCase,
+        ) {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let key = |suffix: &str| {
+                StorageObjectKey::new(
+                    collection,
+                    format!("native-star-{}-{suffix}", case.name()),
+                    OWNER,
+                )
+                .unwrap()
+            };
+            let prelude = key("0-prelude");
+            let rejected = key("a-acl0");
+            let probe = key("y-readable");
+            let later = key("z-held");
+            let mut control = bounded_control(url);
+            let primary_catalog = primary_catalog(&mut control, profile);
+            let mut repo = bounded_repository(url, profile);
+            let seeds = [
+                write(&prelude, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&rejected, A, VersionCheck::Any, WritePermission::NONE),
+                write(&probe, A, VersionCheck::Any, WritePermission::OWNER),
+                write(&later, A, VersionCheck::Any, WritePermission::OWNER),
+            ];
+            let seeded = repo
+                .apply_storage_batch_nakama_with_metadata(
+                    StorageActor::Server,
+                    &seeds,
+                    401,
+                    StorageNakamaBatchKind::Write,
+                )
+                .unwrap();
+            assert_eq!(seeded.len(), seeds.len());
+            for (operation, receipt) in seeds.iter().zip(&seeded) {
+                let StorageBatchOperation::Write(w) = operation else {
+                    unreachable!()
+                };
+                assert_known_row(
+                    &mut control,
+                    &w.key,
+                    A,
+                    w.read_permission,
+                    w.write_permission,
+                    401,
+                    receipt.times,
+                );
+            }
+            let before = snapshot(&mut control, collection);
+            let mut worker_repo = bounded_repository(url, profile);
+            let probe_before = worker_repo
+                .read_storage_object_with_metadata(StorageActor::User(OWNER), &probe)
+                .unwrap();
+            let application = insert_application(case, "w", stamp);
+            worker_repo
+                .execute_migration_batch(&format!("SET application_name='{application}'"))
+                .unwrap();
+            let mut operations = vec![
+                write(
+                    &later,
+                    B,
+                    if matches!(case, InsertCase::AnyPositive) {
+                        VersionCheck::Any
+                    } else {
+                        VersionCheck::MustNotExist
+                    },
+                    WritePermission::OWNER,
+                ),
+                write(&prelude, C, VersionCheck::Any, WritePermission::OWNER),
+            ];
+            if matches!(case, InsertCase::AnyPositive) {
+                operations.push(write(
+                    &rejected,
+                    B,
+                    VersionCheck::Any,
+                    WritePermission::OWNER,
+                ));
+            }
+            let mut holder_control = bounded_control(url);
+            control_application(&mut holder_control, &insert_application(case, "h", stamp));
+            let started = Instant::now();
+            let mut held = Some(holder_control.transaction().unwrap());
+            let holder = hold_insert_key(
+                held.as_mut().unwrap(),
+                &mut control,
+                profile,
+                &later,
+                matches!(case, InsertCase::UncommittedDelete),
+                &primary_catalog,
+            );
+            assert!(
+                started.elapsed() < CAUSAL_BUDGET,
+                "insert-only holder setup exceeded causal budget"
+            );
+            let (send, receive) = mpsc::sync_channel(1);
+            let worker = std::thread::spawn(move || {
+                let batch = worker_repo.apply_storage_batch_nakama_with_metadata(
+                    StorageActor::User(OWNER),
+                    &operations,
+                    402,
+                    StorageNakamaBatchKind::Write,
+                );
+                let completed_at = Instant::now();
+                let reused = worker_repo
+                    .read_storage_object_with_metadata(StorageActor::User(OWNER), &probe)
+                    .map(|actual| actual == probe_before);
+                send.send(Outcome {
+                    batch,
+                    reused,
+                    completed_at,
+                })
+                .expect("insert-only result receiver unavailable");
+            });
+            let mut outcome = None;
+            let mut rollback_ok = true;
+            let body = catch_unwind(AssertUnwindSafe(|| {
+                if case.expects_wait(profile) {
+                    let proof = loop {
+                        assert!(
+                            started.elapsed() < CAUSAL_BUDGET,
+                            "insert-only native wait absent within4s"
+                        );
+                        if let Some(p) =
+                            observe_insert_wait(&mut control, &application, &holder, case)
+                        {
+                            assert!(started.elapsed() < CAUSAL_BUDGET);
+                            break p;
+                        }
+                        match receive.try_recv() {
+                            Ok(actual) => {
+                                outcome = Some(actual);
+                                panic!("insert-only worker finished without required native wait");
+                            }
+                            Err(TryRecvError::Disconnected) => {
+                                panic!("insert-only worker disconnected before wait proof")
+                            }
+                            Err(TryRecvError::Empty) => std::thread::yield_now(),
+                        }
+                    };
+                    println!("nakama_native_insert_only_lock_observed profile={} case={} worker={} blocker={} actual_query_sha256={} proof=native-lock-view",profile.metadata_value(),case.name(),proof.worker,proof.blocker,proof.query_sha256);
+                    rollback_ok &=
+                        release(&mut held, profile, case.name(), "insert-causal-release");
+                    assert!(rollback_ok, "insert-only causal rollback failed");
+                }
+                let actual = receive
+                    .recv_timeout(CAUSAL_BUDGET.saturating_sub(started.elapsed()))
+                    .expect("insert-only actual result absent within4s");
+                log_outcome(profile, case.name(), &actual, false);
+                outcome = Some(actual);
+                let actual = outcome.as_ref().unwrap();
+                assert!(actual.completed_at.duration_since(started) < CAUSAL_BUDGET);
+                assert_eq!(
+                    actual.batch.as_ref().err().copied(),
+                    Some(case.expected_error()),
+                    "insert-only selected DomainError changed or ACK returned"
+                );
+                assert_eq!(
+                    actual.reused,
+                    Ok(true),
+                    "insert-only same native lease health or probe changed"
+                );
+                if !case.expects_wait(profile) {
+                    let fresh = fresh_granted(&mut control, &later, &holder);
+                    assert_eq!(
+                        fresh, holder.granted_rows,
+                        "insert-only true completion lost fresh same native holder"
+                    );
+                    println!(
+                        "{}",
+                        serde_json::json!({"schema":"local.storage-native-insert-only-early-completion.v1","profile":profile.metadata_value(),"case":case.name(),"actual_holder_still_granted":fresh,"actual_completion_before_release":true,"accepted":false})
+                    );
+                }
+                assert!(
+                    started.elapsed() < CAUSAL_BUDGET,
+                    "insert-only causal completion/readback exceeded4s"
+                );
+            }));
+            let settling_started = Instant::now();
+            rollback_ok &= release(&mut held, profile, case.name(), "insert-cleanup");
+            let joined = settle(
+                worker,
+                &receive,
+                &mut outcome,
+                settling_started,
+                profile,
+                case.name(),
+            );
+            let check_state = if rollback_ok && joined.as_ref().is_some_and(Result::is_ok) {
+                Some(catch_unwind(AssertUnwindSafe(|| {
+                    let after = snapshot(&mut control, collection);
+                    assert_eq!(
+                        after, before,
+                        "insert-only failed batch changed complete full15field native rows"
+                    );
+                    let own =
+                        |r: &&RawRow| r.key.starts_with(&format!("native-star-{}-", case.name()));
+                    let b: Vec<_> = before.iter().filter(own).map(tuple_json).collect();
+                    let a: Vec<_> = after.iter().filter(own).map(tuple_json).collect();
+                    assert_eq!(b.len(), 4);
+                    assert_eq!(a, b);
+                    let no_receipts = outcome.as_ref().map(|actual| actual.batch.is_err());
+                    let same_lease_readable =
+                        outcome.as_ref().map(|actual| actual.reused == Ok(true));
+                    let causal_body_passed = body.is_ok();
+                    let packet = serde_json::json!({"schema":"local.storage-native-insert-only-full-tuple.v1","profile":profile.metadata_value(),"case":case.name(),"fields":15,"before":b,"after":a,"holder_primary_catalog":[holder.table_id,holder.index_id,holder.primary_name],"holder_granted_before":holder.granted_rows,"hidden_batch_sqlstate":null,"no_receipts":no_receipts,"same_lease_readable":same_lease_readable,"causal_body_passed":causal_body_passed,"accepted":false,"full_protocol_parity":false});
+                    let bytes = serde_json::to_vec(&packet).unwrap();
+                    assert!(
+                        bytes.len() <= 65536,
+                        "insert-only native proof output exceeds64KiB"
+                    );
+                    println!("{}", String::from_utf8(bytes).unwrap());
+                })))
+            } else {
+                None
+            };
+            if let Err(payload) = body {
+                if check_state.as_ref().is_some_and(Result::is_err) {
+                    eprintln!("nakama_native_insert_only_secondary_snapshot_failed profile={} case={} original_failure_preserved=true",profile.metadata_value(),case.name());
+                }
+                if let Some(actual) = &outcome {
+                    log_outcome(profile, case.name(), actual, true);
+                }
+                if joined.as_ref().is_some_and(Result::is_err) {
+                    eprintln!("nakama_native_insert_only_secondary_worker_panic profile={} case={} original_failure_preserved=true",profile.metadata_value(),case.name());
+                }
+                resume_unwind(payload);
+            }
+            match joined {
+                Some(Ok(())) => {}
+                Some(Err(payload)) => resume_unwind(payload),
+                None => panic!(
+                    "insert-only worker unsettled; outer owned processgroup deadline required"
+                ),
+            };
+            assert!(rollback_ok, "insert-only holder cleanup failed");
+            match check_state {
+                Some(Ok(())) => {}
+                Some(Err(payload)) => resume_unwind(payload),
+                None => panic!("insert-only complete15field state unavailable"),
+            };
+            println!("nakama_native_insert_only_case_executed profile={} case={} native_wait={} fields=15 no_receipts=true same_lease_readable=true hidden_batch_sqlstate=null",profile.metadata_value(),case.name(),case.expects_wait(profile));
+        }
+        pub(super) fn exercise(url: &str, profile: DatabaseProfile, collection: &str) {
+            for case in [
+                InsertCase::AnyPositive,
+                InsertCase::CommittedExisting,
+                InsertCase::UncommittedDelete,
+            ] {
+                exercise_insert_case(url, profile, collection, case);
+            }
+            let (committed_existing_wait, committed_existing_no_wait) = match profile {
+                DatabaseProfile::PostgreSql => (0_u8, 1_u8),
+                DatabaseProfile::CockroachDb => (1_u8, 0_u8),
+            };
+            println!("nakama_native_insert_only_matrix_executed profile={} cases=3 committed_existing_wait={committed_existing_wait} committed_existing_no_wait={committed_existing_no_wait} uncommitted_delete_wait=1 fields=15",profile.metadata_value());
+        }
     }
 
     // Future-production-candidate-only native input/Exact predicate matrix.
