@@ -1,7 +1,7 @@
 {
   "schema": "trillionnium.migration-chain-lock.v1",
   "project_id": "trillionnium-game",
-  "schema_version": 1,
+  "schema_version": 5,
   "generated_from_base": "326e670cb008a990247e31a63c0c4b0e338df62f",
   "profiles": {
     "postgresql": {
@@ -10,6 +10,22 @@
         {
           "path": "migrations/postgresql/0001_foundation_up.sql",
           "git_blob_sha1": "07f5f4923d884cc63bf53074096b8d1e04215096"
+        },
+        {
+          "path": "migrations/postgresql/0002_storage_timestamps_up.sql",
+          "git_blob_sha1": "e36cc2d743eb863af93774a24615f3c5ec1c3443"
+        },
+        {
+          "path": "migrations/postgresql/0003_storage_jsonb_up.sql",
+          "git_blob_sha1": "4eb39d906f8ed3444cee7dd7a550ce21dad5e00c"
+        },
+        {
+          "path": "migrations/postgresql/0004_storage_source_import_up.sql",
+          "git_blob_sha1": "12f3f832d6b5509a12573c4d596e5313165307f5"
+        },
+        {
+          "path": "migrations/postgresql/0005_nakama_accounts_up.sql",
+          "git_blob_sha1": "f0ab280894bbabc676c02c45e411ce804e46db6f"
         }
       ]
     },
@@ -19,6 +35,22 @@
         {
           "path": "migrations/cockroachdb/0001_foundation_up.sql",
           "git_blob_sha1": "b836b8a2f025ef22525e9e5f089db01ab5f06fe6"
+        },
+        {
+          "path": "migrations/cockroachdb/0002_storage_timestamps_up.sql",
+          "git_blob_sha1": "700cdb460b9211370777928b980b10e37ae21ae9"
+        },
+        {
+          "path": "migrations/cockroachdb/0003_storage_jsonb_up.sql",
+          "git_blob_sha1": "4eb39d906f8ed3444cee7dd7a550ce21dad5e00c"
+        },
+        {
+          "path": "migrations/cockroachdb/0004_storage_source_import_up.sql",
+          "git_blob_sha1": "7e996a3e6732ed91508f4354a4d75a786c00e240"
+        },
+        {
+          "path": "migrations/cockroachdb/0005_nakama_accounts_up.sql",
+          "git_blob_sha1": "f0ab280894bbabc676c02c45e411ce804e46db6f"
         }
       ]
     }
@@ -31,5 +63,7 @@
     "semantic_change_requires_adr_and_lock_update": true,
     "drop_based_production_rollback_allowed": false
   },
-  "claim_boundary": "The lock proves source identity only. It does not prove migration execution, data compatibility, durability, backup, PITR or HA."
+  "claim_boundary": "The lock proves source identity only. It does not prove migration execution, data compatibility, durability, backup, PITR or HA.",
+  "default_runtime_schema_version": 4,
+  "accounts_v5_activation": "typed opt-in source candidate; native catalog bindings required before any schema5 DDL"
 }

@@ -1,0 +1,54 @@
+{
+  "schema": "trillionnium.cutover-state-machine.v1",
+  "states": [
+    "planning",
+    "shadow",
+    "exclusive-canary",
+    "production",
+    "retirement-pending",
+    "retired"
+  ],
+  "execution_mode": "proposal-only",
+  "skip_transitions_allowed": false,
+  "self_approval_allowed": false,
+  "evidence_producer_approval_allowed": false,
+  "local_json_may_materialize_authority": false,
+  "state_mutation_supported": false,
+  "trusted_authority_verifier_implemented": false,
+  "rollback_packet_required_for_every_proposal": true,
+  "ordinary_protected_admission_claim_required_for_every_proposal": true,
+  "required_external_authority_receipt_fields": [
+    "authenticated issuer and stable principal identity",
+    "qualified role and conflict decision",
+    "exact candidate and evidence digests",
+    "platform-native protected-admission readback",
+    "issued-at and expiry",
+    "unique nonce and durable replay fence",
+    "review or operational decision event identity",
+    "signature or equivalent trusted-platform verification"
+  ],
+  "production_proposal_requires": [
+    "zero open P0/P1",
+    "all evidence claimed accepted",
+    "independent review claimed complete",
+    "governance readback claimed complete",
+    "SG0 SG1 SG2 SG3 SG4 SG5 SG8",
+    "exclusive canary acceptance",
+    "24h 72h 7d endurance acceptance",
+    "approved RPO/RTO"
+  ],
+  "retirement_proposal_requires": [
+    "complete Nakama compatibility",
+    "global SG1",
+    "explicit distinct retirement decision",
+    "rollback window expired"
+  ],
+  "claim_boundary": {
+    "shadow_authorized": false,
+    "exclusive_canary_authorized": false,
+    "production_authorized": false,
+    "retirement_authorized": false,
+    "public_online": false,
+    "nakama_retired": false
+  }
+}

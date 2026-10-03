@@ -85,6 +85,10 @@ impl<R> RetryingRepository<R> {
 }
 
 impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
+    fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+        self.inner.verify_storage_import_serving()
+    }
+
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,

@@ -14,12 +14,23 @@ CRATE = ROOT / "crates/trnm-server"
 EXPECTED_RUNTIME_FILES = {
     "app.rs",
     "auth.rs",
+    "auth_app_tests.rs",
+    "auth_runtime.rs",
     "codec.rs",
     "config.rs",
     "error.rs",
     "grpc.rs",
     "http.rs",
     "json.rs",
+    "legacy_auth.rs",
+    "legacy_auth_tests.rs",
+    "legacy_config.rs",
+    "legacy_device_predicates.rs",
+    "legacy_http_api.rs",
+    "legacy_http_api_tests.rs",
+    "legacy_repository.rs",
+    "legacy_repository_tests.rs",
+    "legacy_uuid.rs",
     "mod.rs",
     "pool.rs",
     "retry.rs",
@@ -28,11 +39,24 @@ EXPECTED_RUNTIME_FILES = {
     "schema.rs",
     "server.rs",
     "session_api.rs",
+    "storage_api.rs",
+    "storage_api_projection_tests.rs",
+    "storage_api_tests.rs",
+    "storage_api_v3_live.rs",
+    "storage_list_api.rs",
+    "storage_list_query.rs",
+    "storage_list_api_tests.rs",
+    "storage_cursor.rs",
+    "storage_cursor_tests.rs",
     "websocket.rs",
 }
 EXPECTED_DEPENDENCIES: dict[str, object] = {
+    "base64": "=0.22.1",
     "postgres": "=0.19.14",
     "prost": "=0.14.3",
+    "prost-types": "=0.14.3",
+    "serde": "=1.0.229",
+    "serde_json": {"version": "=1.0.145", "features": ["raw_value"]},
     "tokio": {"version": "=1.53.1", "features": ["rt", "time"]},
     "tonic": {"version": "=0.14.5", "features": ["transport"]},
     "tonic-prost": "=0.14.5",
@@ -40,6 +64,7 @@ EXPECTED_DEPENDENCIES: dict[str, object] = {
     "trnm-persistence-pg": {"path": "../trnm-persistence-pg"},
     "trnm-realtime-wire": {"path": "../trnm-realtime-wire"},
     "trnm-session-core": {"path": "../trnm-session-core"},
+    "trnm-token-crypto-provider": {"path": "../trnm-token-crypto-provider"},
     "trnm-token-jwt-adapter": {"path": "../trnm-token-jwt-adapter"},
 }
 EXPECTED_BUILD_DEPENDENCIES: dict[str, object] = {
@@ -69,6 +94,10 @@ def require(condition: bool, message: str) -> None:
         raise ValidationError(message)
 
 
+def validate_runtime_file_inventory(runtime_files: set[str]) -> None:
+    require(runtime_files == EXPECTED_RUNTIME_FILES, "runtime module file set drift")
+
+
 def read(path: Path) -> str:
     require(path.is_file(), f"missing required source: {path.relative_to(ROOT)}")
     value = path.read_text(encoding="utf-8")
@@ -81,6 +110,15 @@ def load_json(path: Path) -> dict[str, Any]:
     value = json.loads(read(path))
     require(isinstance(value, dict), f"object required: {path.relative_to(ROOT)}")
     return value
+
+
+def validate_server_dependencies(manifest: dict[str, object]) -> None:
+    """Retain closed runtime/build tables; the server-only locked base64 edge is explicit."""
+    require(manifest.get("dependencies") == EXPECTED_DEPENDENCIES, "server dependency contract drift")
+    require(
+        manifest.get("build-dependencies") == EXPECTED_BUILD_DEPENDENCIES,
+        "server build-dependency contract drift",
+    )
 
 
 def main() -> int:
@@ -101,11 +139,7 @@ def main() -> int:
         require(package.get("rust-version", {}).get("workspace") is True, "server Rust version drift")
         require(package.get("build") == "build.rs", "server build script binding drift")
         require("workspace" not in manifest, "server must remain a root-workspace member")
-        require(manifest.get("dependencies") == EXPECTED_DEPENDENCIES, "server dependency contract drift")
-        require(
-            manifest.get("build-dependencies") == EXPECTED_BUILD_DEPENDENCIES,
-            "server build-dependency contract drift",
-        )
+        validate_server_dependencies(manifest)
         binaries = manifest.get("bin")
         require(isinstance(binaries, list) and len(binaries) == 1, "exactly one binary required")
         require(
@@ -126,7 +160,7 @@ def main() -> int:
         require("git+" not in lock, "isolated lock introduced a Git dependency")
 
         runtime_files = {path.name for path in runtime_path.glob("*.rs") if path.is_file()}
-        require(runtime_files == EXPECTED_RUNTIME_FILES, "runtime module file set drift")
+        validate_runtime_file_inventory(runtime_files)
         source_paths = [lib_path, main_path, CRATE / "build.rs"] + sorted(runtime_path.glob("*.rs"))
         source = "\n".join(read(path) for path in source_paths)
         markers = {

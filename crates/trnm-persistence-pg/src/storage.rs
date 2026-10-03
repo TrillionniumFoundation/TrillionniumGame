@@ -4,6 +4,7 @@ include!("storage_parts/02_list_helpers.rs");
 include!("storage_parts/03_write.rs");
 include!("storage_parts/04_delete_authorize.rs");
 include!("storage_parts/05_decode_errors.rs");
+include!("storage_parts/06_native_projection.rs");
 
 #[cfg(test)]
 mod tests {

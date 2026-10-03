@@ -6,12 +6,30 @@ on:
   push:
     branches: [main]
     paths:
+      - 'tests/control_plane/test_schema_source_selection.py'
+      - 'tests/control_plane/test_schema_evidence_binding.py'
+      - 'crates/**'
+      - 'rust-toolchain.toml'
+      - 'config/database-test-images.json'
+      - 'scripts/check-migration-lock.py'
+      - 'scripts/schema_source_selection.py'
+      - 'scripts/schema_evidence_binding.py'
+      - 'scripts/capture-schema-source-selection.py'
+      - 'contracts/database/source-execution-evidence.v1.json'
+      - 'scripts/seal-outbox-final-attempt.py'
+      - 'scripts/verify-actions-log-artifact.py'
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'crates/trnm-persistence-pg/**'
       - 'migrations/**'
       - 'scripts/ci-pgwire-backup-restore.sh'
       - 'scripts/check-pgwire-backup-restore.py'
+      - 'scripts/postgresql-semantic-snapshot.sql'
+      - 'scripts/cockroachdb-semantic-snapshot.sql'
+      - 'tests/control_plane/test_pgwire_backup_restore_contract.py'
+      - 'scripts/check-authoritative-schema-identity.py'
+      - 'scripts/upload-actions-artifact.py'
+      - '.github/actions/upload-evidence/**'
       - '.github/workflows/database-backup-restore.yml'
 
 permissions:
@@ -92,6 +110,7 @@ jobs:
           TRNM_EVIDENCE_ROOT: run/backup-restore
           TRNM_RUN_ID: ${{ github.run_id }}-${{ matrix.profile }}
           TRNM_REQUIRE_LIVE_DATABASE: "1"
+          TRNM_SCHEMA_SOURCE_COMMIT: ${{ env.CANDIDATE_SHA }}
         run: bash scripts/ci-pgwire-backup-restore.sh '${{ matrix.profile }}'
       - name: Seal exact-head evidence digest in the immutable job log
         if: always()
@@ -122,6 +141,157 @@ jobs:
           printf 'repository=%s\nhead_sha=%s\nrun_id=%s\nprofile=%s\n' \
             "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID" "$PROFILE"
           sha256sum "run/backup-restore-${PROFILE}.tar.gz"
+          python3 - <<'PY_BACKUP_ARCHIVE'
+          import hashlib, importlib.util, json, os, subprocess
+          from pathlib import Path
+
+          def load(name, relative):
+              spec = importlib.util.spec_from_file_location(name, relative)
+              assert spec is not None and spec.loader is not None
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              return module
+
+          uploader = load('backup_archive_uploader', 'scripts/upload-actions-artifact.py')
+          migrations = load('backup_archive_migrations', 'scripts/check-migration-lock.py')
+          schemas = load('backup_archive_schemas', 'scripts/check-authoritative-schema-identity.py')
+          checker = load('backup_archive_shared_verifier', 'scripts/verify-actions-log-artifact.py')
+          projection = load('backup_archive_projection', 'scripts/check-pgwire-backup-restore.py')
+          profile = os.environ['PROFILE']
+          name = f"backup-restore-{profile}-{os.environ['CANDIDATE_SHA']}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          data = uploader.validate_artifact(name, Path(f'run/backup-restore-{profile}.tar.gz'))
+          files = checker.archive_files(data)
+          assert 'files.sha256' not in files, 'ambiguous backup checksum manifest'
+          manifest_view = dict(files)
+          manifest_view['files.sha256'] = manifest_view.pop('SHA256SUMS')
+          checker.verify_file_manifest(manifest_view)
+          identity = schemas.decode_identity_document(files['identity.json'])
+          assert identity['schema'] == 'trillionnium.backup-restore-identity.v2'
+          assert identity['job_identity_kind'] == 'workflow_job_key_and_matrix_profile'
+          actual_head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          actual_tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          assert actual_head == os.environ['CANDIDATE_SHA']
+          expected = {
+              'repository': os.environ['CANDIDATE_REPOSITORY'], 'commit': actual_head, 'tree': actual_tree,
+              'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'workflow_repository': os.environ['GITHUB_REPOSITORY'],
+              'workflow': '.github/workflows/database-backup-restore.yml',
+              'workflow_ref': os.environ['GITHUB_WORKFLOW_REF'], 'workflow_sha': os.environ['GITHUB_WORKFLOW_SHA'],
+              'job': os.environ['GITHUB_JOB'], 'job_name': 'backup-restore-' + profile, 'profile': profile,
+          }
+          assert set(identity) == set(expected) | {'schema', 'job_identity_kind', 'source_selection', 'schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm', 'source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit', 'compatibility_credit', 'accepted_evidence', 'production_ready'}, 'closed backup identity fields differ'
+          assert all(type(identity[key]) is type(value) and identity[key] == value for key, value in expected.items()), 'backup archive producer identity differs'
+          for flag in ('compatibility_credit', 'accepted_evidence', 'production_ready'):
+              assert identity[flag] is False
+          binding = checker.BINDING.verify_binding(Path('.'), profile=profile)
+          selection = checker.BINDING.selection_token(binding)
+          source_fields = checker.BINDING.validate_annex_files(binding, files, commit=actual_head, tree=actual_tree)
+          assert checker.BINDING.same(identity['source_selection'], source_fields)
+          version = 4
+          fresh = schemas.decode_identity_document(files['schema-identity.json'])
+          restored = schemas.decode_identity_document(files['restored-schema-identity.json'])
+          schemas.validate_identity(fresh, profile=profile, selection=selection, mode='fresh', source_commit=actual_head)
+          schemas.validate_identity(restored, profile=profile, selection=selection, mode='verify')
+          assert all(restored[key] == fresh[key] == identity[key] for key in ('source_commit', 'upgrade_source_commit', 'v2_apply_source_commit', 'v3_apply_source_commit'))
+          assert all(fresh[key] == identity[key] for key in ('schema_version', 'storage_writer_epoch', 'chain_digest', 'digest_algorithm'))
+          assert fresh['schema_version'] == 4 and fresh['storage_writer_epoch'] == 4
+          source_v3 = projection.validate_storage_snapshot_bytes(files['source-storage-v3.txt'], profile, fresh, 'restore')
+          restored_v3 = projection.validate_storage_snapshot_bytes(files['restored-storage-v3.txt'], profile, restored, 'restore')
+          assert source_v3 == restored_v3 == schemas.decode_identity_document(files['storage-v3-snapshot-check.json'])
+          assert files['source-storage-v3.txt'] == files['restored-storage-v3.txt']
+          assert files['source.csv'] == files['restored.csv']
+          check = {'schema': 'trillionnium.authoritative-schema-identity-check.v1', 'profile': profile,
+                   'schema_version': version, 'chain_digest': fresh['chain_digest'],
+                   'identity_verified': True, 'compatibility_credit': False}
+          for path in ('schema-identity-check.json', 'restored-schema-identity-check.json'):
+              assert schemas.decode_identity_document(files[path]) == check
+          summary = schemas.decode_identity_document(files['summary.json'])
+          assert summary['schema'] == 'trillionnium.backup-restore.v1' and summary['profile'] == profile
+          assert all(summary[key] is True for key in ('backup_created', 'empty_restore', 'semantic_snapshot_equal'))
+          assert all(summary[key] is False for key in ('production_pitr', 'multi_node_restore'))
+          assert summary['schema_version'] == summary['storage_writer_epoch'] == summary['authoritative_migration_file_count'] == 4
+          assert summary['storage_v3_fixture_count'] == source_v3['storage_fixture_count'] == 4
+          lock = migrations.load_lock()
+          assert len(lock['profiles'][profile]['ordered_files']) == 5
+          selected = checker.BINDING.operational_binding(binding)['ordered_files']
+          assert files['migration-lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()
+          checker.verify_migration_files(files, binding)
+          validation = migrations.validate()
+          assert checker.BINDING.same(schemas.decode_identity_document(files['migration-chain-validation.json']), validation)
+          checked = {'schema': 'trillionnium.backup-restore-archive-check.v1', 'profile': profile,
+                     'commit': actual_head, 'tree': actual_tree, 'file_count': len(files),
+                     'sha256': hashlib.sha256(data).hexdigest(), 'size_bytes': len(data), 'identity': identity,
+                     'checksum_inventory_complete': True, 'archive_verified': True,
+                     'compatibility_credit': False, 'accepted_evidence': False}
+          document = json.dumps(checked, sort_keys=True, separators=(',', ':'))
+          Path(f'run/backup-restore-{profile}-archive-check.json').write_text(document + '\n')
+          print(document)
+          PY_BACKUP_ARCHIVE
           cat "$evidence/summary.json"
           cat "$evidence/snapshot-sha256.txt"
           cat "$evidence/SHA256SUMS"
+      - name: Retain exact-head backup restore profile packet
+        id: retained-backup-profile
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: backup-restore-${{ matrix.profile }}-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/backup-restore-${{ matrix.profile }}.tar.gz
+          mime_type: application/gzip
+      - name: Verify retained backup restore profile receipt
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+          ARTIFACT_ID: ${{ steps.retained-backup-profile.outputs.artifact_id }}
+          RETAINED_SHA256: ${{ steps.retained-backup-profile.outputs.sha256 }}
+          RETAINED_SIZE_BYTES: ${{ steps.retained-backup-profile.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_BACKUP_RECEIPT'
+          import hashlib, importlib.util, json, os, re, subprocess
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location('backup_receipt_uploader', 'scripts/upload-actions-artifact.py')
+          assert spec is not None and spec.loader is not None
+          uploader = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(uploader)
+          profile = os.environ['PROFILE']
+          name = f"backup-restore-{profile}-{os.environ['CANDIDATE_SHA']}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          archive = Path(f'run/backup-restore-{profile}.tar.gz')
+          data = uploader.validate_artifact(name, archive)
+          artifact_id = uploader._artifact_id(os.environ['ARTIFACT_ID'])
+          digest = hashlib.sha256(data).hexdigest()
+          assert os.environ['RETAINED_SHA256'] == digest, 'retained backup digest differs'
+          size = os.environ['RETAINED_SIZE_BYTES']
+          assert re.fullmatch(r'[1-9][0-9]*', size) and int(size) == len(data), 'retained backup byte length differs'
+          check_spec = importlib.util.spec_from_file_location('backup_receipt_schemas', 'scripts/check-authoritative-schema-identity.py')
+          assert check_spec is not None and check_spec.loader is not None
+          schemas = importlib.util.module_from_spec(check_spec)
+          check_spec.loader.exec_module(schemas)
+          checked = schemas.decode_identity_document(Path(f'run/backup-restore-{profile}-archive-check.json').read_bytes())
+          assert checked['schema'] == 'trillionnium.backup-restore-archive-check.v1'
+          assert checked['archive_verified'] is True and checked['checksum_inventory_complete'] is True
+          assert checked['sha256'] == digest and checked['size_bytes'] == len(data), 'backup archive changed after validation'
+          identity = checked['identity']
+          expected = {'repository': os.environ['CANDIDATE_REPOSITORY'], 'commit': os.environ['CANDIDATE_SHA'],
+                      'tree': subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+                      'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                      'workflow_repository': os.environ['GITHUB_REPOSITORY'], 'workflow_ref': os.environ['GITHUB_WORKFLOW_REF'],
+                      'workflow_sha': os.environ['GITHUB_WORKFLOW_SHA'], 'job': os.environ['GITHUB_JOB'], 'profile': profile}
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['CANDIDATE_SHA']
+          assert all(identity[key] == value for key, value in expected.items()), 'retained backup producer identity differs'
+          assert all(identity[key] is False for key in ('compatibility_credit', 'accepted_evidence', 'production_ready'))
+          receipt = {'schema': 'trillionnium.backup-restore-retention-receipt.v1',
+                     'artifact_id': artifact_id, 'name': name, 'sha256': digest, 'size_bytes': len(data),
+                     'repository': identity['repository'], 'commit': identity['commit'], 'tree': identity['tree'],
+                     'run_id': identity['run_id'], 'run_attempt': identity['run_attempt'],
+                     'workflow': identity['workflow'], 'job': identity['job'], 'profile': profile,
+                     'workflow_repository': identity['workflow_repository'], 'workflow_ref': identity['workflow_ref'],
+                     'workflow_sha': identity['workflow_sha'], 'job_name': identity['job_name'],
+                     'source_commit': identity['source_commit'], 'upgrade_source_commit': identity['upgrade_source_commit'], 'v2_apply_source_commit': identity['v2_apply_source_commit'], 'v3_apply_source_commit': identity['v3_apply_source_commit'],
+                     'schema_version': identity['schema_version'], 'storage_writer_epoch': identity['storage_writer_epoch'],
+                     'chain_digest': identity['chain_digest'], 'digest_algorithm': identity['digest_algorithm'],
+                     'compatibility_credit': False, 'accepted_evidence': False, 'production_ready': False}
+          document = json.dumps(receipt, sort_keys=True, separators=(',', ':'))
+          Path(f'run/backup-restore-{profile}-retention-receipt.json').write_text(document + '\n')
+          print(document)
+          PY_BACKUP_RECEIPT

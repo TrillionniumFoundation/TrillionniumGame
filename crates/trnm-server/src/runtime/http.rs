@@ -10,7 +10,7 @@ const HEADER_TERMINATOR: &[u8; 4] = b"\r\n\r\n";
 const MAX_HEADER_BYTES: usize = 32 * 1024;
 const MAX_HEADERS: usize = 64;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Request {
     pub method: String,
     pub target: String,
@@ -43,11 +43,12 @@ impl Request {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Response {
     pub status: u16,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    www_authenticate: Option<&'static str>,
 }
 
 impl Response {
@@ -57,6 +58,7 @@ impl Response {
             status,
             content_type: "application/json; charset=utf-8",
             body: body.into(),
+            www_authenticate: None,
         }
     }
 
@@ -66,21 +68,51 @@ impl Response {
             status,
             content_type: "text/plain; charset=utf-8",
             body: body.into(),
+            www_authenticate: None,
         }
     }
 
+    pub(crate) fn with_www_authenticate(mut self, value: Option<&'static str>) -> Self {
+        self.www_authenticate = value
+            .filter(|v| v.len() <= 256 && v.is_ascii() && !v.bytes().any(|b| b < 32 || b == 127));
+        self
+    }
     pub fn write_to(&self, output: &mut impl Write) -> Result<(), ServerError> {
         write!(
             output,
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n",
             self.status,
             reason_phrase(self.status),
             self.content_type,
             self.body.len()
         )?;
+        if let Some(challenge) = self.www_authenticate {
+            write!(output, "WWW-Authenticate: {challenge}\r\n")?;
+        }
+        output.write_all(b"\r\n")?;
         output.write_all(&self.body)?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method_bytes", &self.method.len())
+            .field("target", &"<redacted>")
+            .field("headers", &"<redacted>")
+            .field("body_bytes", &self.body.len())
+            .finish()
+    }
+}
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("body_bytes", &self.body.len())
+            .field("challenge_present", &self.www_authenticate.is_some())
+            .finish()
     }
 }
 
@@ -283,6 +315,7 @@ const fn reason_phrase(status: u16) -> &'static str {
         500 => "Internal Server Error",
         501 => "Not Implemented",
         503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Error",
     }
 }

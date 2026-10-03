@@ -3,7 +3,9 @@ use std::time::Duration;
 use trnm_contracts::{Digest32, DomainError, SessionFamilyId, UserId};
 use trnm_persistence_pg::{
     CommitOutcome, CommitRequest, EntityHead, EntityId, PgPool, RefreshRotationOutcome,
-    RotateRefreshToken, SessionFamilyRecord,
+    RotateRefreshToken, SessionFamilyRecord, StorageActor, StorageBatchOperation,
+    StorageListPosition, StorageNakamaBatchKind, StorageObjectKey, StoredStorageClientListPage,
+    StoredStorageMutationReceipt, StoredStorageObject,
 };
 use trnm_session_core::RevocationReason;
 
@@ -18,6 +20,7 @@ pub trait InflightCancellation {
 pub struct PooledRepository {
     pool: PgPool,
     operation_budget: Duration,
+    last_legacy_native_failure: Option<trnm_persistence_pg::NakamaAccountError>,
 }
 
 impl PooledRepository {
@@ -27,6 +30,7 @@ impl PooledRepository {
         Self {
             pool,
             operation_budget,
+            last_legacy_native_failure: None,
         }
     }
 
@@ -35,7 +39,10 @@ impl PooledRepository {
         operation: impl FnOnce(&mut trnm_persistence_pg::PgRepository) -> Result<T, DomainError>,
     ) -> Result<T, DomainError> {
         self.pool
-            .run_with_deadline(self.operation_budget, operation)
+            .run_with_deadline(self.operation_budget, |repository| {
+                repository.verify_storage_import_serving()?;
+                operation(repository)
+            })
     }
 
     fn run_with_budget<T>(
@@ -44,11 +51,141 @@ impl PooledRepository {
         operation: impl FnOnce(&mut trnm_persistence_pg::PgRepository) -> Result<T, DomainError>,
     ) -> Result<T, DomainError> {
         self.pool
-            .run_with_deadline(operation_budget.min(self.operation_budget), operation)
+            .run_with_deadline(operation_budget.min(self.operation_budget), |repository| {
+                repository.verify_storage_import_serving()?;
+                operation(repository)
+            })
+    }
+}
+
+impl super::legacy_repository::LegacyNativeFailureObservation for PooledRepository {
+    fn last_legacy_native_failure(&self) -> Option<trnm_persistence_pg::NakamaAccountError> {
+        self.last_legacy_native_failure
+    }
+}
+impl super::legacy_auth::LegacyUserRepository for PooledRepository {
+    fn read_legacy_user(
+        &mut self,
+        user: UserId,
+    ) -> Result<
+        Option<super::legacy_auth::LegacyStoredUser>,
+        super::legacy_auth::LegacyRepositoryError,
+    > {
+        let lease = self
+            .pool
+            .run_account_with_deadline(self.operation_budget, |repository| {
+                // Native account admission precedes its lookup. Do not use the
+                // default-storage preflight here or bypass the AccountsV5 gate.
+                repository.read_nakama_user(user)
+            });
+        self.last_legacy_native_failure = lease
+            .observed
+            .as_ref()
+            .and_then(|r| r.as_ref().err())
+            .copied();
+        super::legacy_repository::resolve_user_lease(lease)
+    }
+}
+impl super::legacy_auth::LegacyDeviceRepository for PooledRepository {
+    fn authenticate_legacy_device(
+        &mut self,
+        input: super::legacy_auth::LegacyDeviceRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyDeviceAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        self.last_legacy_native_failure = None;
+        let request = trnm_persistence_pg::AuthenticateDevice::new(
+            input.device_id,
+            input.requested_username,
+            input.create,
+        )
+        .map_err(|error| {
+            self.last_legacy_native_failure = Some(error);
+            super::legacy_repository::map_native_error(error)
+        })?;
+        let lease = self
+            .pool
+            .run_account_with_deadline(self.operation_budget, |repository| {
+                repository.authenticate_nakama_device_with_id_source(request, || {
+                    super::legacy_auth::generate_account_id().map_err(|_| {
+                        trnm_persistence_pg::NakamaAccountIdGenerationError::Unavailable
+                    })
+                })
+            });
+        self.last_legacy_native_failure = lease
+            .observed
+            .as_ref()
+            .and_then(|r| r.as_ref().err())
+            .copied();
+        super::legacy_repository::resolve_device_lease(lease)
+    }
+}
+
+impl super::legacy_auth::LegacyCustomRepository for PooledRepository {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: super::legacy_auth::LegacyCustomRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyCustomAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        self.last_legacy_native_failure = None;
+        let request = trnm_persistence_pg::AuthenticateCustom::new(
+            input.custom_id,
+            input.requested_username,
+            input.create,
+        )
+        .map_err(|error| {
+            self.last_legacy_native_failure = Some(error);
+            super::legacy_repository::map_native_error(error)
+        })?;
+        let lease = self
+            .pool
+            .run_account_with_deadline(self.operation_budget, |repository| {
+                repository.authenticate_nakama_custom_with_id_source(request, || {
+                    super::legacy_auth::generate_account_id().map_err(|_| {
+                        trnm_persistence_pg::NakamaAccountIdGenerationError::Unavailable
+                    })
+                })
+            });
+        self.last_legacy_native_failure = lease
+            .observed
+            .as_ref()
+            .and_then(|r| r.as_ref().err())
+            .copied();
+        super::legacy_repository::resolve_custom_lease(lease)
     }
 }
 
 impl Repository for PooledRepository {
+    fn authenticate_legacy_custom(
+        &mut self,
+        input: super::legacy_auth::LegacyCustomRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyCustomAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        super::legacy_auth::LegacyCustomRepository::authenticate_legacy_custom(self, input)
+    }
+    fn read_legacy_user(
+        &mut self,
+        user: UserId,
+    ) -> Result<
+        Option<super::legacy_auth::LegacyStoredUser>,
+        super::legacy_auth::LegacyRepositoryError,
+    > {
+        super::legacy_auth::LegacyUserRepository::read_legacy_user(self, user)
+    }
+    fn authenticate_legacy_device(
+        &mut self,
+        input: super::legacy_auth::LegacyDeviceRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyDeviceAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        super::legacy_auth::LegacyDeviceRepository::authenticate_legacy_device(self, input)
+    }
+
+    fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+        self.pool
+            .run_with_deadline(self.operation_budget, |repository| {
+                repository.verify_storage_import_serving()
+            })
+    }
+
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,
@@ -63,6 +200,56 @@ impl Repository for PooledRepository {
 
     fn commit_command(&mut self, request: &CommitRequest) -> Result<CommitOutcome, DomainError> {
         self.run(|repository| repository.commit_command(request))
+    }
+
+    fn read_storage_objects(
+        &mut self,
+        actor: StorageActor,
+        keys: &[StorageObjectKey],
+    ) -> Result<Vec<StoredStorageObject>, DomainError> {
+        self.run(|repository| repository.read_storage_objects_with_metadata(actor, keys))
+    }
+
+    fn list_storage_objects_nakama(
+        &mut self,
+        actor: StorageActor,
+        collection: &str,
+        owner: Option<UserId>,
+        after: Option<&StorageListPosition>,
+        limit: usize,
+    ) -> Result<StoredStorageClientListPage, DomainError> {
+        self.run(|repository| {
+            repository
+                .list_storage_objects_nakama_with_metadata(actor, collection, owner, after, limit)
+        })
+    }
+
+    fn apply_storage_batch(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        self.run(|repository| {
+            repository.apply_storage_batch_with_metadata(actor, operations, updated_at_ms)
+        })
+    }
+
+    fn apply_storage_batch_nakama(
+        &mut self,
+        actor: StorageActor,
+        operations: &[StorageBatchOperation],
+        updated_at_ms: u64,
+        kind: StorageNakamaBatchKind,
+    ) -> Result<Vec<StoredStorageMutationReceipt>, DomainError> {
+        self.run(|repository| {
+            repository.apply_storage_batch_nakama_with_metadata(
+                actor,
+                operations,
+                updated_at_ms,
+                kind,
+            )
+        })
     }
 
     fn verify_access_session(
@@ -134,7 +321,15 @@ mod tests {
 
     #[test]
     fn wrapper_is_cloneable_and_supports_budget_and_shutdown_contracts() {
-        fn assert_contract<T: Clone + BudgetedRepository + InflightCancellation>() {}
+        fn assert_contract<
+            T: Clone
+                + BudgetedRepository
+                + InflightCancellation
+                + super::super::legacy_auth::LegacyUserRepository
+                + super::super::legacy_auth::LegacyDeviceRepository
+                + super::super::legacy_repository::LegacyNativeFailureObservation,
+        >() {
+        }
         assert_contract::<PooledRepository>();
     }
 }

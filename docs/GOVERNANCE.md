@@ -1,7 +1,7 @@
 # Governance
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-10
+Revision: 2026-09-11
 
 ## 1. Integration authority
 
@@ -88,6 +88,10 @@ A change touching multiple trust domains requires every applicable owner class.
 ## 6. Merge freshness
 
 The candidate must be current with `main` or pass a merge queue/prospective-merge check. Required workflows bind the expected head SHA and tree. A successful run on a pre-update base or prior head receives no credit.
+
+Composite aggregate and prospective receipts retain the complete 55-workflow set and both profile source proofs. Their JSON domain has a separate 512 KiB byte ceiling and depth 64; standalone selection documents retain the 128 KiB ceiling. Neither budget changes the full source5 annex, selected StorageV4 execution identity, required workflow count, closed claims or source/head/profile checks. This ceiling is a local resource policy, not an observed maximum deployment artifact size.
+
+The workflow collector establishes one absolute deadline before local source custody and initial API admission. It checks the same deadline during verification and after serialization and flushed success output; expiration returns failure even when a late diagnostic was already written. Three stable exact-run observations remain required. This return/delivery gate does not cancel a synchronous OS call or blocked stdout, and the generic metadata/log transport's socket timeout is not an absolute HTTP supervision guarantee. A prior failed run remains failed; source checks and pure timing models do not qualify a later head or close independent acceptance.
 
 Self-merge is prohibited when independent review is required. Administrator bypass and auto-merge cannot override unresolved P0/P1, missing evidence or stale identity.
 
@@ -191,3 +195,11 @@ It cannot be used to grant C/SG, production, public-online, replacement or retir
 ## 13. Current governance blockers
 
 Until accepted readback and independent ownership exist, the governance gaps remain open or externally blocked. The repository must not infer enforcement from a protected-branch boolean alone, and reviewers must bind decisions to the current exact candidate.
+
+## Denominator family review proposals
+
+`scripts/generate-denominator-review-packets.py` deterministically converts all fourteen pinned candidate manifests into 10,173 leaf-complete review packets. Every leaf binds its source hash and starts unclassified. `scripts/accept-denominator-family.py` validates the structural completeness, exact source hashes, rationales, classifications, candidate binding and evidence-reference shape of an untrusted human-decision input, but emits only `trillionnium.denominator-family-decision-proposal.v1`. It never sets `accepted=true` and cannot authenticate reviewer identity, qualification, independence, evidence admission, expiry, nonce or replay state.
+
+`scripts/finalize-global-sg1.py` requires exactly fourteen non-authoritative family proposals with one candidate identity and rejects any family file that claims accepted authority. Its output is only `trillionnium.global-sg1-proposal.v1`; `global_sg1_accepted` remains false. A reviewer login, role, conflict attestation, local signature field, arbitrary evidence ID or matching digest is input data rather than authority.
+
+Real family and global SG1 acceptance requires externally authenticated, immutable, candidate-and-evidence-bound decisions from qualified stable principals, including issued-at/expiry, unique nonce, durable anti-replay state and verification of protected admission where applicable. The repository currently has no local materializer for those facts. Generating, validating or bundling proposals grants no denominator lock, compatibility, production, cutover or retirement credit.

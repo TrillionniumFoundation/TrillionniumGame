@@ -2,13 +2,14 @@
   "schema": "trillionnium.architecture-closure.v1",
   "project_id": "trillionnium-game",
   "plan_version": 3,
-  "revision": "2026-09-08",
+  "revision": "2026-09-12",
   "source_baseline": {
-    "base_branch": "codex/branch-evidence-closure-2026-09-02",
-    "base_commit": "6dd5a101c67d78572a9dcaa3ab6ff96ef1966850",
-    "base_tree": "01d528735ac10653eb811500e0febb2f4a6eef14",
-    "integration_pr": 63,
-    "rule": "Movement of the base or candidate invalidates exact-head execution and review bindings but does not authorize scope reduction."
+    "base_branch": "main",
+    "base_commit": "7a7bb3cc87229cf7293136c48ac160cb576d3394",
+    "base_tree": "03db3252a7e75a987c71864429d591049ebad49e",
+    "integration_pr": 189,
+    "selector": "The singular main-target candidate is selected by docs/status/CURRENT_STATE.json and docs/governance/ACTIVE_BRANCHES.json; this recorded PR number is revision provenance, not a permanent selector.",
+    "rule": "Movement of the base or candidate invalidates exact-head execution and review bindings but does not authorize scope reduction. Predecessor pull requests remain historical and transfer no acceptance credit."
   },
   "non_negotiable_principles": [
     "Keep the complete Nakama OSS D0-D8 denominator; the core-delivery track cannot increase parity percentages or delete mandatory leaves.",
@@ -56,7 +57,7 @@
         "GAP-P1-DOCS-001"
       ],
       "work": [
-        "Keep PR #63 as the singular main-target integration object and stack architecture changes on its exact head.",
+        "Keep exactly one non-main main-target integration object selected by CURRENT_STATE and ACTIVE_BRANCHES; stack reviewed child changes on that line and never transfer predecessor evidence.",
         "Machine-check this closure program and the cross-language component documentation registry.",
         "Reject any status promotion based only on source presence, workflow count or edited status JSON."
       ],

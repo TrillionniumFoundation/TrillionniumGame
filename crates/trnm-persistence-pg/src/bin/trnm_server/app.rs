@@ -38,6 +38,14 @@ pub struct RepositoryOperationalMetrics {
 }
 
 pub trait Repository: std::fmt::Debug {
+    fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+        Err(DomainError::new(
+            StableCode::FailedPrecondition,
+            "storage_import_admission_unavailable",
+            RetryClass::Never,
+        ))
+    }
+
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,
@@ -83,6 +91,10 @@ pub trait Repository: std::fmt::Debug {
 }
 
 impl Repository for PgRepository {
+    fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+        PgRepository::verify_storage_import_serving(self)
+    }
+
     fn bootstrap_entity(
         &mut self,
         entity: EntityId,
@@ -224,13 +236,23 @@ impl Drop for AdmissionPermit {
     }
 }
 
-#[derive(Debug)]
 pub struct App<R> {
     repository: R,
     admin_token: String,
     sessions: SessionApi,
     drain: SharedDrain,
     metrics: SharedAppMetrics,
+}
+
+// Diagnostics deliberately do not traverse repository or session internals.
+// A new field must not silently expand the secret-bearing Debug surface.
+impl<R> std::fmt::Debug for App<R> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("App")
+            .field("admin_token", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl<R: Repository> App<R> {
@@ -332,16 +354,25 @@ impl<R: Repository> App<R> {
         response
     }
 
-    fn readiness(&self) -> Response {
+    fn readiness(&mut self) -> Response {
         if self.drain.is_draining() {
             error_response(503, "unavailable", "Service is draining.", "backoff")
+        } else if self.repository.verify_storage_import_serving().is_err() {
+            error_response(
+                503,
+                "unavailable",
+                "Storage import admission is unavailable.",
+                "backoff",
+            )
         } else {
             Response::json(200, br#"{"status":"ready"}"#.to_vec())
         }
     }
 
-    fn metrics_response(&self) -> Response {
-        let ready = u8::from(!self.drain.is_draining());
+    fn metrics_response(&mut self) -> Response {
+        let ready = u8::from(
+            !self.drain.is_draining() && self.repository.verify_storage_import_serving().is_ok(),
+        );
         let metrics = self.metrics.snapshot();
         let repository = self.repository.operational_metrics();
         let session = self.sessions.metrics();
@@ -455,11 +486,11 @@ trnm_server_session_logout_revoked_total {}\n",
     }
 
     fn drain(&mut self, request: &Request) -> Response {
-        if !request.body.is_empty() {
-            return self.input_failure(InputError::new("drain_body_must_be_empty"));
-        }
         if !self.authorized(request) {
             return unauthenticated();
+        }
+        if !request.body.is_empty() {
+            return self.input_failure(InputError::new("drain_body_must_be_empty"));
         }
         self.drain.begin();
         self.metrics
@@ -801,13 +832,80 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn readiness_observes_import_started_after_process_start_and_later_completion() {
+        let mut app = App::new(FakeRepository::default(), token());
+        let request = Request::new("GET", "/readyz", BTreeMap::new(), Vec::new());
+        let metrics = Request::new("GET", "/metrics", BTreeMap::new(), Vec::new());
+        for (incomplete, status, expected_metric) in [
+            (false, 200, "trnm_server_ready 1"),
+            (true, 503, "trnm_server_ready 0"),
+            (false, 200, "trnm_server_ready 1"),
+        ] {
+            app.repository.import_incomplete = incomplete;
+            assert_eq!(app.handle(&request).status, status);
+            let response = app.handle(&metrics);
+            assert_eq!(response.status, 200);
+            assert!(String::from_utf8(response.body)
+                .unwrap()
+                .lines()
+                .any(|line| line == expected_metric));
+        }
+        app.drain.begin();
+        assert_eq!(app.handle(&request).status, 503);
+        assert!(String::from_utf8(app.handle(&metrics).body)
+            .unwrap()
+            .lines()
+            .any(|line| line == "trnm_server_ready 0"));
+
+        // Leaving admission uninstalled uses the trait's fail-closed default,
+        // rather than a permissive fake implementation.
+        #[derive(Debug)]
+        struct RepositoryWithoutAdmission;
+        impl Repository for RepositoryWithoutAdmission {
+            fn bootstrap_entity(
+                &mut self,
+                _: EntityId,
+                _: u64,
+                _: Digest32,
+                _: u64,
+            ) -> Result<EntityHead, DomainError> {
+                unreachable!("control endpoints must not bootstrap authority")
+            }
+            fn commit_command(&mut self, _: &CommitRequest) -> Result<CommitOutcome, DomainError> {
+                unreachable!("control endpoints must not commit commands")
+            }
+        }
+        let mut uninstalled = App::new(RepositoryWithoutAdmission, token());
+        assert_eq!(uninstalled.handle(&request).status, 503);
+        let response = uninstalled.handle(&metrics);
+        assert_eq!(response.status, 200);
+        assert!(String::from_utf8(response.body)
+            .unwrap()
+            .lines()
+            .any(|line| line == "trnm_server_ready 0"));
+    }
+
     #[derive(Debug, Default)]
     struct FakeRepository {
         failure: Option<DomainError>,
         operational_metrics: RepositoryOperationalMetrics,
+        import_incomplete: bool,
     }
 
     impl Repository for FakeRepository {
+        fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
+            if self.import_incomplete {
+                Err(DomainError::new(
+                    StableCode::FailedPrecondition,
+                    "storage_import_incomplete",
+                    RetryClass::Never,
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
         fn bootstrap_entity(
             &mut self,
             entity: EntityId,
@@ -1119,5 +1217,110 @@ mod tests {
         let short = [0_u8; 32];
         let long = [0_u8; 288];
         assert!(!secure_token_eq(&short, &long));
+    }
+
+    fn debug_fixture<R>(repository: R, admin_token: String) -> App<R> {
+        App {
+            repository,
+            admin_token,
+            sessions: SessionApi::default(),
+            drain: SharedDrain::default(),
+            metrics: SharedAppMetrics::default(),
+        }
+    }
+
+    #[test]
+    fn app_debug_redacts_normal_pretty_and_nested_output() {
+        for secret in [
+            "synthetic-admin-token-never-log-0001",
+            "synthetic-admin-token-never-log-0002",
+            "synthetic-secret-with-\"quote-and-\\slash",
+        ] {
+            let app = debug_fixture((), secret.to_owned());
+            for output in [
+                format!("{app:?}"),
+                format!("{app:#?}"),
+                format!("{:?}", Some(&app)),
+                format!("{:#?}", Some(&app)),
+            ] {
+                assert!(output.contains("[REDACTED]"));
+                assert!(!output.contains(secret));
+                assert!(!output.contains(&format!("{secret:?}")));
+                assert!(!output.contains("synthetic-"));
+            }
+        }
+    }
+
+    #[test]
+    fn app_debug_does_not_require_repository_debug() {
+        struct NoDebug;
+        let app = debug_fixture(NoDebug, token());
+        assert_eq!(
+            format!("{app:?}"),
+            "App { admin_token: \"[REDACTED]\", .. }"
+        );
+    }
+
+    #[test]
+    fn app_debug_does_not_traverse_repository() {
+        struct DebugTrap;
+        impl std::fmt::Debug for DebugTrap {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("repository diagnostics must not be invoked by App Debug");
+            }
+        }
+        let app = debug_fixture(DebugTrap, token());
+        assert!(format!("{app:?}").contains("[REDACTED]"));
+        assert!(format!("{app:#?}").contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn drain_authentication_precedes_body_validation() {
+        for authorization in [None, Some("Bearer wrong-token"), Some("Basic wrong-token")] {
+            for body in [Vec::new(), b"not-json".to_vec(), br#"{"extra":1}"#.to_vec()] {
+                let mut app = App::new(FakeRepository::default(), token());
+                let mut request_headers = BTreeMap::new();
+                if let Some(value) = authorization {
+                    request_headers.insert("authorization".to_owned(), value.to_owned());
+                }
+                let request = Request::new("POST", "/-/drain", request_headers, body);
+                let response = app.handle(&request);
+                assert_eq!(response.status, 401);
+                assert!(!app.should_stop());
+                let metrics = app.metrics.snapshot();
+                assert_eq!(metrics.input_failures, 0);
+                assert_eq!(metrics.drain_requests, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn authenticated_invalid_drain_does_not_change_shared_state() {
+        let admin_token = token();
+        let shared_drain = SharedDrain::default();
+        let mut app = App::with_shared_state(
+            FakeRepository::default(),
+            admin_token.clone(),
+            SharedAppMetrics::default(),
+            shared_drain.clone(),
+        );
+        let response = app.handle(&Request::new(
+            "POST",
+            "/-/drain",
+            headers(&admin_token),
+            b"nonempty".to_vec(),
+        ));
+        assert_eq!(response.status, 400);
+        assert!(!shared_drain.is_draining());
+        assert_eq!(app.metrics.snapshot().drain_requests, 0);
+        let response = app.handle(&Request::new(
+            "POST",
+            "/-/drain",
+            headers(&admin_token),
+            Vec::new(),
+        ));
+        assert_eq!(response.status, 200);
+        assert!(shared_drain.is_draining());
+        assert_eq!(app.metrics.snapshot().drain_requests, 1);
     }
 }

@@ -46,7 +46,8 @@
         "constant-time equal-length byte comparison"
       ],
       "source_paths": [
-        "crates/trnm-token-jwt-adapter/src/sha256.rs"
+        "crates/trnm-token-jwt-adapter/src/sha256.rs",
+        "crates/trnm-token-crypto-provider/src/nakama_legacy.rs"
       ],
       "profile": "reviewed-library-source-candidate",
       "production_approval": false,
@@ -65,6 +66,19 @@
         "crates/trnm-persistence-pg/src/auth.rs"
       ],
       "remaining_boundary": "The software constructor still materializes key bytes inside an OpenSSL provider object. Production profiles require an accepted remote KMS, HSM or secret-manager resolver and independent security evidence."
+    },
+    {
+      "id": "CONTRACT-NAKAMA-LEGACY-FIXED-PURPOSE-SOURCE",
+      "paths": [
+        "crates/trnm-token-crypto-provider/src/nakama_legacy.rs",
+        "crates/trnm-token-jwt-adapter/src/nakama_legacy_verify.rs"
+      ],
+      "status": "selected-App-source-accounts5-capture-gated",
+      "composed_consumers": [
+        "crates/trnm-server/src/runtime/legacy_config.rs",
+        "crates/trnm-server/src/runtime/auth_runtime.rs"
+      ],
+      "remaining_boundary": "Explicit owned fixed-purpose keys, inherited unequal access/refresh local policy, source only; native HTTP, paired oracle, production custody and independent security acceptance remain pending."
     }
   ],
   "path_classifications": [
@@ -143,6 +157,26 @@
       "claim_credit": false,
       "required_acceptance": "Three-way Nakama differential, malformed-token/fuzz corpus, provenance and independent cryptographic review remain required.",
       "required_remediation": "Retain three-way Nakama differential, malformed-token and fuzz evidence plus independent cryptographic acceptance."
+    },
+    {
+      "id": "CRYPTO-PATH-NAKAMA-LEGACY-SELECTED-AUTH-SOURCE",
+      "classification": "selected-App-source-accounts5-capture-gated",
+      "entrypoints": [
+        "crates/trnm-server/src/main.rs"
+      ],
+      "implementation": "One selected AuthAuthorityRuntime owns the existing RustCrypto Legacy service and fixed-purpose keys; same-process workers share one blacklist.",
+      "provider_contract": "CONTRACT-NAKAMA-LEGACY-FIXED-PURPOSE-SOURCE",
+      "primitive_provider": "PROVIDER-RUSTCRYPTO-JWT",
+      "private_primitive_reachable": false,
+      "AccountsV5_gate": false,
+      "gap_links": [
+        "GAP-P0-CRYPTO-001",
+        "GAP-P1-CRYPTO-002",
+        "GAP-P0-SERVER-001"
+      ],
+      "claim_credit": false,
+      "required_acceptance": "Exact native HTTP and paired oracle, same-process lifecycle/fault evidence, production credential custody and independent cryptography/security acceptance.",
+      "required_remediation": "Keep capture gate closed until separately qualified; no key fallback, implicit defaults or durable-family conversion."
     }
   ],
   "production_requirements": [
@@ -163,7 +197,7 @@
     "Independent cryptography and application-security reviewers accept the exact source, dependency and evidence objects."
   ],
   "summary": {
-    "classified_paths": 4,
+    "classified_paths": 5,
     "active_access_opaque_provider_composed": true,
     "active_access_auth_private_primitive_reachable": false,
     "active_admin_auth_private_primitive_reachable": false,
@@ -174,11 +208,18 @@
     "private_compatibility_implementation_removed": true,
     "gap_closed": false,
     "production_ready": false,
-    "all_active_crypto_paths_reviewed_provider_backed": true
+    "all_active_crypto_paths_reviewed_provider_backed": true,
+    "selected_legacy_App_source_registered": true,
+    "selected_legacy_native_HTTP_qualified": false
   },
   "key_contracts": {
     "hs256_minimum_actual_key_bytes": 32,
     "encoded_length_may_substitute": false,
-    "padding_hashing_or_truncation_may_substitute": false
+    "padding_hashing_or_truncation_may_substitute": false,
+    "hs256_minimum_scope": "durable software HS256 profile only",
+    "selected_legacy_key_bytes_min": 1,
+    "selected_legacy_key_bytes_max": 4096,
+    "selected_legacy_implicit_keys_or_TTLs": false,
+    "selected_legacy_equal_access_refresh_keys_rejected_inherited_local_policy": true
   }
 }

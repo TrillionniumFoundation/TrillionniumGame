@@ -4,10 +4,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use trnm_persistence_pg::{DatabaseProfile, PgPoolConfig};
+use trnm_persistence_pg::{AuthoritativeSchemaTarget, DatabaseProfile, PgPoolConfig};
 
 use super::auth::AccessTokenVerifier;
 use super::error::ServerError;
+use super::legacy_config::LegacyServerAuthConfig;
 
 const DEFAULT_BIND: &str = "127.0.0.1:7350";
 const DEFAULT_MAX_REQUEST_BYTES: usize = 128 * 1024;
@@ -66,6 +67,29 @@ impl fmt::Debug for SessionAuthConfig {
     }
 }
 
+/// Exactly one selected credential authority; no token sniffing or fallback.
+#[derive(Clone)]
+pub enum AuthAuthorityConfig {
+    Disabled,
+    DurableFamily(SessionAuthConfig),
+    NakamaLegacy(LegacyServerAuthConfig),
+}
+
+impl fmt::Debug for AuthAuthorityConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Disabled => formatter.write_str("Disabled"),
+            Self::DurableFamily(config) => formatter
+                .debug_tuple("DurableFamily")
+                .field(config)
+                .finish(),
+            Self::NakamaLegacy(config) => {
+                formatter.debug_tuple("NakamaLegacy").field(config).finish()
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
@@ -78,8 +102,9 @@ pub struct ServerConfig {
     pub database_tls_identity_key: Option<PathBuf>,
     pub database_pool: PgPoolConfig,
     pub schema_source_commit: String,
+    pub schema_target: AuthoritativeSchemaTarget,
     pub admin_token: String,
-    pub session_auth: Option<SessionAuthConfig>,
+    pub auth_authority: AuthAuthorityConfig,
     pub max_request_bytes: usize,
     pub read_timeout: Duration,
     pub write_timeout: Duration,
@@ -105,8 +130,9 @@ impl fmt::Debug for ServerConfig {
             .field("database_tls_identity_key", &"<redacted>")
             .field("database_pool", &self.database_pool)
             .field("schema_source_commit", &self.schema_source_commit)
+            .field("schema_target", &self.schema_target)
             .field("admin_token", &"<redacted>")
-            .field("session_auth", &self.session_auth)
+            .field("auth_authority", &self.auth_authority)
             .field("max_request_bytes", &self.max_request_bytes)
             .field("read_timeout", &self.read_timeout)
             .field("write_timeout", &self.write_timeout)
@@ -119,7 +145,7 @@ impl ServerConfig {
         Self::from_lookup(arguments, |name| env::var(name).ok())
     }
 
-    fn from_lookup(
+    pub(super) fn from_lookup(
         arguments: &[String],
         lookup: impl Fn(&str) -> Option<String>,
     ) -> Result<(Command, Self), ServerError> {
@@ -232,6 +258,7 @@ impl ServerConfig {
             _ => return Err(ServerError::Configuration("database_profile_invalid")),
         };
 
+        let schema_target = parse_schema_target(lookup("TRNM_SERVER_SCHEMA_TARGET").as_deref())?;
         let schema_source_commit = required(
             &lookup,
             "TRNM_SERVER_SCHEMA_SOURCE_COMMIT",
@@ -245,7 +272,7 @@ impl ServerConfig {
         if !(32..=512).contains(&admin_token.len()) || !admin_token.bytes().all(is_token_byte) {
             return Err(ServerError::Configuration("admin_token_invalid"));
         }
-        let session_auth = parse_session_auth(&lookup)?;
+        let auth_authority = parse_auth_authority(&lookup, schema_target)?;
 
         let max_request_bytes = parse_usize(
             lookup("TRNM_SERVER_MAX_REQUEST_BYTES").as_deref(),
@@ -352,14 +379,174 @@ impl ServerConfig {
                 database_tls_identity_key,
                 database_pool,
                 schema_source_commit,
+                schema_target,
                 admin_token,
-                session_auth,
+                auth_authority,
                 max_request_bytes,
                 read_timeout: Duration::from_millis(read_timeout_ms),
                 write_timeout: Duration::from_millis(write_timeout_ms),
             },
         ))
     }
+}
+
+fn parse_schema_target(value: Option<&str>) -> Result<AuthoritativeSchemaTarget, ServerError> {
+    match value {
+        None | Some("storage-v4") => Ok(AuthoritativeSchemaTarget::StorageV4),
+        Some("nakama-accounts-v5") => Ok(AuthoritativeSchemaTarget::NakamaAccountsV5),
+        _ => Err(ServerError::Configuration("schema_target_invalid")),
+    }
+}
+
+const DURABLE_AUTH_MATERIAL_NAMES: [&str; 4] = [
+    "TRNM_SERVER_SESSION_AUTH_ISSUER",
+    "TRNM_SERVER_SESSION_AUTH_AUDIENCE",
+    "TRNM_SERVER_SESSION_AUTH_EPOCH",
+    "TRNM_SERVER_SESSION_AUTH_KEY_HEX",
+];
+const LEGACY_AUTH_MATERIAL_NAMES: [&str; 6] = [
+    "TRNM_SERVER_LEGACY_SERVER_KEY",
+    "TRNM_SERVER_LEGACY_ACCESS_KEY",
+    "TRNM_SERVER_LEGACY_REFRESH_KEY",
+    "TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS",
+    "TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS",
+    "TRNM_SERVER_LEGACY_SINGLE_SESSION",
+];
+
+fn parse_auth_authority(
+    lookup: &impl Fn(&str) -> Option<String>,
+    schema_target: AuthoritativeSchemaTarget,
+) -> Result<AuthAuthorityConfig, ServerError> {
+    let mode = lookup("TRNM_SERVER_AUTH_MODE");
+    let durable_present = DURABLE_AUTH_MATERIAL_NAMES
+        .iter()
+        .any(|name| lookup(name).is_some());
+    let legacy_present = LEGACY_AUTH_MATERIAL_NAMES
+        .iter()
+        .any(|name| lookup(name).is_some());
+    let old_enabled = lookup("TRNM_SERVER_SESSION_AUTH_ENABLED");
+    match mode.as_deref() {
+        None => {
+            if legacy_present {
+                return Err(ServerError::Configuration(
+                    "legacy_auth_material_requires_explicit_mode",
+                ));
+            }
+            // Preserve the original enablement, missing-field and key errors.
+            Ok(match parse_session_auth(lookup)? {
+                Some(config) => AuthAuthorityConfig::DurableFamily(config),
+                None => AuthAuthorityConfig::Disabled,
+            })
+        }
+        Some("disabled") => {
+            let enabled = parse_bool(
+                old_enabled.as_deref(),
+                false,
+                "session_auth_enabled_invalid",
+            )?;
+            if enabled || durable_present || legacy_present {
+                return Err(ServerError::Configuration("auth_mode_material_conflict"));
+            }
+            Ok(AuthAuthorityConfig::Disabled)
+        }
+        Some("durable-family") => {
+            if legacy_present {
+                return Err(ServerError::Configuration("auth_mode_material_conflict"));
+            }
+            if old_enabled.is_some()
+                && !parse_bool(
+                    old_enabled.as_deref(),
+                    false,
+                    "session_auth_enabled_invalid",
+                )?
+            {
+                return Err(ServerError::Configuration("auth_mode_enablement_conflict"));
+            }
+            let selected = |name: &str| {
+                if name == "TRNM_SERVER_SESSION_AUTH_ENABLED" {
+                    Some("true".to_owned())
+                } else {
+                    lookup(name)
+                }
+            };
+            match parse_session_auth(&selected)? {
+                Some(config) => Ok(AuthAuthorityConfig::DurableFamily(config)),
+                None => Err(ServerError::Configuration("auth_mode_enablement_conflict")),
+            }
+        }
+        Some("nakama-legacy") => {
+            // A leftover durable enablement flag is itself mixed configuration,
+            // including false. Do not silently discard another profile's inputs.
+            if durable_present || old_enabled.is_some() {
+                return Err(ServerError::Configuration("auth_mode_material_conflict"));
+            }
+            if schema_target != AuthoritativeSchemaTarget::NakamaAccountsV5
+                || lookup("TRNM_SERVER_SCHEMA_TARGET").as_deref() != Some("nakama-accounts-v5")
+            {
+                return Err(ServerError::Configuration(
+                    "legacy_auth_requires_explicit_accounts_v5_target",
+                ));
+            }
+            let server_key = required(
+                lookup,
+                "TRNM_SERVER_LEGACY_SERVER_KEY",
+                "legacy_server_key_missing",
+            )?;
+            let access_key = required(
+                lookup,
+                "TRNM_SERVER_LEGACY_ACCESS_KEY",
+                "legacy_access_key_missing",
+            )?;
+            let refresh_key = required(
+                lookup,
+                "TRNM_SERVER_LEGACY_REFRESH_KEY",
+                "legacy_refresh_key_missing",
+            )?;
+            let access_ttl = parse_legacy_ttl(
+                required(
+                    lookup,
+                    "TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS",
+                    "legacy_access_ttl_missing",
+                )?,
+                "legacy_access_ttl_invalid",
+            )?;
+            let refresh_ttl = parse_legacy_ttl(
+                required(
+                    lookup,
+                    "TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS",
+                    "legacy_refresh_ttl_missing",
+                )?,
+                "legacy_refresh_ttl_invalid",
+            )?;
+            let single_session = parse_bool(
+                lookup("TRNM_SERVER_LEGACY_SINGLE_SESSION").as_deref(),
+                false,
+                "legacy_single_session_invalid",
+            )?;
+            Ok(AuthAuthorityConfig::NakamaLegacy(
+                LegacyServerAuthConfig::new(
+                    server_key.into_bytes(),
+                    access_key.into_bytes(),
+                    refresh_key.into_bytes(),
+                    access_ttl,
+                    refresh_ttl,
+                    single_session,
+                )?,
+            ))
+        }
+        Some(_) => Err(ServerError::Configuration("auth_mode_invalid")),
+    }
+}
+
+fn parse_legacy_ttl(value: String, reason: &'static str) -> Result<i64, ServerError> {
+    let value = value
+        .parse::<i64>()
+        .map_err(|_| ServerError::Configuration(reason))?;
+    if value <= 0 {
+        return Err(ServerError::Configuration(reason));
+    }
+    // Duration-overflow checks remain owned by the actual LegacyAuthPolicy.
+    Ok(value)
 }
 
 fn parse_session_auth(
@@ -370,13 +557,9 @@ fn parse_session_auth(
         false,
         "session_auth_enabled_invalid",
     )?;
-    let names = [
-        "TRNM_SERVER_SESSION_AUTH_ISSUER",
-        "TRNM_SERVER_SESSION_AUTH_AUDIENCE",
-        "TRNM_SERVER_SESSION_AUTH_EPOCH",
-        "TRNM_SERVER_SESSION_AUTH_KEY_HEX",
-    ];
-    let material_present = names.iter().any(|name| lookup(name).is_some());
+    let material_present = DURABLE_AUTH_MATERIAL_NAMES
+        .iter()
+        .any(|name| lookup(name).is_some());
     if !enabled {
         if material_present {
             return Err(ServerError::Configuration(
@@ -587,6 +770,47 @@ mod tests {
     }
 
     #[test]
+    fn schema_target_syntax_is_closed_and_defaults_to_storage_four() {
+        let (_, default) = load(&base()).unwrap();
+        assert_eq!(default.schema_target, AuthoritativeSchemaTarget::StorageV4);
+        for (literal, expected) in [
+            ("storage-v4", AuthoritativeSchemaTarget::StorageV4),
+            (
+                "nakama-accounts-v5",
+                AuthoritativeSchemaTarget::NakamaAccountsV5,
+            ),
+        ] {
+            let mut values = base();
+            values.insert("TRNM_SERVER_SCHEMA_TARGET".to_owned(), literal.to_owned());
+            // check-config parses syntax only, even though serving gate5 is closed.
+            let (command, config) = ServerConfig::from_lookup(
+                &["trnm-server".to_owned(), "check-config".to_owned()],
+                |name| values.get(name).cloned(),
+            )
+            .unwrap();
+            assert_eq!(command, Command::CheckConfig);
+            assert_eq!(config.schema_target, expected);
+        }
+        for literal in [
+            "",
+            "4",
+            "5",
+            "6",
+            ">=4",
+            "StorageV4",
+            "nakama-accounts-v6",
+            "storage-v4 ",
+        ] {
+            let mut values = base();
+            values.insert("TRNM_SERVER_SCHEMA_TARGET".to_owned(), literal.to_owned());
+            assert!(matches!(
+                load(&values),
+                Err(ServerError::Configuration("schema_target_invalid"))
+            ));
+        }
+    }
+
+    #[test]
     fn accidental_public_bind_and_implicit_plaintext_database_fail_closed() {
         let mut values = base();
         values.insert("TRNM_SERVER_BIND".to_owned(), "0.0.0.0:7350".to_owned());
@@ -715,7 +939,9 @@ mod tests {
         let key = "30".repeat(32);
         values.insert("TRNM_SERVER_SESSION_AUTH_KEY_HEX".to_owned(), key.clone());
         let (_, config) = load(&values).unwrap();
-        let session = config.session_auth.as_ref().unwrap();
+        let AuthAuthorityConfig::DurableFamily(session) = &config.auth_authority else {
+            panic!("complete enabled durable profile must select durable authority");
+        };
         assert!(session.verifier().is_ok());
         let debug = format!("{config:?}");
         assert!(debug.contains("SessionAuthConfig"));
@@ -773,5 +999,476 @@ mod tests {
             load(&values),
             Err(ServerError::Configuration("schema_source_commit_invalid"))
         ));
+    }
+
+    fn durable_values() -> BTreeMap<String, String> {
+        let mut values = base();
+        values.extend([
+            (
+                "TRNM_SERVER_SESSION_AUTH_ENABLED".to_owned(),
+                "true".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_SESSION_AUTH_ISSUER".to_owned(),
+                "https://identity.test".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_SESSION_AUTH_AUDIENCE".to_owned(),
+                "trillionnium-game".to_owned(),
+            ),
+            ("TRNM_SERVER_SESSION_AUTH_EPOCH".to_owned(), "7".to_owned()),
+            (
+                "TRNM_SERVER_SESSION_AUTH_KEY_HEX".to_owned(),
+                "30".repeat(32),
+            ),
+        ]);
+        values
+    }
+
+    fn legacy_values() -> BTreeMap<String, String> {
+        let mut values = base();
+        values.extend([
+            (
+                "TRNM_SERVER_AUTH_MODE".to_owned(),
+                "nakama-legacy".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_SCHEMA_TARGET".to_owned(),
+                "nakama-accounts-v5".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_LEGACY_SERVER_KEY".to_owned(),
+                "deliberate-server-key".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_LEGACY_ACCESS_KEY".to_owned(),
+                "defaultencryptionkey".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_LEGACY_REFRESH_KEY".to_owned(),
+                "defaultrefreshencryptionkey".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS".to_owned(),
+                "60".to_owned(),
+            ),
+            (
+                "TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS".to_owned(),
+                "3600".to_owned(),
+            ),
+        ]);
+        values
+    }
+
+    #[test]
+    fn authority_modes_are_closed_and_default_is_disabled() {
+        assert!(matches!(
+            load(&base()).unwrap().1.auth_authority,
+            AuthAuthorityConfig::Disabled
+        ));
+        let mut values = base();
+        values.insert("TRNM_SERVER_AUTH_MODE".to_owned(), "disabled".to_owned());
+        assert!(matches!(
+            load(&values).unwrap().1.auth_authority,
+            AuthAuthorityConfig::Disabled
+        ));
+        for mode in [
+            "",
+            "legacy",
+            "durable",
+            "NakamaLegacy",
+            "nakama-legacy ",
+            "disabled\n",
+            "auto",
+        ] {
+            values.insert("TRNM_SERVER_AUTH_MODE".to_owned(), mode.to_owned());
+            assert!(matches!(
+                load(&values),
+                Err(ServerError::Configuration("auth_mode_invalid"))
+            ));
+        }
+    }
+
+    #[test]
+    fn durable_mode_preserves_old_enablement_and_never_falls_back() {
+        let old = durable_values();
+        assert!(matches!(
+            load(&old).unwrap().1.auth_authority,
+            AuthAuthorityConfig::DurableFamily(_)
+        ));
+        let mut explicit = old.clone();
+        explicit.insert(
+            "TRNM_SERVER_AUTH_MODE".to_owned(),
+            "durable-family".to_owned(),
+        );
+        for enabled in [Some("true"), None] {
+            match enabled {
+                Some(value) => {
+                    explicit.insert(
+                        "TRNM_SERVER_SESSION_AUTH_ENABLED".to_owned(),
+                        value.to_owned(),
+                    );
+                }
+                None => {
+                    explicit.remove("TRNM_SERVER_SESSION_AUTH_ENABLED");
+                }
+            }
+            let (_, config) = load(&explicit).unwrap();
+            let AuthAuthorityConfig::DurableFamily(auth) = config.auth_authority else {
+                panic!("wrong authority");
+            };
+            assert!(auth.verifier().is_ok());
+        }
+        explicit.insert(
+            "TRNM_SERVER_SESSION_AUTH_ENABLED".to_owned(),
+            "false".to_owned(),
+        );
+        assert!(matches!(
+            load(&explicit),
+            Err(ServerError::Configuration("auth_mode_enablement_conflict"))
+        ));
+        explicit.insert(
+            "TRNM_SERVER_SESSION_AUTH_ENABLED".to_owned(),
+            "unknown".to_owned(),
+        );
+        assert!(matches!(
+            load(&explicit),
+            Err(ServerError::Configuration("session_auth_enabled_invalid"))
+        ));
+        let mut old_without_enabled = old;
+        old_without_enabled.remove("TRNM_SERVER_SESSION_AUTH_ENABLED");
+        assert!(matches!(
+            load(&old_without_enabled),
+            Err(ServerError::Configuration(
+                "session_auth_material_requires_enablement"
+            ))
+        ));
+    }
+
+    #[test]
+    fn durable_mode_rejects_each_missing_profile_field() {
+        for (name, error) in [
+            (
+                "TRNM_SERVER_SESSION_AUTH_ISSUER",
+                "session_auth_issuer_missing",
+            ),
+            (
+                "TRNM_SERVER_SESSION_AUTH_AUDIENCE",
+                "session_auth_audience_missing",
+            ),
+            (
+                "TRNM_SERVER_SESSION_AUTH_EPOCH",
+                "session_auth_epoch_invalid",
+            ),
+            (
+                "TRNM_SERVER_SESSION_AUTH_KEY_HEX",
+                "session_auth_key_missing",
+            ),
+        ] {
+            let mut values = durable_values();
+            values.insert(
+                "TRNM_SERVER_AUTH_MODE".to_owned(),
+                "durable-family".to_owned(),
+            );
+            values.remove(name);
+            assert!(
+                matches!(load(&values), Err(ServerError::Configuration(reason)) if reason == error)
+            );
+        }
+    }
+
+    #[test]
+    fn authority_profiles_reject_every_mixed_material_field() {
+        for name in LEGACY_AUTH_MATERIAL_NAMES {
+            let mut values = durable_values();
+            values.insert(
+                "TRNM_SERVER_AUTH_MODE".to_owned(),
+                "durable-family".to_owned(),
+            );
+            values.insert(name.to_owned(), String::new());
+            assert!(matches!(
+                load(&values),
+                Err(ServerError::Configuration("auth_mode_material_conflict"))
+            ));
+        }
+        for name in DURABLE_AUTH_MATERIAL_NAMES
+            .into_iter()
+            .chain(["TRNM_SERVER_SESSION_AUTH_ENABLED"])
+        {
+            for value in ["", "false", "any-leftover-material"] {
+                let mut values = legacy_values();
+                values.insert(name.to_owned(), value.to_owned());
+                assert!(matches!(
+                    load(&values),
+                    Err(ServerError::Configuration("auth_mode_material_conflict"))
+                ));
+            }
+        }
+        for name in DURABLE_AUTH_MATERIAL_NAMES
+            .into_iter()
+            .chain(LEGACY_AUTH_MATERIAL_NAMES)
+        {
+            let mut values = base();
+            values.insert("TRNM_SERVER_AUTH_MODE".to_owned(), "disabled".to_owned());
+            values.insert(name.to_owned(), String::new());
+            assert!(matches!(
+                load(&values),
+                Err(ServerError::Configuration("auth_mode_material_conflict"))
+            ));
+        }
+        let mut values = base();
+        values.insert("TRNM_SERVER_AUTH_MODE".to_owned(), "disabled".to_owned());
+        values.insert(
+            "TRNM_SERVER_SESSION_AUTH_ENABLED".to_owned(),
+            "true".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration("auth_mode_material_conflict"))
+        ));
+    }
+
+    #[test]
+    fn legacy_material_requires_explicit_authority_mode() {
+        for name in LEGACY_AUTH_MATERIAL_NAMES {
+            let mut values = base();
+            values.insert(name.to_owned(), String::new());
+            assert!(matches!(
+                load(&values),
+                Err(ServerError::Configuration(
+                    "legacy_auth_material_requires_explicit_mode"
+                ))
+            ));
+        }
+        let mut values = legacy_values();
+        values.remove("TRNM_SERVER_AUTH_MODE");
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration(
+                "legacy_auth_material_requires_explicit_mode"
+            ))
+        ));
+    }
+
+    #[test]
+    fn legacy_mode_requires_explicit_accounts_five_target() {
+        for target in [None, Some("storage-v4")] {
+            let mut values = legacy_values();
+            match target {
+                None => {
+                    values.remove("TRNM_SERVER_SCHEMA_TARGET");
+                }
+                Some(value) => {
+                    values.insert("TRNM_SERVER_SCHEMA_TARGET".to_owned(), value.to_owned());
+                }
+            }
+            assert!(matches!(
+                load(&values),
+                Err(ServerError::Configuration(
+                    "legacy_auth_requires_explicit_accounts_v5_target"
+                ))
+            ));
+        }
+        let mut values = legacy_values();
+        values.insert(
+            "TRNM_SERVER_SCHEMA_TARGET".to_owned(),
+            "nakama-accounts-v6".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration("schema_target_invalid"))
+        ));
+    }
+
+    #[test]
+    fn legacy_mode_requires_all_five_operator_key_and_ttl_values() {
+        for (name, error) in [
+            ("TRNM_SERVER_LEGACY_SERVER_KEY", "legacy_server_key_missing"),
+            ("TRNM_SERVER_LEGACY_ACCESS_KEY", "legacy_access_key_missing"),
+            (
+                "TRNM_SERVER_LEGACY_REFRESH_KEY",
+                "legacy_refresh_key_missing",
+            ),
+            (
+                "TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS",
+                "legacy_access_ttl_missing",
+            ),
+            (
+                "TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS",
+                "legacy_refresh_ttl_missing",
+            ),
+        ] {
+            for absent in [false, true] {
+                let mut values = legacy_values();
+                if absent {
+                    values.remove(name);
+                } else {
+                    values.insert(name.to_owned(), String::new());
+                }
+                assert!(
+                    matches!(load(&values), Err(ServerError::Configuration(reason)) if reason == error)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_explicit_twenty_and_twenty_seven_byte_keys_are_redacted() {
+        let mut values = legacy_values();
+        let server_key = "操作员🙂 explicit key";
+        values.insert(
+            "TRNM_SERVER_LEGACY_SERVER_KEY".to_owned(),
+            server_key.to_owned(),
+        );
+        let (_, config) = load(&values).unwrap();
+        let AuthAuthorityConfig::NakamaLegacy(legacy) = &config.auth_authority else {
+            panic!("wrong authority");
+        };
+        assert_eq!(values["TRNM_SERVER_LEGACY_ACCESS_KEY"].len(), 20);
+        assert_eq!(values["TRNM_SERVER_LEGACY_REFRESH_KEY"].len(), 27);
+        assert!(legacy.service_config().is_ok());
+        use base64::Engine;
+        let credential = base64::engine::general_purpose::STANDARD
+            .encode(format!("{server_key}:ignored").as_bytes());
+        assert!(super::super::legacy_http_api::require_basic_server_key(
+            &legacy.server_key().unwrap(),
+            Some(&format!("Basic {credential}")),
+            super::super::legacy_http_api::LegacyHttpLimits::default(),
+        )
+        .is_ok());
+        let debug = format!("{config:?}");
+        for private in [
+            server_key,
+            "defaultencryptionkey",
+            "defaultrefreshencryptionkey",
+            "secret",
+            "a_secure_local",
+        ] {
+            assert!(!debug.contains(private));
+        }
+        assert!(debug.contains("NakamaLegacy"));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn legacy_key_limits_reuse_actual_provider_without_durable_minimum() {
+        assert!(LegacyServerAuthConfig::new(
+            vec![b's'; 4096],
+            vec![b'a'; 4096],
+            vec![b'r'; 4096],
+            1,
+            1,
+            false
+        )
+        .is_ok());
+        assert!(
+            LegacyServerAuthConfig::new(vec![b's'], vec![b'a'], vec![b'r'], 1, 1, false).is_ok()
+        );
+        for oversized in [0, 1, 2] {
+            let mut keys = [vec![b's'; 20], vec![b'a'; 20], vec![b'r'; 27]];
+            keys[oversized] = vec![b'x'; 4097];
+            let [server, access, refresh] = keys;
+            assert!(
+                matches!(LegacyServerAuthConfig::new(server,access,refresh,1,1,false), Err(ServerError::Configuration(reason)) if reason == if oversized == 0 { "legacy_server_key_invalid" } else { "legacy_access_refresh_keys_invalid" })
+            );
+        }
+        assert!(matches!(
+            LegacyServerAuthConfig::new(Vec::new(), vec![b'a'], vec![b'r'], 1, 1, false),
+            Err(ServerError::Configuration("legacy_server_key_invalid"))
+        ));
+        for (access, refresh) in [
+            (Vec::new(), vec![b'r']),
+            (vec![b'a'], Vec::new()),
+            (vec![b'x'; 20], vec![b'x'; 20]),
+        ] {
+            assert!(matches!(
+                LegacyServerAuthConfig::new(vec![b's'], access, refresh, 1, 1, false),
+                Err(ServerError::Configuration(
+                    "legacy_access_refresh_keys_invalid"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_ttls_reject_zero_parse_overflow_and_actual_duration_overflow() {
+        for (name, reason, boundary) in [
+            (
+                "TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS",
+                "legacy_access_ttl_invalid",
+                i64::MAX / 2 / 1_000_000_000,
+            ),
+            (
+                "TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS",
+                "legacy_refresh_ttl_invalid",
+                i64::MAX / 1_000_000_000,
+            ),
+        ] {
+            for invalid in ["0", "-1", "9223372036854775808", "1.5", "seconds", " 60"] {
+                let mut values = legacy_values();
+                values.insert(name.to_owned(), invalid.to_owned());
+                assert!(
+                    matches!(load(&values), Err(ServerError::Configuration(error)) if error == reason)
+                );
+            }
+            let mut values = legacy_values();
+            values.insert(name.to_owned(), boundary.to_string());
+            assert!(load(&values).is_ok());
+            values.insert(name.to_owned(), (boundary + 1).to_string());
+            assert!(matches!(
+                load(&values),
+                Err(ServerError::Configuration("legacy_auth_ttl_policy_invalid"))
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_single_session_is_bounded_boolean_with_explicit_false_default() {
+        let (_, default) = load(&legacy_values()).unwrap();
+        let default_debug = format!("{:?}", default.auth_authority);
+        assert!(default_debug.contains("single_session: false"));
+        for (literal, expected) in [("true", true), ("false", false), ("1", true), ("0", false)] {
+            let mut values = legacy_values();
+            values.insert(
+                "TRNM_SERVER_LEGACY_SINGLE_SESSION".to_owned(),
+                literal.to_owned(),
+            );
+            let (_, config) = load(&values).unwrap();
+            assert!(format!("{:?}", config.auth_authority)
+                .contains(&format!("single_session: {expected}")));
+        }
+        let mut values = legacy_values();
+        values.insert(
+            "TRNM_SERVER_LEGACY_SINGLE_SESSION".to_owned(),
+            "sometimes".to_owned(),
+        );
+        assert!(matches!(
+            load(&values),
+            Err(ServerError::Configuration("legacy_single_session_invalid"))
+        ));
+    }
+
+    #[test]
+    fn selected_legacy_guard_is_static_and_never_uses_durable_verifier() {
+        for values in [base(), durable_values()] {
+            let (_, config) = load(&values).unwrap();
+            assert!(
+                super::super::auth::require_installed_http_authority(&config.auth_authority)
+                    .is_ok()
+            );
+        }
+        let (_, config) = load(&legacy_values()).unwrap();
+        let error = super::super::auth::require_installed_http_authority(&config.auth_authority)
+            .unwrap_err();
+        assert!(matches!(error, ServerError::Domain(_)));
+        let display = error.to_string();
+        for private in [
+            "secret",
+            "defaultencryptionkey",
+            "defaultrefreshencryptionkey",
+            "postgresql://",
+        ] {
+            assert!(!display.contains(private));
+        }
     }
 }

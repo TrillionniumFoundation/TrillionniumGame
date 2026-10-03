@@ -1,0 +1,358 @@
+{
+  "schema": "trillionnium.storage-http-api.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "composition": "crates/trnm-server::trnm-server",
+  "upstream_sources": [
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/api_storage.go",
+      "blob": "698cccf47c6ba4e9cdd461a8d93ea8094edf9ab7"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/core_storage.go",
+      "blob": "23cb77e991124629c9c780ac981e6393313f0769"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/api.go",
+      "blob": "61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb"
+    },
+    {
+      "repository": "heroiclabs/nakama-common",
+      "commit": "449b77ecc8789aa466c36b67f6e498033dfcd9c5",
+      "path": "api/api.proto",
+      "blob": "ddd2744739a252c268b2be004ff0e45c498adb35"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "apigrpc/apigrpc.proto",
+      "blob": "1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c"
+    },
+    {
+      "repository": "gofrs/uuid",
+      "commit": "153266a4d7e6f54fc25f27023491f359ca18c560",
+      "path": "codec.go",
+      "blob": "080059592f4114e341f7ff2b39c56ae44883d6a2",
+      "purpose": "Independently implemented text formats from the dependency pinned by Nakama go.mod at v5.4.0."
+    },
+    {
+      "repository": "grpc-ecosystem/grpc-gateway",
+      "commit": "ba9b55c1c15c84633be18c45463e123f31a5e999",
+      "path": "runtime/query.go",
+      "source_sha256": "sha256:cdb3c973f81862d47dacf2056cf0ac58c66c98f9c0b609efc9bc6f10f69510c6",
+      "purpose": "v2.29.0 query parsing source comparison; no accepted gateway execution credit."
+    },
+    {
+      "repository": "golang/go",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "path": "src/encoding/gob/decode.go",
+      "source_sha256": "sha256:99c8b170d943f63d0c7a63b06774cb574238faf76ddca738d81a91ccc89251f7",
+      "purpose": "Go 1.26.5 gob decoder source and scratch observation provenance; not full Nakama server oracle evidence."
+    },
+    {
+      "repository": "golang/go",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "path": "src/encoding/base64/base64.go",
+      "source_sha256": "sha256:e6437c7716ecd1ae91c9d10037362cab186e5873a6365b713e2d8c57d8fc32fc",
+      "purpose": "Go 1.26.5 RawURLEncoding source comparison; no accepted wire credit."
+    }
+  ],
+  "task_ids": [
+    "TG-W4-002",
+    "TG-V3-010"
+  ],
+  "gap_ids": [
+    "GAP-P1-STORAGE-001",
+    "GAP-P0-SERVER-001",
+    "GAP-P0-DATA-001"
+  ],
+  "parity_ids": [
+    "TG-D1-2940D4CEAACA4051",
+    "TG-D1-7A7BFBFD85579A6A",
+    "TG-D1-46DC42DFD49DB606",
+    "TG-D1-AFA018F59B7ADE31",
+    "TG-D1-A50F25193A8E9535"
+  ],
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/v2/storage",
+      "request": "ReadStorageObjectsRequest",
+      "response": "StorageObjects"
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/storage",
+      "request": "WriteStorageObjectsRequest",
+      "response": "StorageObjectAcks"
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/storage/delete",
+      "request": "DeleteStorageObjectsRequest",
+      "response": "google.protobuf.Empty"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/storage/{collection}",
+      "request": "ListStorageObjectsRequest",
+      "response": "StorageObjectList"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/storage/{collection}/{user_id}",
+      "request": "ListStorageObjectsRequest",
+      "response": "StorageObjectList"
+    }
+  ],
+  "authentication": "Verify signed candidate access principal and persisted active family before decoding business input; bind mutations and authorize requested read owners against that principal. Operator credentials do not substitute.",
+  "request_contract": {
+    "top_level": "write: objects array; read/delete: object_ids (objectIds) array; omitted/null/empty is successful empty operation",
+    "write_fields": [
+      "collection",
+      "key",
+      "value",
+      "version",
+      "permission_read",
+      "permission_write"
+    ],
+    "delete_fields": [
+      "collection",
+      "key",
+      "version"
+    ],
+    "permission_defaults": {
+      "permission_read": 1,
+      "permission_write": 1
+    },
+    "value": "New HTTP writes require a JSON-encoded object string. ACK version is MD5 of its exact UTF-8 request bytes; database-native JSONB rendering is separate.",
+    "aliases": "proto snake_case and lowerCamelCase; duplicate known fields/aliases fail closed; unknown fields ignored",
+    "read_fields": [
+      "collection",
+      "key",
+      "user_id"
+    ],
+    "read_owner": "Omitted/empty/null owner selects server/global UUID zero; explicit zero UUID is invalid. Nonempty owner follows pinned gofrs UUID string formats.",
+    "list_query": "Path binds collection and optional owner. Limit defaults to 1; supplied limit or limit.value is signed decimal int32 in 1..100. Cursor is an unsigned gob offset. Unknown query names are ignored; duplicate known scalars/aliases are rejected by this candidate. Gateway alias-map order, malformed wording and non-UTF8 behavior remain unqualified.",
+    "list_owner": "Omitted or empty owner selects publicly readable objects across all owners, including global UUID zero. Own owner selects read >= 1. Foreign and explicit zero UUID owners select read = 2. Nonempty owner uses pinned gofrs UUID string formats.",
+    "version": "Write omitted/null/empty maps to any; star maps to must-not-exist; all other strings are original exact conditions. Delete omitted/null/empty has no condition; every nonempty string, including star, is an original exact condition. No MD5-format, case or 32-character input restriction; overall request budgets still apply."
+  },
+  "response_contract": {
+    "write": "Every write occurrence returns its own ACK in original request position after whole-batch commit. Nonempty acks include collection,key,version,user_id. Version is generated from exact request bytes, never JSONB rendering; previous Some(empty) remains an existing object. Genuine database create_time/update_time use RFC3339 UTC 0/3/6/9 fractional digits. Unknown historical fields remain absent.",
+    "delete": "{}",
+    "empty": "{}",
+    "rejection": "storage-specific code 3 / HTTP 400 for OCC, write permission or delete notfound/version/permission rejection; internal repository details redacted",
+    "read": "Requested visible objects return native value_jsonb::TEXT UTF-8 bytes as an API string with the independently stored public_version token and ACL fields. Empty public version is omitted by protojson. Historical scalar, array and JSON null values are valid. Genuine create_time/update_time are projected to seconds; unknown original times remain absent. Ordering and duplicate multiplicity require immutable differential.",
+    "list": "Return one bounded visible page with native value_jsonb::TEXT UTF-8 bytes, independently stored public_version, dashed owner UUID and nonzero permission scalars. Empty public version is omitted. Historical scalar, array and JSON null values are valid. A next cursor identifies the last returned object only when a visible limit+1 sentinel exists. Empty objects and terminal cursor are omitted. No create_time/update_time is fabricated.",
+    "resource_exhaustion": "Native rendered values above 16 MiB, allocation exhaustion or whole actually escaped JSON responses above 32 MiB produce HTTP 429/code 8 with the route-specific redacted message. Integrity/witness or UTF-8 failures produce HTTP 500/code 13; no partial object list is returned."
+  },
+  "resource_limits": {
+    "maximum_operations": 100,
+    "maximum_value_bytes": 1048576,
+    "json_recursion": "RawValue uses an iterative scanner bounded by request/value byte budgets; no 128-level recursion claim is made.",
+    "database_budget": "PooledRepository::run_with_deadline",
+    "http_body": "ServerConfig max_request_bytes",
+    "list_maximum_limit": 100,
+    "list_maximum_collection_bytes": 4096,
+    "list_maximum_cursor_key_bytes": 4096,
+    "list_maximum_target_bytes": 32768,
+    "cursor_maximum_encoded_bytes": 16384,
+    "cursor_maximum_decoded_bytes": 12288,
+    "cursor_maximum_messages": 64,
+    "cursor_maximum_types": 64,
+    "cursor_maximum_fields": 64,
+    "cursor_maximum_depth": 16,
+    "cursor_maximum_items": 1024,
+    "version_condition": "No separate format or length cap; bounded by the configured HTTP request budget.",
+    "maximum_native_value_bytes": 16777216,
+    "maximum_encoded_response_bytes": 33554432
+  },
+  "durability": "Construct mutation success only after atomic committed receipts; construct read/list success after the bounded readonly repository transaction completes. Do not retry storage mutations or this client-list projection through the generic command supervisor.",
+  "migration_impact": "Append-only 0002 retains nullable TIMESTAMPTZ without defaults or historical backfill. Append-only 0003 publishes schema/writer epoch3 and separates sole native JSONB payload, independent public_version, projection SHA-256 and known/unknown request provenance. Existing v1/v2 upgrade barriers, creator source_commit and genuine prior v2_apply_source_commit remain separately verified; fresh database v2 publication uses its actual candidate SHA. HTTP never substitutes raw witness bytes for native payload. Original timestamp import, rolling production upgrade and independent rollback acceptance remain open. Append-only0004 publishes schema4/epoch4, preserves actual v3_apply_source_commit separately, admits historical empty Unicode keys/raw nonnegative SMALLINT ACLs and registers manifest-bound jobs/pages. Native import custody/resume/readiness and full replacement remain unqualified until exact execution evidence.",
+  "rollback": "Schema v3 is a forward-fix boundary: prior byte-only writers are fenced and cannot interpret the new independent public tokens and unknown-request provenance. Reverting route/codec/bridge source alone is not an accepted rollback. Preserve native payload, public token, witness/manifest and times while applying an independently reviewed forward fix; no drop-based production rollback is authorized.",
+  "limitations": [
+    "Existing epoch-routed Trillionnium session credentials and persisted family verification are used; Nakama token issuance/refresh/auth providers remain unfinished.",
+    "Historical v1 rows have unknown original timestamps. An original-time import manifest or independently accepted unknown-history policy is required before replacement; no epoch or migration time is fabricated.",
+    "List route/query/gob cursor and SQL client projection are bounded source candidates; exact gateway, gob, collation, pagination under concurrent changes and oracle/SDK qualification remain open. Search/index and Runtime before/after hooks remain unfinished.",
+    "Homogeneous HTTP write/delete batches preserve repeated keys through a separate canonical-owner policy, with at most 100 occurrences. Internal heterogeneous batches and batch-read retain duplicate-key rejection; strict new-write key validation and broader upstream bounds remain unqualified. Client-list request budgets and stored Unicode row domains are separate.",
+    "Opaque exact input strings and independently stored historical public tokens are represented at source. Native TEXT/JSONB NUL behavior is observed separately on each actual profile fixture; it is not immutable Nakama/gateway differential or acceptance. A synthetic unknown-request fixture manifest is not an implemented original Nakama export importer.",
+    "No durable command receipt exists for storage mutations. An ambiguous commit must not be blindly retried; reconciliation remains open.",
+    "Local mocks and source assertions do not establish PostgreSQL/CockroachDB durability, official SDK compatibility, immutable-oracle parity or independent acceptance.",
+    "Strict trailing-JSON rejection and malformed protobuf-JSON decoder error wording differ from the single-Decode upstream gateway and need immutable-oracle qualification.",
+    "Batch read uses bounded per-key statements in one readonly transaction, while upstream chooses a single query shape. Duplicate multiplicity, returned ordering and concurrency behavior require immutable differential.",
+    "Quoted integer trailing-token forms such as permissionRead:\"1 true\" are rejected; the pinned decoder can consume the first number token. Exact malformed decoder parity remains open.",
+    "Storage metadata source now records database transaction time independently from legacy caller-clock updated_at_ms. Full precision and no-op/update behavior still require immutable upstream differential.",
+    "Unsigned Nakama cursor offsets deliberately differ from the internal authenticated scope-bound cursor profile. Independent security/protocol review and immutable differential remain required; malformed gob and query errors are not globally qualified.",
+    "The bounded Go 1.26.5 ordinal sorter is translated from pinned BSD source. Raw Runtime owner-string representations, hook/index positional behavior, native conditional-SQL lock/error timing, ambiguous commit reconciliation and official SDK/immutable-oracle qualification remain open. No identity, ACL, occurrence, version, error or durable-effect difference is normalized.",
+    "The narrow SomeWrite candidate binds original request bytes as native JSONB with FormatText, and Exact conditions as raw native TEXT, before per-occurrence host ACL/OCC classification. Exact acquisition and UPDATE both predicate on the literal token and server-or-write1 eligibility; an excluded row uses a nonlocking skinny fallback, and an unexpectedly eligible fallback fails closed. Any occurrences first execute an honest native fifteen-column INSERT with ON CONFLICT DO UPDATE WHERE FALSE, using the original request bytes and a native UTF8 SHA256 projection digest. One returned row proves an actual insert; only that branch produces an absent previous receipt. A zero-row conflict requires the real current prior row. PostgreSQL uses the retained conflict lock; CockroachDB takes an explicit skinny ACL FOR UPDATE lock and, after authority succeeds, reads the complete prior under FOR UPDATE because its reservation does not retain that lock. A matching token/read/write tuple preserves all fifteen old fields, including unknown provenance and microsecond times; other allowed writes use a prior-bound native upsert. The staging map supplies budgets, never prior-row authority. Validated nonempty all-Any SomeWrite batches use explicit READ COMMITTED only on PostgreSQL; mixed conditions, typed batches, deletes and every CockroachDB batch remain SERIALIZABLE. No mutation is implicitly retried. These source policies and controlled SQL prerequisites do not qualify production algorithm, source HTTP equivalence or the complete concurrency schedule. SomeWrite insert-only occurrences bypass existing-row acquisition and full-row loading, bind original JSONB bytes in a bounded native projection and execute a plain INSERT. A staged None is only insertion input, not evidence that the database key is absent. The INSERT unique failure remains a hard stop with the existing version rejection; other native failures retain their classification and the first earlier semantic rejection still wins. The finite insert-only matrix requires three cases: an Any positive wait, a committed-existing star and an uncommitted-delete star positive wait followed by holder rollback. Committed-existing completion/wait counts are PostgreSQL 1/0 and CockroachDB 0/1; the deletion case requires a real plain-INSERT waiter in both profiles. Every case retains fifteen-field rollback, no ACK and same-lease readback. The extra native projection, database-internal rendering limits, full pgx preparation/grouping, isolation/retries and concurrent winner/race behavior remain unqualified. Hidden batch SQLSTATE is not reconstructed from a public version rejection. The first host ACL rejection or Exact mismatch is remembered while real later work continues until a hard error; existing insert-only conflict, native error, DataLoss or resource rejection stops further SQL. Explicit rollback precedes the inner error return. Failed rollback remains unconfirmed and retires a pooled lease only to prevent recycling, without disabling direct repositories. Outer pool deadline/shutdown may override the inner primary error. Native Write InvalidArgument with the exact database_constraint_violation reason maps to HTTP500/code13; host validation, ACL/OCC and delete mappings retain their separate behavior. The old seven fixture markers and App13/3 remain required. The added native matrix has eleven main cases plus a separately bound legal-surrogate subvector; the same fixture binds an independently observed native-expression SQLSTATE22P02 to authenticated App HTTP500, exact fifteen-field rollback and a same-connection read; the App's hidden SQLSTATE is not reconstructed. The historical held-invalid-b observation belongs to its earlier source; the new causal case uses valid held b then invalid c before held z. Controlled official PostgreSQL HTTP observations motivated this candidate but do not qualify its execution. Full pgx prequeue/preparation/query-group and parameter schedule, native ON CONFLICT/insert-only lock behavior, concurrent Exact predicate races, native isolation/retries, raw Runtime owner ordering, hooks/index, SDK/immutable-oracle and independent acceptance remain open. Input/projection/response bounds do not prove database-internal JSONB memory containment. No error, identity, ACL, version, occurrence or durable effect is normalized; all full compatibility and replacement claims remain false. The two late Exact exclusions mean conditional eligibility exclusion, not absence of native waiting. The required matrix binds late_exact_wait=0/late_exact_no_wait=2 for PostgreSQL and 2/0 for CockroachDB; the sealed summary must independently contain matching integer late_exact_wait_cases and late_exact_no_wait_cases. This finite profile difference follows controlled official-source primary-index causal observations with a positive Any wait, literal single Exact and early ACL/late Exact requests; old secondary-index observations and the original rejected query classifier remain separate. It changes no production SQL or isolation policy and grants no full native lock schedule, oracle acceptance or replacement claim. In the separate literal-NUL Exact condition case, PostgreSQL's native TEXT rejection stops the tail, while CockroachDB accepts the TEXT input, preserves the first ACL rejection and waits on a later Any write. That later Any query follows the profile-specific Any reservation/acquisition path; it is not a third late Exact exclusion, so the 0/2 and 2/0 late Exact counters remain unchanged. The source observation binds the later Any's actual primary-index waiter/holder join and HTTP first ACL error; it does not reveal a hidden SQLSTATE for the first NUL condition. The fixture policy is checked in its local waits body, Exact query selector and three actual profile-aware call sites. These static guards do not prove candidate native execution.",
+    "Native query observations preserve the original database-view text and its SHA256. PostgreSQL reservation recognition accepts only the complete 1688-byte wire template or its independently observed exact 1023-byte prefix. CockroachDB recognition accepts only its complete 1713-byte reservation template or the independently observed first 997 bytes followed by U+2026; its complete skinny authority acquisition retains a separate classifier. Every reservation observation records the match scope, prefix flag, full RETURNING observation flag and complete source-template SHA256. A prefix observation does not prove the unseen SQL tail; registered source, executing binary and full-template bindings remain separate requirements. Neither source guards nor view prefixes establish the complete native schedule, isolation, retries, immutable-oracle equivalence or acceptance."
+  ],
+  "claims": {
+    "compatibility_credit": false,
+    "accepted_evidence": false,
+    "gap_closed": false,
+    "production_ready": false
+  },
+  "read_repository": "One bounded readonly serializable batch under the pooled database deadline. Missing/ACL-hidden rows are omitted before decoding; data-integrity or SQL errors fail the batch. No generic retry.",
+  "validation_source": {
+    "canonical_application_test": "crates/trnm-server/src/runtime/storage_api_tests.rs::canonical_storage_api_live_database",
+    "harness": "scripts/ci-trnm-server-live.sh",
+    "profiles": [
+      "postgresql",
+      "cockroachdb"
+    ],
+    "execution_required": "Require TRNM_REQUIRE_LIVE_DATABASE=1, exact test result count of one and matching success marker; zero/missing/optional-skip results fail closed.",
+    "scope": "Canonical Rust HTTP application + actual repository SQL, with a separate exact client-list projection fixture on each profile. TCP, pool/deadline, SDK and immutable oracle are separate obligations.",
+    "accepted_evidence": false,
+    "client_list_repository_test": "crates/trnm-persistence-pg/tests/authority_storage_parts/03_storage_list.rs::nakama_client_listing_modes_cursors_and_integrity_are_database_projected",
+    "client_list_execution_required": "The same live harness requires TRNM_REQUIRE_LIVE_DATABASE=1, one exact authority_storage repository test with zero failed/ignored, matching nakama_client_list_projection_executed profile marker, explicit skip rejection and a sealed nakama-client-list-projection.log. Source checks and local results do not admit exact-object live or independent evidence.",
+    "jsonb_v3_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs::prove_storage_jsonb_v3_app",
+    "jsonb_v3_execution_required": "The same single canonical App test must emit an exact profile marker with history_cases=6 opaque_success_cases=4 noop_cases=2 resource_cases=1 native_input_cases=3, plus exactly one actual native-input accepted/rejected observation with compatibility_credit=false. Preserve the previous write_cases=15/delete_cases=18/batch_cases=2 marker. Retained packet validation checks the actual four profile SQL bytes, sizes and hashes, schema4/epoch4 and fresh prior-v2/prior-v3 publishers; source and local tests grant no acceptance.",
+    "homogeneous_repository_test": "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs::nakama_duplicate_batches_preserve_step_receipts_and_native_atomicity",
+    "homogeneous_execution_required": "Separate required single-test lane with one successful terminal result, the original seven exact unique profile markers, explicit skip rejection and sealed storage-duplicate-batches.log. Three source-DDL rows/pages with actual exporter/importer custody and complete fifteen-field assertions are separate from the existing eight-row/four-page/nine-JSON import fixture; source-DDL is not a running Nakama oracle or production issuer trust. The occurrence-lock marker checks an earlier missing delete rejects while a later native row remains externally locked; the seventh nakama_write_tail_drain_executed marker requires held_wait_cases=2 early_reject_cases=3 fields=15. This narrow actual-tail observation does not qualify pgx prequeue/preparation/query-group, native failing-occurrence JSONB binding, conditional-lock footprint or the complete upstream concurrency/error schedule. The added eleven-main-case matrix and separate legal-surrogate subvector each require a unique whole-line marker; after fields=15, the matrix must append late_exact_wait=0 late_exact_no_wait=2 for PostgreSQL or late_exact_wait=2 late_exact_no_wait=0 for CockroachDB. The sealed summary must contain matching non-boolean integer late_exact_wait_cases and late_exact_no_wait_cases. The App also requires its separate one-case native-expression22P02/HTTP500 marker; the hidden App SQLSTATE remains unknown.",
+    "homogeneous_application_execution_required": "The existing single canonical App fixture additionally requires storage_homogeneous_app_executed profile marker with write_occurrences=13 rollback_cases=3. Preserve previous write_cases=15/delete_cases=18/batch_cases=2 and JSONB/schema families unchanged."
+  },
+  "mutation_repository": "Homogeneous SomeWrite binds original bytes as native JSONB FormatText, followed by any raw TEXT condition, before the occurrence's host ACL/OCC decision. Exact eligible locks and actual UPDATE both retain the token and server-or-write1 predicates; excluded rows are classified by a nonlocking skinny fallback, while an unexpectedly eligible fallback fails closed. Typed mixed batches retain their separate locking and TEXT-cast policy. Stored projection/witness checks precede no-op selection. A blind write with stored public token equal to generated request MD5 and equal ACLs preserves native payload, provenance and times; known fingerprints must match and unknown request bytes are never fabricated. Exact writes project through the actual database JSONB renderer, update known witness and update_time, and preserve nullable creation. Commit precedes ACK. Insert-only keeps actor ownership and rejects an existing valid row regardless of its write ACL. Native Write InvalidArgument/database_constraint_violation maps to redacted HTTP500/code13; host request validation, semantic permission/version and delete mapping are separate. Profile SQL, NUL, collation, isolation and lock schedules remain unqualified against the full immutable oracle.",
+  "list_repository": {
+    "method": "PgRepository::list_storage_objects_nakama",
+    "transaction": "One bounded readonly SERIALIZABLE query under the pooled deadline; no generic retry. Existing typed byte-order list remains a separate contract.",
+    "ordering": "Use SQL text collation: public-all ORDER BY read,key,user_id; own-owner ORDER BY read,key; foreign/global-owner ORDER BY key. ACL is applied before limit+1. Actual profile text ordering still requires immutable-oracle qualification.",
+    "decoding": "Decode returned native JSONB text, independent public token, projection SHA-256 and ACL only after SQL visibility/limit selection. Validate known request-version/projection witness binding; unknown original-request provenance remains legal and never fabricates a witness. Do not compute MD5(native render), reject legal scalar/array/null history, or decode a hidden/sentinel row. The Nakama row factory follows authoritative 1..128 Unicode-character collection/key constraints and allows dot/control text; typed key restrictions remain unchanged."
+  },
+  "list_cursor": {
+    "format": "Unpadded URL-base64 of ordinary Go gob storageCursor {Key string, UserID UUID binary bytes, Read int32}. Decode compatible field descriptors rather than a fixed type ID or prefix.",
+    "scope": "Explicit Nakama client-profile exception: cursor is an unsigned untrusted position without actor, owner, collection, profile or project binding. SQL always applies the current authenticated principal ACL. The internal typed list keeps its scope-bound cursor contract.",
+    "ignored_fields": "Public-all ignores cursor Read; own-owner ignores cursor UserID; foreign/global-owner ignores both Read and UserID. Arbitrary int32 Read and empty Key are positions rather than identities. Clear the next cursor when its literal encoding equals the supplied cursor.",
+    "qualification": "Ordinary source vectors and scratch Go observations are diagnostic inputs only. Interface values, reserved metadata value types, multi-kind or unknown wire descriptors, invalid UTF-8 Go strings, stronger budgets and exact encoder/wire behavior remain unqualified."
+  },
+  "timestamp_source_candidate": {
+    "migration_version": 2,
+    "dto": "trnm-persistence-pg::StoredStorageObject/StoredStorageMutationReceipt",
+    "database_clock": "explicit transaction now() for insert and effective/exact/ACL-changing update; no default or fake history",
+    "acknowledgement": "RETURNING normalized protobuf seconds/nanos, microsecond database precision; publish after commit only",
+    "read_and_list": "upstream seconds-only timestamp projection",
+    "no_op": "Blind stored public token matching request MD5 plus equal ACL preserves native payload, known/unknown request provenance and stored timestamps without UPDATE; known request fingerprint mismatch fails closed.",
+    "historical": "NULL stays unknown, effective update may supply update_time while original creation stays NULL",
+    "writer_barrier": "mutation transaction checks full chain, schema/profile and writer epoch; old role upgrade barrier is separate from startup version checks",
+    "accepted": false
+  },
+  "jsonb_v3_projection_source_candidate": {
+    "schema_version": 4,
+    "storage_writer_epoch": 4,
+    "source": "crates/trnm-server/src/runtime/storage_api.rs",
+    "tests": "crates/trnm-server/src/runtime/storage_api_projection_tests.rs",
+    "live_fixture": "crates/trnm-server/src/runtime/storage_api_v3_live.rs",
+    "native_payload": "Database value_jsonb::TEXT is the sole operational payload. HTTP only applies bounded outer JSON string escaping and preserves decoded UTF-8 bytes; it does not canonicalize native JSONB or recompute the public token.",
+    "history": "Native JSONB object/scalar/array/null and opaque, empty, uppercase, star and Unicode public tokens are legal; empty version and unknown times are omitted. Known collision witnesses bind raw-request fingerprint/generated version to native projection SHA; unknown history stays witnessless.",
+    "limits": {
+      "request_value_bytes": 1048576,
+      "native_projection_bytes": 16777216,
+      "encoded_response_bytes": 33554432
+    },
+    "accepted": false,
+    "compatibility_credit": false,
+    "gap_closed": false,
+    "production_ready": false,
+    "source_import_contract": "contracts/database/foundation-schema.v1.json#storage_source_import"
+  },
+  "native_resource_boundary": "Projection16MiB/aggregate32MiB/encodedHTTP32MiB guards constrain returned/application bytes. They observe lengths after native SQL materialization and do not prove a database backend memory ceiling; actual database-side memory containment remains unqualified.",
+  "homogeneous_mutation_batches": {
+    "status": "source-candidate",
+    "maximum_occurrences": 100,
+    "sort_source_lock": "contracts/storage/nakama-sort-source-lock-v1.json",
+    "sort_profile": "go1.26.5-sort.Sort-canonical-owner-tuples",
+    "public_owner": "canonical-session-uuid",
+    "duplicate_key_policy": "preserve-every-write-or-delete-occurrence",
+    "write_ack_order": "original-input-ordinal",
+    "step_validation": "fresh-per-occurrence-acl-occ-native-current-row",
+    "atomicity": "whole-batch-commit-or-rollback",
+    "typed_mixed_duplicate_keys": "reject",
+    "batch_read_duplicate_keys": "reject",
+    "automatic_mutation_retry": false,
+    "runtime_raw_owner_representation_parity": false,
+    "hook_index_qualification": false,
+    "native_lock_schedule_qualified": false,
+    "accepted": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "full_nakama_replacement": false,
+    "row_lock_policy": "nakama-per-occurrence-only-typed-unique-locks-unchanged",
+    "write_tail_policy": "some-write-first-acl-or-exact-rejection-real-tail-until-hard-error",
+    "write_tail_semantic_conditions": [
+      "write-acl-rejection-after-native-jsonb-bind",
+      "exact-mismatch-after-native-jsonb-and-text-bind"
+    ],
+    "write_tail_hard_errors": "must-not-exist-existing-native-data-loss-resource-stop",
+    "write_tail_primary_error": "first-inner-semantic-rejection-existing-outer-pool-budget-may-override",
+    "write_tail_cleanup": "explicit-rollback-before-error-no-confirmation-on-rollback-failure",
+    "write_tail_rollback_failure": "retire-pooled-lease-before-return-recycling-direct-client-unchanged",
+    "native_write_prequeue_qualified": false,
+    "native_preparation_query_group_qualified": false,
+    "native_failing_occurrence_jsonb_bind_priority_qualified": false,
+    "conditional_exact_lock_footprint_qualified": false,
+    "native_isolation_retry_qualified": false,
+    "native_jsonb_binding": "formattext-original-request-bytes-before-host-acl-occ",
+    "native_condition_binding": "formattext-raw-text-before-host-acl-occ-no-varchar32-input-cast",
+    "exact_acquisition_policy": "token-and-server-or-write1-forupdate-with-nonlocking-rejected-fallback",
+    "exact_update_policy": "token-and-server-or-write1-native-jsonb-parameter4",
+    "native_write_constraint_facade": "write-invalidargument-database-constraint-violation-http500-code13",
+    "native_jsonb_exact_main_cases": 11,
+    "native_jsonb_exact_legal_surrogate_subvectors": 1,
+    "native_write_failure_app_cases": 1,
+    "late_exact_excluded_semantics": "conditional-eligibility-exclusion-not-absence-of-native-wait",
+    "late_exact_wait_cases": {
+      "postgresql": 0,
+      "cockroachdb": 2
+    },
+    "late_exact_no_wait_cases": {
+      "postgresql": 2,
+      "cockroachdb": 0
+    },
+    "literal_nul_condition_tail_policy": {
+      "postgresql": "native-text-hard-rejection-no-tail",
+      "cockroachdb": "native-text-accepted-first-acl-rejection-real-later-any-wait"
+    },
+    "insert_only_acquisition_policy": "no-existing-row-select-native-jsonb-projection-then-plain-insert",
+    "insert_only_unique_error_policy": "plain-insert-native-unique-hard-stop-keeps-existing-version-rejection",
+    "insert_only_native_main_cases": 3,
+    "insert_only_committed_existing_wait_cases": {
+      "postgresql": 0,
+      "cockroachdb": 1
+    },
+    "insert_only_committed_existing_no_wait_cases": {
+      "postgresql": 1,
+      "cockroachdb": 0
+    },
+    "insert_only_uncommitted_delete_wait_cases": {
+      "postgresql": 1,
+      "cockroachdb": 1
+    },
+    "native_insert_only_statement_schedule_qualified": false,
+    "any_acquisition_policy": {
+      "postgresql": "honest-insert15-reservation-or-retained-conflict-lock-real-prior",
+      "cockroachdb": "honest-insert15-reservation-then-skinny-acl-and-real-prior-forupdate"
+    },
+    "any_native_digest_policy": "native-jsonb-text-utf8-sha25632-with-profile-byte-adapter",
+    "any_previous_receipt_policy": "returning-one-insert-none-otherwise-actual-native-prior",
+    "any_update_policy": "locked-prior-bound-insert-select-onconflict-authorized-substantive-update",
+    "any_unknown_noop_policy": "matching-token-read-write-preserves-complete-native-fifteen-tuple",
+    "any_batch_isolation_policy": {
+      "postgresql": "read-committed-only-validated-nonempty-all-any-some-write",
+      "cockroachdb": "serializable",
+      "other_batches": "serializable"
+    },
+    "any_native_main_cases": 4,
+    "any_known_duplicate_occurrences": 3,
+    "any_unknown_duplicate_occurrences": 3,
+    "any_aba_occurrences": 2,
+    "any_delete_reinsert_cases": 1,
+    "native_any_statement_schedule_qualified": false,
+    "native_any_isolation_retry_qualified": false
+  }
+}

@@ -12,6 +12,7 @@ diagnostic-compat-server = []
 session-test-hooks = []
 
 [dependencies]
+bytes = "=1.12.1"
 native-tls = "=0.2.18"
 # Existing locked native backend, exposed only by the diagnostic TLS binary.
 openssl = "=0.10.81"
@@ -20,6 +21,9 @@ postgres-native-tls = "=0.5.3"
 prost = "=0.14.3"
 r2d2 = "=0.8.10"
 r2d2_postgres = "=0.18.2"
+rustix = { version = "=1.1.4", features = ["fs"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.145"
 tokio = { version = "=1.53.1", features = ["rt", "time"] }
 tonic = { version = "=0.14.5", features = ["transport"] }
 tonic-prost = "=0.14.5"
@@ -32,11 +36,25 @@ trnm-token-jwt-adapter = { path = "../trnm-token-jwt-adapter" }
 trnm-token-jwt-provider-adapter = { path = "../trnm-token-jwt-provider-adapter" }
 
 [build-dependencies]
+openssl = "=0.10.81"
+serde_json = "=1.0.145"
 prost-build = "=0.14.3"
 prost-types = "=0.14.3"
 protoc-bin-vendored = "=3.2.0"
 tonic-build = "=0.14.5"
 tonic-prost-build = "=0.14.5"
+
+[[bin]]
+name = "trnm-storage-export"
+path = "src/bin/trnm-storage-export.rs"
+
+[[bin]]
+name = "trnm-storage-import"
+path = "src/bin/trnm-storage-import.rs"
+
+[[bin]]
+name = "trnm-schema"
+path = "src/bin/trnm-schema.rs"
 
 [[bin]]
 name = "trnm-outbox-worker"

@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/schema_source_selection.py'
+      - 'scripts/schema_evidence_binding.py'
+      - 'scripts/capture-schema-source-selection.py'
+      - 'contracts/database/source-execution-evidence.v1.json'
+      - 'tests/control_plane/test_schema_source_selection.py'
+      - 'tests/control_plane/test_schema_evidence_binding.py'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'config/database-test-images.json'
@@ -138,11 +144,145 @@ jobs:
         env:
           EXECUTION_OUTCOME: ${{ steps.execute.outcome }}
           PROFILE: ${{ matrix.profile }}
+          EVIDENCE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
         shell: bash
         run: |
           set -euo pipefail
-          evidence_root="run/outbox-spool-worker/${PROFILE}"
-          mkdir -p "$evidence_root"
+          evidence_root="run/outbox-spool-worker/${PROFILE}/${EVIDENCE_RUN_ID}"
+          test -d "$evidence_root"
+          PROFILE="$PROFILE" EVIDENCE_ROOT="$evidence_root" python3 - <<'PY_SPOOL_SOURCE'
+          import hashlib,importlib.util,json,math,os,re,stat,subprocess,sys
+          from pathlib import Path
+          sys.path.insert(0,'scripts')
+          import schema_evidence_binding as binding
+          spec=importlib.util.spec_from_file_location('spool_schema_identity','scripts/check-authoritative-schema-identity.py')
+          schemas=importlib.util.module_from_spec(spec);spec.loader.exec_module(schemas)
+          root=Path(os.environ['EVIDENCE_ROOT']);profile=os.environ['PROFILE']
+          commit=os.environ['CANDIDATE_SHA'];tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip()
+          run_id=os.environ['EVIDENCE_RUN_ID']
+          if re.fullmatch(r'[0-9a-f]{40}',commit) is None or re.fullmatch(r'[0-9a-f]{40}',tree) is None:
+              raise SystemExit('invalid spool candidate object identity')
+          if profile not in ('postgresql','cockroachdb') or re.fullmatch(r'[1-9][0-9]{0,19}-[1-9][0-9]{0,9}-'+profile,run_id) is None:
+              raise SystemExit('invalid spool evidence run identity')
+          if run_id != os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT']+'-'+profile or root != Path('run/outbox-spool-worker')/profile/run_id:
+              raise SystemExit('spool evidence leaf differs from current producer')
+          for path in (Path('run'),Path('run/outbox-spool-worker'),root.parent,root):
+              if not stat.S_ISDIR(path.lstat().st_mode):
+                  raise SystemExit('spool evidence directory must be owned regular directory')
+          def read_regular_at(directory,name,maximum,allow_empty=False):
+              descriptor=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=directory)
+              try:
+                  before=os.fstat(descriptor)
+                  if not stat.S_ISREG(before.st_mode) or not (0 if allow_empty else 1) <= before.st_size <= maximum:
+                      raise SystemExit('invalid bounded spool evidence regular file')
+                  parts=[];size=0
+                  while True:
+                      part=os.read(descriptor,min(65536,maximum-size+1))
+                      if not part:break
+                      size+=len(part)
+                      if size>maximum:raise SystemExit('spool evidence file byte budget exceeded')
+                      parts.append(part)
+                  after=os.fstat(descriptor)
+                  if size!=before.st_size or any(getattr(before,key)!=getattr(after,key) for key in ('st_dev','st_ino','st_size','st_mtime_ns','st_ctime_ns')):
+                      raise SystemExit('spool evidence file changed during read')
+                  return b''.join(parts)
+              finally:os.close(descriptor)
+          root_fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+          root_identity=os.fstat(root_fd)
+          try:
+              initial_reads={}
+              def read_leaf(name,maximum):
+                  raw=read_regular_at(root_fd,name,maximum);initial_reads[name]=(raw,maximum)
+                  return raw
+              source={}
+              for line in read_leaf('source.txt',65536).decode('utf-8').splitlines():
+                  key,value=line.split('=',1)
+                  if key in source:raise SystemExit('duplicate spool source identity field')
+                  source[key]=value
+              source_keys={'repository','commit','tree','profile','image','foundation_migration','foundation_migration_sha256','run_id'}
+              if set(source)!=source_keys:raise SystemExit('spool source closed fields differ')
+              def unique_object(pairs):
+                  result={}
+                  for key,value in pairs:
+                      if key in result:raise SystemExit('duplicate spool manifest field')
+                      result[key]=value
+                  return result
+              def strict_manifest(raw):
+                  value=json.loads(raw,object_pairs_hook=unique_object,parse_constant=lambda _:(_ for _ in ()).throw(SystemExit('nonfinite spool manifest')))
+                  pending=[(value,0)];nodes=0
+                  while pending:
+                      item,depth=pending.pop();nodes+=1
+                      if depth>64 or nodes>20000:raise SystemExit('spool manifest structural budget exceeded')
+                      if type(item) is dict:pending.extend((child,depth+1) for child in item.values())
+                      elif type(item) is list:pending.extend((child,depth+1) for child in item)
+                      elif type(item) is float and not math.isfinite(item):raise SystemExit('nonfinite spool manifest')
+                  return value
+              manifest=strict_manifest(read_leaf('manifest.json',2097152))
+              manifest_keys={'schema','target_repository','target_commit','target_tree','profile','image','foundation_migration','foundation_migration_sha256','schema_identity','migration_chain_validation','run_id','assertions','artifacts','claims','limitations'}
+              expected_claims={'single_node_dual_profile_source_slice_executed':True,'external_effect_provider_executed':False,'single_host_multi_process_reclaim_proven':True,'multi_node_failover_proven':False,'endurance_proven':False,'compatibility_credit':False,'production_ready':False}
+              expected_assertions={'normal_delivery_completed':True,'stable_receipt_digest':True,'real_process_exit_after_spool_observed':True,'post_write_pre_ack_reclaim_completed':True,'distinct_node_identity_reclaimed_expired_lease':True,'lease_owner_and_generation_fenced':True,'conflicting_receipt_not_overwritten':True,'attempt_exhaustion_dead_lettered':True,'two_worker_claim_exclusion_passed':True,'duplicate_visible_effect_count':0,'completed_count':3,'dead_letter_count':1}
+              expected_limitations=['The sink is a durable local spool, not a provider or realtime consumer.','The run uses distinct process and node identities on one host; it does not prove cross-host filesystem semantics or multi-node HA.','Independent database/data-integrity review is still required for gap credit.']
+              if type(manifest) is not dict or set(manifest)!=manifest_keys or manifest['schema']!='trillionnium.outbox-spool-worker-evidence.v1' or not binding.same(manifest['claims'],expected_claims) or not binding.same(manifest['assertions'],expected_assertions) or not binding.same(manifest['limitations'],expected_limitations):
+                  raise SystemExit('spool manifest closed producer envelope differs')
+              expected={'repository':os.environ['CANDIDATE_REPOSITORY'],'commit':commit,'tree':tree,'profile':profile,'run_id':run_id}
+              if any(source[key]!=value for key,value in expected.items()) or any(manifest[key]!=value for key,value in {'target_repository':expected['repository'],'target_commit':commit,'target_tree':tree,'profile':profile,'run_id':run_id}.items()):
+                  raise SystemExit('spool identity does not bind current producer leaf')
+              token=binding.verify_binding(Path('.'),profile=profile)
+              proof=binding.binding_document(token)
+              binding.validate_annex_directory(token,root,commit=commit,tree=tree)
+              report=schemas.decode_identity_document(read_leaf('schema-identity.json',16384))
+              schemas.validate_identity(report,profile=profile,selection=binding.selection_token(token),mode='fresh',source_commit=commit)
+              complete_validation=binding.strict(read_leaf('migration-chain-validation.json',131072),'spool_complete_validation')
+              if not binding.same(complete_validation,proof['source_selection']['source']['complete_validation']) or not binding.same(manifest['schema_identity'],report) or not binding.same(manifest['migration_chain_validation'],complete_validation):
+                  raise SystemExit('spool embedded schema or complete chain differs from verified leaf')
+              first=proof['source_selection']['selection']['ordered_files'][0]
+              first_inventory=[row for row in proof['full_source_inventory'] if row['path']==first['path']]
+              if len(first_inventory)!=1:raise SystemExit('spool foundation inventory not unique')
+              migration_path=first['path'];migration_sha=first_inventory[0]['sha256']
+              if any(source[key]!=value or manifest[key]!=value for key,value in {'image':proof['image'],'foundation_migration':migration_path,'foundation_migration_sha256':migration_sha}.items()):
+                  raise SystemExit('spool image or foundation binding differs')
+              # Dynamic producer members; no fixed filename allowlist. Empty files are valid.
+              max_entries=1024;max_file_bytes=67108864;max_total_bytes=268435456
+              artifacts=[];annex_images={};entry_count=0;total_bytes=0
+              def inventory(directory,prefix='',depth=0):
+                  global entry_count,total_bytes
+                  if depth>16:raise SystemExit('spool artifact directory depth exceeded')
+                  with os.scandir(directory) as entries:
+                      for entry in entries:
+                          entry_count+=1
+                          if entry_count>max_entries:raise SystemExit('spool artifact entry budget exceeded')
+                          name=entry.name
+                          if name in ('.','..') or '/' in name or any(ord(char)<32 or ord(char)==127 or 0xd800<=ord(char)<=0xdfff for char in name):raise SystemExit('unsafe spool artifact path')
+                          relative=prefix+name;metadata=entry.stat(follow_symlinks=False)
+                          if stat.S_ISDIR(metadata.st_mode):
+                              child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory)
+                              try:inventory(child,relative+'/',depth+1)
+                              finally:os.close(child)
+                          elif stat.S_ISREG(metadata.st_mode):
+                              raw=read_regular_at(directory,name,max_file_bytes,allow_empty=True)
+                              total_bytes+=len(raw)
+                              if total_bytes>max_total_bytes:raise SystemExit('spool artifact aggregate byte budget exceeded')
+                              if relative in (binding.SIDECAR,binding.HEAD_PROOF) or relative.startswith(binding.ANNEX+'/'):annex_images[relative]=raw
+                              if name in ('manifest.json','SHA256SUMS'):continue
+                              artifacts.append({'path':relative,'sha256':hashlib.sha256(raw).hexdigest(),'size_bytes':len(raw)})
+                          else:raise SystemExit('spool artifact must be a regular file or directory')
+              inventory(root_fd)
+              artifacts.sort(key=lambda row:Path(row['path']))
+              listed=manifest['artifacts']
+              if type(listed) is not list or len(listed)>max_entries:raise SystemExit('invalid spool artifact inventory')
+              names=set()
+              for row in listed:
+                  if type(row) is not dict or set(row)!={'path','sha256','size_bytes'} or type(row['path']) is not str or not row['path'] or row['path'].startswith('/') or any(part in ('','.', '..') for part in row['path'].split('/')) or any(ord(char)<32 or ord(char)==127 or 0xd800<=ord(char)<=0xdfff for char in row['path']) or row['path'] in names or type(row['sha256']) is not str or re.fullmatch(r'[0-9a-f]{64}',row['sha256']) is None or type(row['size_bytes']) is not int or not 0<=row['size_bytes']<=max_file_bytes:
+                      raise SystemExit('invalid closed spool artifact row')
+                  names.add(row['path'])
+              if not binding.same(listed,artifacts):raise SystemExit('spool artifact inventory differs from actual leaf bytes')
+              binding.validate_annex_files(token,annex_images,commit=commit,tree=tree)
+              for name,(raw,maximum) in initial_reads.items():
+                  if read_regular_at(root_fd,name,maximum)!=raw:raise SystemExit('spool evidence identity changed before seal')
+              final_root=root.stat(follow_symlinks=False)
+              if not stat.S_ISDIR(final_root.st_mode) or (final_root.st_dev,final_root.st_ino)!=(root_identity.st_dev,root_identity.st_ino):raise SystemExit('spool evidence root changed before seal')
+          finally:os.close(root_fd)
+          PY_SPOOL_SOURCE
           archive="run/outbox-spool-worker-${PROFILE}-${CANDIDATE_SHA}.tar.gz"
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \

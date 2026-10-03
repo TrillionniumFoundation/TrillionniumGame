@@ -1,0 +1,162 @@
+
+WITH rows AS (
+  SELECT 'trnm_schema_metadata' AS table_name,
+         jsonb_build_object(
+           'singleton', singleton,
+           'schema_version', schema_version,
+           'profile', profile,
+           'source_commit', source_commit,
+           'applied_at_ms', applied_at_ms,
+           'chain_digest', chain_digest,
+           'digest_algorithm', digest_algorithm,
+           'storage_writer_epoch', storage_writer_epoch,
+           'upgrade_source_commit', upgrade_source_commit,
+           'v2_apply_source_commit', v2_apply_source_commit,
+           'v3_apply_source_commit', v3_apply_source_commit
+         ) AS value
+  FROM trnm_schema_metadata
+  UNION ALL
+  SELECT 'trnm_entity_heads', jsonb_build_object(
+           'entity_id', encode(entity_id, 'hex'),
+           'revision', revision,
+           'last_event_sequence', last_event_sequence,
+           'authority_generation', authority_generation,
+           'state_digest', encode(state_digest, 'hex'),
+           'updated_at_ms', updated_at_ms
+         )
+  FROM trnm_entity_heads
+  UNION ALL
+  SELECT 'trnm_command_receipts', jsonb_build_object(
+           'entity_id', encode(entity_id, 'hex'),
+           'command_id', encode(command_id, 'hex'),
+           'fingerprint', encode(fingerprint, 'hex'),
+           'revision', revision,
+           'state_digest', encode(state_digest, 'hex'),
+           'first_event_sequence', first_event_sequence,
+           'last_event_sequence', last_event_sequence,
+           'event_count', event_count,
+           'committed_at_ms', committed_at_ms
+         )
+  FROM trnm_command_receipts
+  UNION ALL
+  SELECT 'trnm_events', jsonb_build_object(
+           'entity_id', encode(entity_id, 'hex'),
+           'sequence', sequence,
+           'event_id', encode(event_id, 'hex'),
+           'command_id', encode(command_id, 'hex'),
+           'payload_digest', encode(payload_digest, 'hex'),
+           'created_at_ms', created_at_ms
+         )
+  FROM trnm_events
+  UNION ALL
+  SELECT 'trnm_outbox', jsonb_build_object(
+           'intent_id', encode(intent_id, 'hex'),
+           'entity_id', encode(entity_id, 'hex'),
+           'command_id', encode(command_id, 'hex'),
+           'kind', kind,
+           'payload_digest', encode(payload_digest, 'hex'),
+           'attempt', attempt,
+           'lease_generation', lease_generation,
+           'state', state,
+           'owner_node', CASE WHEN owner_node IS NULL THEN NULL ELSE encode(owner_node, 'hex') END,
+           'receipt_digest', CASE WHEN receipt_digest IS NULL THEN NULL ELSE encode(receipt_digest, 'hex') END,
+           'dead_reason_digest', CASE WHEN dead_reason_digest IS NULL THEN NULL ELSE encode(dead_reason_digest, 'hex') END,
+           'available_at_ms', available_at_ms,
+           'updated_at_ms', updated_at_ms
+         )
+  FROM trnm_outbox
+  UNION ALL
+  SELECT 'trnm_command_outbox', jsonb_build_object(
+           'entity_id', encode(entity_id, 'hex'),
+           'command_id', encode(command_id, 'hex'),
+           'position', position,
+           'intent_id', encode(intent_id, 'hex')
+         )
+  FROM trnm_command_outbox
+  UNION ALL
+  SELECT 'trnm_authority_leases', jsonb_build_object(
+           'entity_id', encode(entity_id, 'hex'),
+           'owner_node', encode(owner_node, 'hex'),
+           'lease_generation', lease_generation,
+           'authority_generation', authority_generation,
+           'expires_at_ms', expires_at_ms,
+           'updated_at_ms', updated_at_ms
+         )
+  FROM trnm_authority_leases
+  UNION ALL
+  SELECT 'trnm_session_families', jsonb_build_object(
+           'family_id', encode(family_id, 'hex'),
+           'user_id', encode(user_id, 'hex'),
+           'generation', generation,
+           'active_token_id', CASE WHEN active_token_id IS NULL THEN NULL ELSE encode(active_token_id, 'hex') END,
+           'revoked_reason', revoked_reason,
+           'created_at_ms', created_at_ms,
+           'updated_at_ms', updated_at_ms
+         )
+  FROM trnm_session_families
+  UNION ALL
+  SELECT 'trnm_refresh_tokens', jsonb_build_object(
+           'family_id', encode(family_id, 'hex'),
+           'token_id', encode(token_id, 'hex'),
+           'token_digest', encode(token_digest, 'hex'),
+           'generation', generation,
+           'state', state,
+           'issued_at_ms', issued_at_ms,
+           'consumed_at_ms', consumed_at_ms
+         )
+  FROM trnm_refresh_tokens
+  UNION ALL
+  SELECT 'trnm_storage_objects', jsonb_build_object(
+           'collection', collection,
+           'object_key', object_key,
+           'user_id', encode(user_id, 'hex'),
+           'value_bytes', encode(value_bytes, 'hex'),
+           'version_digest', encode(version_digest, 'hex'),
+           'value_jsonb_text', value_jsonb::TEXT,
+           'public_version', public_version,
+           'value_projection_digest', encode(value_projection_digest, 'hex'),
+           'value_origin', value_origin,
+           'source_manifest_digest', encode(source_manifest_digest, 'hex'),
+           'request_native_text', CASE WHEN value_bytes IS NULL THEN NULL ELSE pg_catalog.convert_from(value_bytes,'UTF8')::JSONB::TEXT END,
+           'read_permission', read_permission,
+           'write_permission', write_permission,
+           'updated_at_ms', updated_at_ms,
+           'create_time_text', create_time::TEXT,
+           'update_time_text', update_time::TEXT,
+           'create_epoch', extract(epoch FROM create_time),
+           'update_epoch', extract(epoch FROM update_time)
+         )
+  FROM trnm_storage_objects
+  UNION ALL
+  SELECT 'trnm_storage_import_jobs', jsonb_build_object(
+           'singleton', singleton,
+           'manifest_digest', encode(manifest_digest, 'hex'),
+           'custody_digest', encode(custody_digest, 'hex'),
+           'source_inventory_digest', encode(source_inventory_digest, 'hex'),
+           'target_schema_guard_digest', encode(target_schema_guard_digest, 'hex'),
+           'prefix_digest', encode(prefix_digest, 'hex'),
+           'source_profile', source_profile,
+           'source_snapshot', source_snapshot,
+           'audit_at_ms', audit_at_ms,
+           'total_rows', total_rows,
+           'total_pages', total_pages,
+           'next_page', next_page,
+           'committed_rows', committed_rows,
+           'status', status
+         )
+  FROM trnm_storage_import_jobs
+  UNION ALL
+  SELECT 'trnm_storage_import_pages', jsonb_build_object(
+           'manifest_digest', encode(manifest_digest, 'hex'),
+           'page_index', page_index,
+           'first_ordinal', first_ordinal,
+           'row_count', row_count,
+           'page_digest', encode(page_digest, 'hex'),
+           'prefix_digest', encode(prefix_digest, 'hex'),
+           'audit_at_ms', audit_at_ms
+         )
+  FROM trnm_storage_import_pages
+)
+SELECT table_name || '|' || value::text AS snapshot_row
+FROM rows
+ORDER BY table_name, value::text;

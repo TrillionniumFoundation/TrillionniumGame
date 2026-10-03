@@ -1,11 +1,69 @@
 """Source wiring only; native TLS/SQL execution is independently mandatory."""
+import json
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 class DatabaseQualificationPaths(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text(encoding='utf-8')
+
+    def run_pgwire_table_count_guard(self, count):
+        source = self.text('scripts/ci-pgwire-vertical-slice.sh')
+        start = source.index('sql_exec "SELECT count(*) FROM information_schema.tables')
+        end = source.index('\ncargo build --locked', start)
+        # Run the production Bash block, with only the native query replaced.
+        # This proves harness branching, not native database execution.
+        block = source[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            environment = dict(os.environ, TEST_TABLE_COUNT=count, TEST_EVIDENCE=directory)
+            result = subprocess.run(
+                ['bash', '-c', 'set -Eeuo pipefail\n'
+                 'evidence=$TEST_EVIDENCE\n'
+                 'sql_exec() { printf "%s\\n" "$TEST_TABLE_COUNT"; }\n'
+                 + block + '\nprintf "count_guard_advanced\\n"\n'],
+                env=environment, capture_output=True, text=True, timeout=5, check=False,
+            )
+            observed = (Path(directory) / 'table-count.txt').read_bytes()
+        return result, observed
+
+    def test_pgwire_table_count_guard_accepts_current_schema_with_both_import_journals(self):
+        authority = json.loads(self.text('docs/development/SCHEMA_AUTHORITY.json'))
+        required = authority['adapter_abi']['required_tables']
+        self.assertEqual(len(required), 12)
+        self.assertEqual(len(set(required)), 12)
+        self.assertIn('trnm_storage_import_jobs', required)
+        self.assertIn('trnm_storage_import_pages', required)
+        source = self.text('scripts/ci-pgwire-vertical-slice.sh')
+        self.assertLess(source.index('--mode fresh --source-commit="$commit"'),
+                        source.index('actual_table_count='))
+        self.assertIn('"table_count": 12', source)
+        result, observed = self.run_pgwire_table_count_guard('12')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'count_guard_advanced\n')
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(observed, b'12')
+
+    def test_pgwire_table_count_guard_rejects_historical_missing_and_extra_tables(self):
+        for count in ('10', '11', '13'):
+            with self.subTest(count=count):
+                result, observed = self.run_pgwire_table_count_guard(count)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, '')
+                self.assertEqual(observed, count.encode())
+                self.assertEqual(result.stderr,
+                                 'PG-wire authoritative table count mismatch: expected=12 actual=' + count + '\n')
+
+    def test_pgwire_table_count_guard_rejects_invalid_output_without_echoing_it(self):
+        result, observed = self.run_pgwire_table_count_guard('::error::untrusted')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(observed, b'::error::untrusted')
+        self.assertEqual(result.stderr,
+                         'PG-wire authoritative table count mismatch: expected=12 actual=invalid\n')
 
     def test_tls_negative_requires_typed_witness_and_bracket(self):
         source = self.text('crates/trnm-persistence-pg/src/bin/trnm-pg-tls-rotation-probe.rs')
@@ -33,6 +91,24 @@ class DatabaseQualificationPaths(unittest.TestCase):
         self.assertNotIn('CommitReceipt {', implementation)
         self.assertIn('CommitOutcome::Duplicate(applied)', implementation)
         self.assertIn('retry_exhausted', implementation)
+
+    def test_both_retry_processes_emit_actual_v3_provenance_and_table_counts(self):
+        for path in ('crates/trnm-persistence-pg/src/bin/trnm_server/retry_atomicity.rs',
+                     'crates/trnm-server/src/runtime/retry_atomicity.rs'):
+            implementation = self.text(path)
+            with self.subTest(path=path):
+                self.assertIn('emit_schema_report("retry_schema_apply_report", &report)', implementation)
+                self.assertIn('"retry_schema_verify_report"', implementation)
+                self.assertIn('.verify_authoritative_schema()', implementation)
+                self.assertIn('report.identity.v2_apply_source_commit', implementation)
+                self.assertIn('SELECT count(*)::BIGINT FROM information_schema.tables', implementation)
+                self.assertNotIn('table_count: 10', implementation)
+                self.assertEqual(implementation.count('println!("assertion='), 7)
+        workflow = self.text('.github/workflows/cockroach-serialization-retry.yml')
+        for marker in ("schemas.validate_identity(applied", "schemas.validate_identity(verified",
+                       "identity['authoritative_migration_file_count'] == 4", "v2_apply_source_commit",
+                       "files['migration-chain.lock.json'] == Path('migrations/MIGRATION_CHAIN.lock.json').read_bytes()"):
+            self.assertIn(marker, workflow)
 
     def test_live_jobs_require_new_assertions(self):
         tls = self.text('.github/workflows/pg-tls-rotation.yml')

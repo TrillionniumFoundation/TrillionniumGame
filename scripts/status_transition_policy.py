@@ -77,6 +77,24 @@ APPROVED_ROADMAP_SCOPE_REPLACEMENTS = (
         ),
         "credit_policy": "reset-no-verified-or-accepted-state-transfer",
     },
+    {
+        "previous_plan_version": 3,
+        "previous_milestone_id": "M0-SINGULAR-ADMISSION-AND-EVIDENCE-CLOSURE",
+        "previous_item_count": 12,
+        "previous_item_ids_sha256": (
+            "5a88e8a992c213d4a061a6e54eaff53f097287c988e0d57be0091e5b3fa57987"
+        ),
+        "current_plan_version": 3,
+        "current_milestone_id": "M0-SINGULAR-ADMISSION-AND-EVIDENCE-CLOSURE",
+        "current_item_count": 12,
+        "current_item_ids_sha256": (
+            "5a88e8a992c213d4a061a6e54eaff53f097287c988e0d57be0091e5b3fa57987"
+        ),
+        "current_scope_sha256": (
+            "0ff02640e58137d16125e317efa31ac9d87f990fa41b46bb475868b3939e9e58"
+        ),
+        "credit_policy": "reset-no-verified-or-accepted-state-transfer",
+    },
 )
 
 

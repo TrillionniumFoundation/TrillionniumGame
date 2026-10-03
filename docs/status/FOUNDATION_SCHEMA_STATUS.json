@@ -58,5 +58,34 @@
     "sg4_complete": false,
     "production_ready": false,
     "public_online": false
+  },
+  "current_chain_source_candidate": {
+    "schema_version": 4,
+    "storage_writer_epoch": 4,
+    "migrations": [
+      "0001_foundation_up.sql",
+      "0002_storage_timestamps_up.sql",
+      "0003_storage_jsonb_up.sql",
+      "0004_storage_source_import_up.sql"
+    ],
+    "legacy_verified_record_scope": "Existing profile records above identify immutable v1 foundation only; they grant no v2, v3, v4 or full-chain execution credit.",
+    "new_semantics": [
+      "nullable original create/update timestamps",
+      "transaction-clock storage write receipts",
+      "ordered migration identity and readonly startup catalog verification",
+      "explicit old-writer privilege barrier and unknown-history policy",
+      "per-revision prefix digests, explicit writer epochs and append-only action ranges; the historical timestamp revision remains v2 and the current full chain is v4",
+      "metadata publication compares every field of the previous revision and preserves original foundation provenance",
+      "profile-aware destructive privilege and reachable-role checks; a declared role does not prove an inventory or drain of all writers",
+      "native JSONB is the sole payload authority; opaque stored public versions remain independent of MD5 write acknowledgements over exact request bytes",
+      "known raw witnesses bind exact bytes to native projection; unknown original requests retain NULL raw witness pairs and independent nonzero source-manifest provenance",
+      "v2_apply_source_commit and v3_apply_source_commit permanently preserve the actual previous v2/v3 publishers; current upgrade source is separate",
+      "current reviewed ABI verifies column typmod, named CHECK and primary-key order without claiming general schema or constraint equivalence"
+    ],
+    "accepted": false,
+    "migration_compatible": false,
+    "rollback_proven": false,
+    "current_authoritative_table_count": 12,
+    "storage_source_import_contract": "contracts/database/foundation-schema.v1.json#storage_source_import"
   }
 }

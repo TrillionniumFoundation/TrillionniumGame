@@ -2,28 +2,58 @@
 
 mod auth;
 mod authority;
+mod nakama_account;
 mod outbox;
 mod pool;
+mod schema;
 mod session;
 mod storage;
+mod storage_import;
+mod storage_metadata;
 
 pub use auth::{
     parse_refresh_credential, AccessTokenVerifier, ParsedRefreshCredential, SessionPrincipal,
 };
 pub use authority::AuthorityLease;
+pub use nakama_account::{
+    AccountFailure, AccountPhase, AccountSqlFailure, AuthenticateCustom, AuthenticateCustomOutcome,
+    AuthenticateDevice, AuthenticateDeviceOutcome, NakamaAccountError,
+    NakamaAccountIdGenerationError, NakamaLegacyUser, NAKAMA_DEVICE_MAX_ATTEMPTS,
+};
 pub use outbox::{OutboxClaimBatch, OutboxLease, OutboxRetryOutcome};
-pub use pool::{PgPool, PgPoolConfig, PgPoolSnapshot, PgTlsConfig};
+pub use pool::{
+    PgAccountLeaseCancellation, PgAccountLeaseOutcome, PgPool, PgPoolConfig, PgPoolSnapshot,
+    PgTlsConfig,
+};
+pub use schema::{
+    authoritative_chain_digest, authoritative_supported_chain_digest, AuthoritativeSchemaTarget,
+    SchemaIdentity, SchemaMigrationReport, AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM,
+    AUTHORITATIVE_SCHEMA_VERSION, AUTHORITATIVE_STORAGE_WRITER_EPOCH,
+    AUTHORITATIVE_SUPPORTED_SCHEMA_VERSION,
+};
 #[cfg(feature = "session-test-hooks")]
 pub use session::SessionMutationPoint;
 pub use session::{
     CreateSessionFamily, RefreshRotationOutcome, RefreshTokenCredential, RotateRefreshToken,
     SessionFamilyRecord,
 };
+pub use storage::{StorageClientListPage, StorageListPosition};
+pub use storage_import::{
+    verify_storage_export, CheckedStorageImport, StorageExportOptions, StorageExportSummary,
+    StorageImportCustody, StorageImportOptions, StorageImportPacketSummary,
+    StorageImportPageReceipt, StorageImportProgress, VerifiedStorageExport,
+};
+pub use storage_metadata::{
+    StorageTimes, StorageTimestamp, StoredStorageClientListPage, StoredStorageMutationReceipt,
+    StoredStorageObject,
+};
 pub use trnm_storage_core::{
-    Actor as StorageActor, BatchOperation as StorageBatchOperation, ContentVersion,
-    DeleteOperation as StorageDeleteOperation, IntegrityDigest,
-    MutationReceipt as StorageMutationReceipt, ReadPermission, StorageObject, StorageObjectKey,
-    VersionCheck, WriteOperation as StorageWriteOperation, WritePermission,
+    Actor as StorageActor, BatchOperation as StorageBatchOperation, CollisionWitness,
+    ContentVersion, DeleteOperation as StorageDeleteOperation, IntegrityDigest,
+    MutationReceipt as StorageMutationReceipt, NakamaBatchKind as StorageNakamaBatchKind,
+    PublicVersion, ReadPermission, StorageObject, StorageObjectKey, StorageState, VersionCheck,
+    WriteOperation as StorageWriteOperation, WritePermission, MAX_PROJECTION_VALUE_BYTES,
+    MAX_REQUEST_VALUE_BYTES,
 };
 
 use std::collections::BTreeSet;
@@ -164,6 +194,7 @@ pub enum CommitOutcome {
 
 pub struct PgRepository {
     profile: DatabaseProfile,
+    serving_schema_target: AuthoritativeSchemaTarget,
     client: pool::ClientHandle,
 }
 
@@ -172,18 +203,32 @@ impl fmt::Debug for PgRepository {
         formatter
             .debug_struct("PgRepository")
             .field("profile", &self.profile)
+            .field("serving_schema_target", &self.serving_schema_target)
             .finish_non_exhaustive()
     }
 }
 
 impl PgRepository {
     pub fn connect(database_url: &str, profile: DatabaseProfile) -> Result<Self, DomainError> {
+        Self::connect_for_target(database_url, profile, AuthoritativeSchemaTarget::StorageV4)
+    }
+
+    /// Select a closed serving frontier before connection establishment.
+    /// Selection is not readiness; startup and each storage transaction verify
+    /// the selected catalog and recorded metadata independently.
+    pub fn connect_for_target(
+        database_url: &str,
+        profile: DatabaseProfile,
+        target: AuthoritativeSchemaTarget,
+    ) -> Result<Self, DomainError> {
+        target.require_capture_ready()?;
         if database_url.is_empty() {
             return Err(invalid("database_url_empty"));
         }
         let client = Client::connect(database_url, NoTls).map_err(map_postgres_error)?;
         Ok(Self {
             profile,
+            serving_schema_target: target,
             client: pool::ClientHandle::direct(client),
         })
     }
@@ -191,6 +236,11 @@ impl PgRepository {
     #[must_use]
     pub const fn profile(&self) -> DatabaseProfile {
         self.profile
+    }
+
+    #[must_use]
+    pub const fn serving_schema_target(&self) -> AuthoritativeSchemaTarget {
+        self.serving_schema_target
     }
 
     pub fn table_exists(&mut self, table: &str) -> Result<bool, DomainError> {
@@ -217,6 +267,9 @@ impl PgRepository {
             .map_err(map_postgres_error)
     }
 
+    /// Legacy adapter entry point retained for callers of the v1 API. Schema
+    /// provenance belongs to the ordered migrator; opening an adapter verifies
+    /// the current catalog and identity without rewriting the creating commit.
     pub fn bind_schema_metadata(
         &mut self,
         source_commit: &str,
@@ -226,38 +279,8 @@ impl PgRepository {
         {
             return Err(invalid("invalid_schema_source_commit"));
         }
-        let applied_at_ms = to_i64(applied_at_ms)?;
-        self.client
-            .execute(
-                "INSERT INTO trnm_schema_metadata \
-                 (singleton, schema_version, profile, source_commit, applied_at_ms) \
-                 VALUES (1, 1, $1, $2, $3) ON CONFLICT (singleton) DO NOTHING",
-                &[
-                    &self.profile.metadata_value(),
-                    &source_commit,
-                    &applied_at_ms,
-                ],
-            )
-            .map_err(map_postgres_error)?;
-        let row = self
-            .client
-            .query_opt(
-                "SELECT schema_version, profile, source_commit \
-                 FROM trnm_schema_metadata WHERE singleton = 1",
-                &[],
-            )
-            .map_err(map_postgres_error)?
-            .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
-        let version: i64 = row.get(0);
-        let profile: String = row.get(1);
-        let recorded_commit: String = row.get(2);
-        if version != 1
-            || profile != self.profile.metadata_value()
-            || recorded_commit != source_commit
-        {
-            return Err(failed_precondition("schema_metadata_mismatch"));
-        }
-        Ok(())
+        let _ = to_i64(applied_at_ms)?;
+        self.verify_authoritative_schema().map(|_| ())
     }
 
     pub fn bootstrap_entity(
@@ -272,35 +295,27 @@ impl PgRepository {
         }
         let authority_generation = to_i64(authority_generation)?;
         let updated_at_ms = to_i64(updated_at_ms)?;
-        let inserted = self
+        let mut transaction = self
             .client
-            .execute(
-                "INSERT INTO trnm_entity_heads \
-                 (entity_id, revision, last_event_sequence, authority_generation, \
-                  state_digest, updated_at_ms) \
-                 VALUES ($1, 0, 0, $2, $3, $4) ON CONFLICT (entity_id) DO NOTHING",
-                &[
-                    &entity.as_bytes().as_slice(),
-                    &authority_generation,
-                    &state.as_bytes().as_slice(),
-                    &updated_at_ms,
-                ],
-            )
+            .build_transaction()
+            .isolation_level(IsolationLevel::Serializable)
+            .start()
             .map_err(map_postgres_error)?;
-        if inserted != 1 {
-            return Err(error(
-                StableCode::AlreadyExists,
-                "entity_already_exists",
-                RetryClass::Never,
-            ));
-        }
-        self.load_head(entity)?.ok_or_else(|| {
-            error(
-                StableCode::DataLoss,
-                "entity_bootstrap_lost",
-                RetryClass::Never,
-            )
-        })
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
+        let row = transaction.query_opt(
+            "INSERT INTO public.trnm_entity_heads \
+             (entity_id, revision, last_event_sequence, authority_generation, state_digest, updated_at_ms) \
+             VALUES ($1, 0, 0, $2, $3, $4) ON CONFLICT (entity_id) DO NOTHING \
+             RETURNING revision, last_event_sequence, authority_generation, state_digest, updated_at_ms",
+            &[&entity.as_bytes().as_slice(), &authority_generation, &state.as_bytes().as_slice(), &updated_at_ms],
+        ).map_err(map_postgres_error)?.ok_or_else(|| error(
+            StableCode::AlreadyExists, "entity_already_exists", RetryClass::Never))?;
+        let head = decode_head(entity, &row)?;
+        transaction.commit().map_err(map_postgres_error)?;
+        Ok(head)
     }
 
     pub fn load_head(&mut self, entity: EntityId) -> Result<Option<EntityHead>, DomainError> {
@@ -311,7 +326,7 @@ impl PgRepository {
             .client
             .query_opt(
                 "SELECT revision, last_event_sequence, authority_generation, \
-                 state_digest, updated_at_ms FROM trnm_entity_heads WHERE entity_id = $1",
+                 state_digest, updated_at_ms FROM public.trnm_entity_heads WHERE entity_id = $1",
                 &[&entity.as_bytes().as_slice()],
             )
             .map_err(map_postgres_error)?;
@@ -329,6 +344,10 @@ impl PgRepository {
             .isolation_level(IsolationLevel::Serializable)
             .start()
             .map_err(map_postgres_error)?;
+        crate::storage_import::verify_business_storage_import_serving(
+            &mut transaction,
+            self.profile,
+        )?;
 
         if let Some(receipt) = load_receipt(&mut transaction, request.entity, request.command)? {
             if receipt.fingerprint == request.fingerprint {
@@ -345,7 +364,7 @@ impl PgRepository {
         let head_row = transaction
             .query_opt(
                 "SELECT revision, last_event_sequence, authority_generation \
-                 FROM trnm_entity_heads WHERE entity_id = $1 FOR UPDATE",
+                 FROM public.trnm_entity_heads WHERE entity_id = $1 FOR UPDATE",
                 &[&request.entity.as_bytes().as_slice()],
             )
             .map_err(map_postgres_error)?
@@ -390,7 +409,7 @@ impl PgRepository {
         let committed_at_ms_i64 = to_i64(request.committed_at_ms)?;
         let updated = transaction
             .execute(
-                "UPDATE trnm_entity_heads SET revision = $2, last_event_sequence = $3, \
+                "UPDATE public.trnm_entity_heads SET revision = $2, last_event_sequence = $3, \
                  state_digest = $4, updated_at_ms = $5 \
                  WHERE entity_id = $1 AND revision = $6 AND authority_generation = $7",
                 &[
@@ -417,7 +436,7 @@ impl PgRepository {
             i32::try_from(request.events.len()).map_err(|_| counter_overflow())?;
         transaction
             .execute(
-                "INSERT INTO trnm_command_receipts \
+                "INSERT INTO public.trnm_command_receipts \
                  (entity_id, command_id, fingerprint, revision, state_digest, \
                   first_event_sequence, last_event_sequence, event_count, committed_at_ms) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
@@ -441,7 +460,7 @@ impl PgRepository {
             let sequence_i64 = to_i64(sequence)?;
             transaction
                 .execute(
-                    "INSERT INTO trnm_events \
+                    "INSERT INTO public.trnm_events \
                      (entity_id, sequence, event_id, command_id, payload_digest, created_at_ms) \
                      VALUES ($1, $2, $3, $4, $5, $6)",
                     &[
@@ -460,7 +479,7 @@ impl PgRepository {
             let available_at_ms = to_i64(intent.available_at_ms)?;
             transaction
                 .execute(
-                    "INSERT INTO trnm_outbox \
+                    "INSERT INTO public.trnm_outbox \
                      (intent_id, entity_id, command_id, kind, payload_digest, \
                       attempt, lease_generation, state, owner_node, receipt_digest, \
                       dead_reason_digest, available_at_ms, updated_at_ms) \
@@ -479,7 +498,7 @@ impl PgRepository {
             let position = i32::try_from(position).map_err(|_| counter_overflow())?;
             transaction
                 .execute(
-                    "INSERT INTO trnm_command_outbox \
+                    "INSERT INTO public.trnm_command_outbox \
                      (entity_id, command_id, position, intent_id) VALUES ($1, $2, $3, $4)",
                     &[
                         &request.entity.as_bytes().as_slice(),
@@ -514,7 +533,7 @@ fn load_receipt(
     let row = transaction
         .query_opt(
             "SELECT fingerprint, revision, state_digest, first_event_sequence, \
-             last_event_sequence, event_count FROM trnm_command_receipts \
+             last_event_sequence, event_count FROM public.trnm_command_receipts \
              WHERE entity_id = $1 AND command_id = $2",
             &[
                 &entity.as_bytes().as_slice(),
@@ -527,7 +546,7 @@ fn load_receipt(
     };
     let outbox_rows = transaction
         .query(
-            "SELECT intent_id FROM trnm_command_outbox \
+            "SELECT intent_id FROM public.trnm_command_outbox \
              WHERE entity_id = $1 AND command_id = $2 ORDER BY position",
             &[
                 &entity.as_bytes().as_slice(),
@@ -710,6 +729,28 @@ const fn error(code: StableCode, reason: &'static str, retry: RetryClass) -> Dom
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_accounts_connection_gate_precedes_url_validation() {
+        for profile in [
+            super::DatabaseProfile::PostgreSql,
+            super::DatabaseProfile::CockroachDb,
+        ] {
+            let error = super::PgRepository::connect_for_target(
+                "",
+                profile,
+                super::AuthoritativeSchemaTarget::NakamaAccountsV5,
+            )
+            .unwrap_err();
+            assert_eq!(error.reason(), "schema5_native_catalog_capture_pending");
+            assert_eq!(
+                super::PgRepository::connect("", profile)
+                    .unwrap_err()
+                    .reason(),
+                "database_url_empty"
+            );
+        }
+    }
+
     use super::*;
 
     fn digest(value: u8) -> Digest32 {

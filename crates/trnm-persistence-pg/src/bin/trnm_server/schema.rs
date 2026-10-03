@@ -2,49 +2,61 @@ use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use trnm_persistence_pg::{DatabaseProfile, PgPool, PgRepository, PgTlsConfig};
+use trnm_persistence_pg::{DatabaseProfile, IntegrityDigest, PgPool, PgTlsConfig, SchemaIdentity};
 
 use super::config::{DatabaseTlsMode, ServerConfig};
-use super::error::ServerError;
+use super::error::{diagnose_migration_result, MigrationPhase, ServerError};
 use super::pool::PooledRepository;
 
-const POSTGRESQL_MIGRATION: &str =
-    include_str!("../../../../../migrations/postgresql/0001_foundation_up.sql");
-const COCKROACHDB_MIGRATION: &str =
-    include_str!("../../../../../migrations/cockroachdb/0001_foundation_up.sql");
-const REQUIRED_TABLES: [&str; 10] = [
-    "trnm_schema_metadata",
-    "trnm_entity_heads",
-    "trnm_command_receipts",
-    "trnm_events",
-    "trnm_outbox",
-    "trnm_command_outbox",
-    "trnm_authority_leases",
-    "trnm_session_families",
-    "trnm_refresh_tokens",
-    "trnm_storage_objects",
-];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationReport {
     pub profile: DatabaseProfile,
     pub migration_applied: bool,
     pub table_count: usize,
+    pub schema_version: u64,
+    pub chain_digest: IntegrityDigest,
+    pub v2_apply_source_commit: String,
+    pub v3_apply_source_commit: String,
+    pub schema: SchemaIdentity,
 }
 
 pub fn migrate(config: &ServerConfig) -> Result<MigrationReport, ServerError> {
-    let pool = build_pool(config)?;
-    let mut repository = pool.acquire()?;
-    let metadata_exists = repository.table_exists("trnm_schema_metadata")?;
-    if !metadata_exists {
-        repository.execute_migration_batch(migration_for(config.database_profile))?;
-    }
-    verify_required_tables(&mut repository)?;
-    repository.bind_schema_metadata(&config.schema_source_commit, now_millis()?)?;
+    let profile = config.database_profile;
+    let pool = diagnose_migration_result(profile, MigrationPhase::BuildPool, build_pool(config))?;
+    let mut repository = diagnose_migration_result(
+        profile,
+        MigrationPhase::AcquireSession,
+        pool.acquire().map_err(ServerError::from),
+    )?;
+    let applied = (|| {
+        let legacy_writer_role = match std::env::var("TRNM_STORAGE_LEGACY_WRITER_ROLE") {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(_) => {
+                return Err(ServerError::Configuration(
+                    "invalid_legacy_storage_writer_role",
+                ))
+            }
+        };
+        repository
+            .migrate_authoritative_schema(
+                &config.schema_source_commit,
+                now_millis()?,
+                legacy_writer_role.as_deref(),
+            )
+            .map_err(ServerError::from)
+    })();
+    let report =
+        diagnose_migration_result(profile, MigrationPhase::ApplyAuthoritativeChain, applied)?;
     Ok(MigrationReport {
         profile: config.database_profile,
-        migration_applied: !metadata_exists,
-        table_count: REQUIRED_TABLES.len(),
+        migration_applied: report.migration_applied,
+        table_count: report.table_count,
+        schema_version: report.identity.schema_version,
+        chain_digest: report.identity.chain_digest,
+        v2_apply_source_commit: report.identity.v2_apply_source_commit.clone(),
+        v3_apply_source_commit: report.identity.v3_apply_source_commit.clone(),
+        schema: report.identity,
     })
 }
 
@@ -52,8 +64,8 @@ pub fn open_verified_repository(config: &ServerConfig) -> Result<PooledRepositor
     let pool = build_pool(config)?;
     {
         let mut repository = pool.acquire()?;
-        verify_required_tables(&mut repository)?;
-        repository.bind_schema_metadata(&config.schema_source_commit, now_millis()?)?;
+        repository.verify_authoritative_schema()?;
+        repository.verify_storage_import_serving()?;
     }
     Ok(PooledRepository::new(pool))
 }
@@ -84,24 +96,6 @@ fn read_optional(path: Option<&Path>) -> Result<Option<Vec<u8>>, ServerError> {
     path.map(fs::read).transpose().map_err(ServerError::from)
 }
 
-fn migration_for(profile: DatabaseProfile) -> &'static str {
-    match profile {
-        DatabaseProfile::PostgreSql => POSTGRESQL_MIGRATION,
-        DatabaseProfile::CockroachDb => COCKROACHDB_MIGRATION,
-    }
-}
-
-fn verify_required_tables(repository: &mut PgRepository) -> Result<(), ServerError> {
-    for table in REQUIRED_TABLES {
-        if !repository.table_exists(table)? {
-            return Err(ServerError::Configuration(
-                "authoritative_schema_table_missing",
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn now_millis() -> Result<u64, ServerError> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -113,28 +107,21 @@ fn now_millis() -> Result<u64, ServerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trnm_persistence_pg::{authoritative_chain_digest, AUTHORITATIVE_SCHEMA_VERSION};
 
     #[test]
-    fn both_authoritative_profiles_embed_the_ten_table_chain() {
+    fn both_authoritative_profiles_embed_the_twelve_table_chain() {
+        assert_eq!(AUTHORITATIVE_SCHEMA_VERSION, 4);
         for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
-            let migration = migration_for(profile);
-            for table in REQUIRED_TABLES {
-                assert!(
-                    migration.contains(&format!("CREATE TABLE {table}")),
-                    "{profile:?}:{table}"
-                );
-            }
-            assert!(migration.contains("BEGIN;"));
-            assert!(migration.contains("COMMIT;"));
+            assert!(!authoritative_chain_digest(profile).get().is_zero());
         }
     }
 
     #[test]
     fn design_history_schema_is_not_embedded_by_the_server() {
-        for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
-            let migration = migration_for(profile);
-            assert!(!migration.contains("tenant_id"));
-            assert!(migration.contains("trnm_schema_metadata"));
-        }
+        assert_ne!(
+            authoritative_chain_digest(DatabaseProfile::PostgreSql),
+            authoritative_chain_digest(DatabaseProfile::CockroachDb)
+        );
     }
 }

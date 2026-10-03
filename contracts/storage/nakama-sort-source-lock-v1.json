@@ -1,0 +1,52 @@
+{
+  "source_commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+  "files": [
+    {
+      "path": "VERSION",
+      "url": "https://raw.githubusercontent.com/golang/go/c19862e5f8415b4f24b189d065ed739517c548ba/VERSION",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "size": 35,
+      "sha256": "11b4fb14680701f98ca60fd8464a836ca4374f17896a125f4510ab6ae8cecc9b",
+      "git_blob_sha1": "9b642ac23a6b1ef47713901720fb8d2b41139eda",
+      "downloaded": true
+    },
+    {
+      "path": "LICENSE",
+      "url": "https://raw.githubusercontent.com/golang/go/c19862e5f8415b4f24b189d065ed739517c548ba/LICENSE",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "size": 1453,
+      "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+      "git_blob_sha1": "2a7cf70da6e498df9c11ab6a5eaa2ddd7af34da4",
+      "downloaded": true
+    },
+    {
+      "path": "src/sort/sort.go",
+      "url": "https://raw.githubusercontent.com/golang/go/c19862e5f8415b4f24b189d065ed739517c548ba/src/sort/sort.go",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "size": 10503,
+      "sha256": "100e49103d23dd6b8335a50b17ae6e9db2b056cb1217d964dcf58852c3c6f8a1",
+      "git_blob_sha1": "087e7d033dd2356beda5c38f4d42ea4029496baa",
+      "downloaded": true
+    },
+    {
+      "path": "src/sort/zsortinterface.go",
+      "url": "https://raw.githubusercontent.com/golang/go/c19862e5f8415b4f24b189d065ed739517c548ba/src/sort/zsortinterface.go",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "size": 11485,
+      "sha256": "8978a49cc4174b0c35a84a2ddf73175d41254eb340ebeda29f21d3e546088a3b",
+      "git_blob_sha1": "51fa5032e9912a8d7db6005dd1d11291b422a312",
+      "downloaded": true
+    }
+  ],
+  "schema": "trillionnium.nakama-storage-sort-source-lock.v1",
+  "purpose": "Modified bounded Rust ordinal sorter for canonical-owner homogeneous storage batches",
+  "runtime_owner_representation_parity": false,
+  "nakama_native_differential_accepted": false,
+  "source_limits": [
+    "Canonical principal UUID ordering only; runtime raw owner representation remains open.",
+    "Maximum 100 occurrences; larger upstream batches remain outside this candidate bound.",
+    "Go stdlib observations and Rust execution do not constitute whole Nakama/SDK/native compatibility acceptance."
+  ],
+  "modified_rust_path": "crates/trnm-storage-core/src/nakama_sort.rs",
+  "license_path": "third_party/go-sort/LICENSE"
+}

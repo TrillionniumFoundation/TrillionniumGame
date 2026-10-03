@@ -4,16 +4,16 @@
   "status": "ddl-candidate-unexecuted",
   "profiles": {
     "postgresql": {
-      "path": "migrations/postgresql/0001_foundation_up.sql",
       "binary_type": "BYTEA",
       "integer_64_type": "BIGINT",
-      "runtime_execution_verified": false
+      "runtime_execution_verified": false,
+      "foundation_path": "migrations/postgresql/0001_foundation_up.sql"
     },
     "cockroachdb": {
-      "path": "migrations/cockroachdb/0001_foundation_up.sql",
       "binary_type": "BYTES",
       "integer_64_type": "INT8",
-      "runtime_execution_verified": false
+      "runtime_execution_verified": false,
+      "foundation_path": "migrations/cockroachdb/0001_foundation_up.sql"
     }
   },
   "required_tables": [
@@ -49,5 +49,82 @@
     "rollback_proven": false,
     "sg4_complete": false,
     "production_ready": false
-  }
+  },
+  "schema_version": 4,
+  "storage_writer_epoch": 4,
+  "migration_lock": "migrations/MIGRATION_CHAIN.lock.json",
+  "digest_algorithm": "ordered-path-git-blob-sha256.v1",
+  "migration_runner": "crates/trnm-persistence-pg::PgRepository::migrate_authoritative_schema",
+  "serve_schema_verification": "Read-only current chain/epoch identity and closed reviewed BASE TABLE, column type/nullability/default/typmod, named CHECK and primary-key order for this ABI; general constraint, index, collation and schema equivalence remain unverified",
+  "historical_timestamps": "unknown create_time/update_time remain SQL NULL; updated_at_ms is legacy provenance",
+  "historical_timestamp_upgrade": {
+    "schema_version": 2,
+    "storage_writer_epoch": 2,
+    "migration": "0002_storage_timestamps_up.sql",
+    "action_count": 6,
+    "historical_timestamps_remain_unknown": true
+  },
+  "storage_native_jsonb": {
+    "payload_authority": "value_jsonb",
+    "read_projection": "native JSONB::TEXT",
+    "stored_public_version": "opaque native VARCHAR(32); no MD5 parsing or normalization",
+    "write_ack_version": "MD5 of exact incoming request bytes",
+    "projection_integrity": "SHA256 of native JSONB::TEXT UTF-8 bytes",
+    "known_request_origins": [
+      "legacy-rust-v2-bytes",
+      "write-request-bytes"
+    ],
+    "known_raw_witness": "value_bytes/version_digest retain exact known bytes and SHA256; raw MD5, public version and native projection remain bound",
+    "unknown_request_origin": "nakama-export-unknown-request",
+    "unknown_raw_witness": "SQL NULL value_bytes/version_digest pair with an independent nonzero 32-byte source_manifest_digest",
+    "catalog_semantic_scope": "Exact reviewed column typmod, named validated CHECK and primary-key order for this ABI; no general constraint or schema equivalence credit",
+    "runtime_execution_credit": false
+  },
+  "current_authoritative_table_count": 12,
+  "storage_source_import": {
+    "migration": "0004_storage_source_import_up.sql",
+    "stored_key_domain": "0..128 Unicode characters including empty, dot and control text admitted by the native profile",
+    "stored_permissions": "native checked SMALLINT 0..32767; no shared enum authorization predicate",
+    "acl_predicates": {
+      "batch_read": "read==2 OR (read==1 AND owner==caller)",
+      "public_all_list": "read>=2",
+      "own_owner_list": "read>=1",
+      "foreign_global_list": "read==2",
+      "client_write": "write==1",
+      "client_delete": "write>0"
+    },
+    "journal_tables": [
+      "trnm_storage_import_jobs",
+      "trnm_storage_import_pages"
+    ],
+    "history_publishers": [
+      "v2_apply_source_commit",
+      "v3_apply_source_commit"
+    ],
+    "original_request_bytes": "unknown source-native export retains NULL raw witness pair; no source text is original request",
+    "completion": "single manifest-bound journal; applying prefix blocked by per-transaction and startup readiness admission",
+    "runtime_execution_credit": false
+  },
+  "default_runtime_schema_version": 4,
+  "latest_supported_schema_version": 5,
+  "accounts_v5_source_candidate": {
+    "target": "NakamaAccountsV5",
+    "storage_writer_epoch": 4,
+    "migration": "0005_nakama_accounts_up.sql",
+    "tables": [
+      "users",
+      "user_device"
+    ],
+    "full_current_two_table_fields_defaults_constraints": true,
+    "native_catalog_observations_bound": false,
+    "native_activation_allowed": false,
+    "default_runtime_promotion_allowed": false,
+    "repository_service_routes_implemented": false,
+    "account_transfer_implemented": false,
+    "accounts_v5_backups_restores_qualified": false,
+    "blocked_before_ddl": "schema5_native_catalog_capture_pending",
+    "accepted": false,
+    "boundary": "Default serve/migrate/import remains strict schema4 prefix. Schema5 source frontier is explicit and cannot borrow epoch4, storage packet or old catalog observations."
+  },
+  "source_execution_evidence_contract": "contracts/database/source-execution-evidence.v1.json"
 }

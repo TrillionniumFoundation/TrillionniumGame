@@ -28,6 +28,16 @@ Dependency direction is reviewed as part of package authority. This module must 
 
 The only production DDL authority is migrations/. PostgreSQL and CockroachDB are separate profiles with separate evidence and retry behavior.
 
+The shared `trnm-schema` runner consumes the locked, ordered 0001/0002/0003/0004 chain. The current ABI is schema 4/writer epoch 4 with twelve authoritative tables; original historical SQL bytes and prefix identities stay immutable. PostgreSQL 17.6 verification recognizes the exact fresh and pg_dump/pg_restore forms of two import CHECK constraints while retaining both raw catalog observations. The complete profile/table/name/descriptor, keys, validation state and all column properties remain checked; arbitrary expression formatting or changed predicates are rejected.
+Schema version 2 appends nullable storage `create_time`/`update_time` columns
+without defaults or historical backfill, plus chain identity and storage writer
+epoch metadata. Serve verification reads existing identity and catalog; it does
+not migrate or rebind them. Populated v1 upgrades require the declared legacy
+writer role to lose effective storage write privileges before publication.
+The epoch check supplements that barrier and does not fence an unchecked old
+writer by itself. Recovery uses a verified forward fix rather than a column drop
+or metadata downgrade.
+
 Public Rust types, serialized fields, configuration keys, database predicates, and externally observable error classes are change-controlled. A breaking change requires an explicit migration or compatibility decision and updated tests in the same candidate.
 
 ## Correctness and failure model
@@ -148,18 +158,102 @@ source/unit and live jobs, nonempty-result assertions and exact definition pins.
 
 ## Authority lease and storage adapters
 
-The adapter owns typed SQL access to all ten authoritative tables. Authority lease acquisition locks the entity head and lease in a serializable transaction; an expired-owner takeover advances both lease and authority generations before a new owner is returned. Renewal and release require the exact entity, owner, lease generation and authority generation.
+The adapter owns typed SQL access to all twelve authoritative tables, including manifest-bound storage import jobs and pages. Authority lease acquisition locks the entity head and lease in a serializable transaction; an expired-owner takeover advances both lease and authority generations before a new owner is returned. Renewal and release require the exact entity, owner, lease generation and authority generation.
 
-Storage reads and mutation batches use `trnm-storage-core` public version, integrity, OCC and ACL types. Batch keys are locked in deterministic order and every write/delete commits in one serializable transaction. The public Nakama-compatible content version is recomputed from exact value bytes while the schema stores the separate internal integrity digest.
+Storage reads and mutation batches use `trnm-storage-core` public version, integrity, OCC and ACL types. Batch keys are locked in deterministic order and every write/delete commits in one serializable transaction. Generated write ACK versions use MD5 of exact request bytes. Stored `PublicVersion` is independently retained and may be opaque or empty; native JSONB rendering never reconstructs request MD5.
+
+`read_storage_objects_with_metadata`, `apply_storage_batch_with_metadata` and
+`list_storage_objects_nakama_with_metadata` return stored-object/receipt/page
+wrappers with `StorageTimes`; the original core-returning methods project those
+wrappers. `StorageTimestamp { seconds, nanos }` preserves database microseconds
+with checked pgwire decoding, including pre-epoch normalization. Infinity,
+protobuf years outside 0001–9999 and invalid nanoseconds fail as `DataLoss`.
+Historical SQL NULL stays `None` and is never replaced by an epoch or the legacy
+`updated_at_ms` value.
+
+Storage inserts explicitly take the transaction database clock for both times.
+Updates retain creation, including NULL, and set update from that transaction.
+A blind same-public-token/ACL write returns the locked row without UPDATE after
+ACL, OCC and integrity checks; Exact writes still update. Mutation transactions
+read schema/epoch/chain identity before writing without a global metadata row
+lock, and return receipts only after commit. The caller's `updated_at_ms` remains
+separate. This narrow storage clock policy does not alter other public times or
+assume that transaction clocks increase. Storage operations have no implicit
+retry.
+
+`storage_timestamps_database_clock_no_op_and_atomicity` requires an isolated
+fully migrated database in mandatory mode. It compares receipts with SQL rows,
+covers legacy NULL, real clock pairs, blind/Exact/ACL/content changes, OCC/ACL
+rollback, metadata faults and timestamp range rejection on each profile. It
+restores metadata and cleans its dedicated rows after success or panic before
+printing `storage_timestamps_live_executed profile=...`. The live harness rejects
+optional skips; diagnostic execution does not grant independent acceptance.
 
 These paths are source candidates. PostgreSQL/CockroachDB live execution, exact-head evidence admission, profile-specific failover/restore and independent database/storage review remain required before production credit.
 
 ## Canonical storage integrity boundary
 
-Storage write callers provide exact value bytes, public OCC intent and ACLs; they do not provide an internal integrity digest. Both the in-memory domain boundary and this adapter derive SHA-256 over the exact value bytes. The adapter persists that digest separately from the Nakama-compatible public MD5 content version and recomputes SHA-256 on every database read, returning `DataLoss / storage_integrity_digest_mismatch` before an object can be authorized or returned when stored bytes disagree. This is corruption detection, not source authentication or a MAC, and does not replace database access control, encryption, backup validation or immutable-oracle differential evidence.
+Storage write callers provide exact value bytes, public OCC intent and ACLs; they do not provide an internal integrity digest. The core model derives request SHA-256, while this adapter separately binds SHA-256 of database-native projection text. Known request witnesses bind request MD5/SHA/length to the native projection; unknown Nakama exports do not invent those witnesses. Returned objects verify the sole native JSONB payload and its projection digest before they are exposed; corruption fails closed as `DataLoss`. Batch-read and client-list SQL filter inaccessible rows before integrity decoding. This is corruption detection, not source authentication or a MAC, and does not replace database access control, encryption, backup validation or immutable-oracle differential evidence.
 
 ## Scope-bound storage listing cursor
 
 `PgRepository::list_storage_objects` returns a scope-bound `(StorageActor, Option<UserId>, StorageObjectKey)` tuple rather than a bare object key. The cursor binds the exact `StorageActor`, optional owner filter and last `(collection, object_key, user_id)` key that produced the page. Continuation under a different authenticated actor, owner scope or collection fails closed with `storage_cursor_scope_mismatch`; zero actors and zero owner identities are rejected before SQL execution. ACL filtering remains inside the query before the bounded `limit + 1` sentinel is applied.
 
-This is an in-process source contract. Public HTTP/gRPC adapters must encode and authenticate the complete cursor tuple and reject tampering, profile changes and cross-project replay. The typed Rust value does not by itself establish Nakama wire compatibility, snapshot isolation across concurrent mutations, a stable public cursor format or accepted PostgreSQL/CockroachDB evidence.
+This is an in-process source contract. Adapters exposing this typed profile must encode and authenticate the complete cursor tuple and reject tampering, profile changes and cross-project replay. The separate Nakama client-list projection below uses the original unsigned-offset profile and independently applies current principal ACL. The typed Rust value does not by itself establish Nakama wire compatibility, snapshot isolation across concurrent mutations, a stable public cursor format or accepted PostgreSQL/CockroachDB evidence.
+
+## Nakama client-list projection
+
+`PgRepository::list_storage_objects_nakama` accepts only a nonzero user actor and
+returns `StorageClientListPage { objects, next }`, where the next
+`StorageListPosition { key, user_id, read }` is an untrusted offset. Omitted owner
+selects read >= 2 across owners; own owner selects read >= 1;
+foreign and explicit zero owners select read == 2 for that owner. Batch read
+separately selects read == 2 or owning-user/read == 1. Client write requires
+write == 1, client delete accepts write > 0 and the server actor bypasses ACL.
+One readonly serializable query applies ACL before the `limit + 1` sentinel.
+The three modes order by SQL text read/key/user ID, read/key and key respectively.
+Only returned rows are decoded, and the next offset is the last returned row.
+Hidden and sentinel rows cannot cause a value/digest/timestamp decoding failure.
+
+The client query admits empty/dot/control collection text up to 4096 UTF-8 bytes;
+cursor key offsets have the same byte budget, and read offsets accept every int32.
+Returned keys use `StorageObjectKey::new_nakama` for the authoritative 0–128
+Unicode-character stored domain. Nonnegative SMALLINT permissions through
+32767 are retained exactly, while strict new-request validation stays separate. The old typed API's byte ordering and identifier
+validation remain separate. This read-only projection follows the current
+locked schema domain and has no automatic retry or source write authority. Pool deadlines, pagination under concurrent writes, exact
+profile collation, gateway/gob differences, production source custody and immutable-oracle qualification remain open;
+the connected source import below preserves actual exported timestamps.
+
+`nakama_client_listing_modes_cursors_and_integrity_are_database_projected`
+requires the selected live profile when `TRNM_REQUIRE_LIVE_DATABASE=1`, checks
+three modes and cursor fields, independently seeds Unicode/dot/control rows,
+and damages hidden, sentinel and returned digests. Its dedicated namespace is
+cleaned after success or panic; a profile-specific execution marker follows the
+assertions and cleanup. This source regression does not supply accepted live or
+independent review evidence.
+
+Native storage ABI3 separates `value_jsonb`, opaque `public_version`, projection SHA256 and checked known/unknown request provenance. Raw witnesses never supply read/list payloads. SQL returns native text and complete RETURNING rows; even an unknown-history blind no-op validates incoming native JSONB without replacing stored value/times/witness. Actor/ACL/OCC and exact native input/error priority remain profile candidates pending immutable differential. The typed migration preflights all legacy data and checked finite timestamps before revision DDL, preserves foundation/time/prior-v2 publisher, then publishes epoch3 after complete conversion. PostgreSQL owns one atomic transaction; CockroachDB resumes exact DDL and one-row serializable backfill checkpoints.
+
+The 16 MiB projection bound and 32 MiB result/staging bounds constrain returned bytes and Rust allocations. Native database JSONB casts and text materialization happen before their length is observed; these checks do not impose a hard bound on database backend memory. PostgreSQL numeric expansion has separate valid-above-1MiB and gentle-over-16MiB fixtures, with ResourceExhausted and whole-batch rollback assertions. Database-side memory containment, maximum-capacity qualification, production source custody and independent migration acceptance remain open.
+
+
+## Source-bound native storage transfer
+
+Schema 4 preserves the genuine v3 publisher as `v3_apply_source_commit`, alongside prior v2/foundation provenance. Its append-only fourth SQL adds `trnm_storage_import_jobs` and `trnm_storage_import_pages` and widens stored keys/ACLs without loosening strict internal new-key policy or HTTP validation. Keep the existing six upgrade regressions and all 41 v3 case-family observations; a transfer source fixture cannot replace them.
+
+`export_storage_snapshot(&StorageExportOptions)` returns `StorageExportSummary` after one successful native read-only snapshot and private packet synchronization. PostgreSQL uses repeatable read and a native snapshot identity; CockroachDB uses serializable read-only and a native transaction-clock identity, not AS OF/MVCC custody. The producer checks actual source columns/defaults/constraints/table kind and owner references, includes all global/private rows and lawful JSONB shapes, preserves raw keys/ACLs/versions and verifies exact timestamp equality. Packet members retain exact native value bytes, catalog/query and pinned initial SQL/core-storage/LICENSE, plus actual exporter source bytes. Independent implementation of the fixed export query does not compile upstream Go. Actual source/current-executable hashes are checked, but supplied commit/tree labels do not prove a clean reproducible build.
+
+`verify_storage_export` combines an independent manifest hash, receipt hash and producer source/binary/commit/tree/execution anchors with closed, descriptor-relative packet verification. Only its bounded immutable owned rows reach `preflight_storage_import(packet, StorageImportOptions)`. Preflight requires a same-profile dedicated empty or exact-resume target, independent target scope, native value/time/key/collation validation and drained legacy-writer authority. PostgreSQL binds native system/database identity; CockroachDB reports namespace/external scope only, with physical cluster identity unobserved. Source/target PostgreSQL UTF8/libc locales and deterministic default key collations must match; CockroachDB key collation must be absent. Unsupported bindings fail before registration. The importer fences the declared old role on storage, schema metadata and both journals, including effective table/column writes, PostgreSQL TRUNCATE/TRIGGER, CockroachDB actual CREATE/DROP/TRIGGER/ALL descriptor grants, reachable ownership and public-schema/current-database ownership; unknown catalog authority is rejected. Existing noninternal triggers on those four tables also block import, including deferred triggers; the importer never removes or disables them. All import stages reject any existing outbox row; ordinary command and worker claim/complete/retry transactions share the metadata admission lock. PostgreSQL mutable import stages additionally rewrite the metadata tuple with identical values after authority and trigger checks, so an older SERIALIZABLE business waiter aborts with 40001. A lock alone does not refresh its snapshot. Schema identity and all recorded publishers remain unchanged; CockroachDB retains its separately tested native FOR UPDATE behavior. This dedicated-target restriction does not prove external worker drain, and privileged SQL bypass is outside the service API guarantee.
+
+`begin_storage_import`, `apply_next_storage_import_page`, `resume_storage_import`, `verify_applied_storage_import` and `finalize_storage_import` register, atomically commit pages, reconcile a prefix read-only and verify the full native inventory before completion. Rows, page receipts and full old-job CAS advance together in one serializable transaction; no implicit retry or filesystem I/O enters those mutable transactions. Imported `nakama-export-unknown-request` rows preserve opaque public versions and source times, carry the manifest digest and have NULL request witnesses. No original request or NULL historical time is invented. Incomplete jobs block startup/readiness, pool business admission and every ordinary storage transaction, including reads.
+
+The binaries `trnm-storage-export` and `trnm-storage-import` share `src/bin/storage_transfer.rs`; `docs/DEVELOPMENT.md` lists their exact environment groups and `docs/OPERATIONS_AND_RELEASE.md` records custody, drain and recovery duties. Database modes require `--candidate-plaintext`; packet verification is offline. Export creates a new 0700 directory and 0600 create-new files, with held directory descriptors; it never overwrites an earlier packet. Manifest/receipt completion comes last after native read-only commit and fsync.
+
+Bounds are 256 MiB packet, 10,000 rows, 100 pages/100 rows per page, 16 MiB native value, 32 MiB summed native-value bytes per page, 16 MiB row metadata and 2 MiB manifest. The connected transfer uses 300-second operation/pool budgets and statements at most five seconds/remaining time. Database internal JSONB text materialization and stalled synchronous kernel calls are not proven hard memory/time bounded. Populated NULL-history repair and account/other-domain migration remain separate obligations. Native source-DDL fixtures are not Nakama runtime oracles, and production issuer/signature/transport custody remains unimplemented. These interfaces grant no compatibility, production, cutover or full-replacement acceptance.
+
+Account source composition uses an immutable `AuthoritativeSchemaTarget`. Old direct/plain/TLS constructors select StorageV4; explicit target constructors propagate the selected value to every pool lease and same-transaction storage guard. AccountsV5 is still blocked by the false production capture gate before I/O. The source frontier contains five SQL revisions per profile; current storage defaults remain schema 4, epoch 4 and 12 tables. Transfer retains its separate StorageV4 prefix and does not claim AccountsV5 admission.
+
+`PgPool::run_account_with_deadline` returns a typed observation rather than replacing a late native result with a generic error. It invokes one account operation and keeps setup, deadline/shutdown, native completion and lease disposition separately. Late creation cannot produce a successful reply but preserves confirmed commit/cleanup facts; unobserved or unknown completion does not prove no effect. Retiring a pooled lease prevents return recycling and does not disable direct repository calls. Caller retry and compensation remain forbidden; the account engine alone owns its existing bounded attempts. Full pool/native account qualification remains false.
+
+The explicit AccountsV5 target expects 14 tables and retains storage writer epoch 4; its closed production gate prevents this source target from authorizing publication.
