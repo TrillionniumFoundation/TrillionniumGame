@@ -177,6 +177,60 @@ class SchemaEvidenceBindingTests(unittest.TestCase):
                 (root/prefix/'surprise').mkdir()
                 with self.assertRaises(B.BindingError):B.validate_composite_directory(tokens,root,**args)
 
+    def test_full55_pretty_composite_budget_preserves_both_profile_closed_bindings(self):
+        tokens=tuple(self.token(profile) for profile in B.PROFILES)
+        fields={profile:B.identity_fields(token) for profile,token in zip(B.PROFILES,tokens)}
+        receipt={'schema':'trillionnium.required-workflow-retained-collection.v2',
+                 'repository':'TrillionniumFoundation/TrillionniumGame','head':HEAD,
+                 'run_id':'37131332288','run_attempt':'1',
+                 'schema_source_selection':{profile:B.binding_document(token) for profile,token in zip(B.PROFILES,tokens)},
+                 'workflows':[{'workflow_id':1000+i,'path':f'.github/workflows/source-fixture-{i}.yml',
+                               'run_id':37130000000+i,'run_attempt':1,'jobs':2,'catalog_name_observed':f'fixture {i}',
+                               'run_name':f'fixture {i}','definition_blob_sha1':'e'*40,
+                               'catalog_path_alias_verified':False,'schema_source_selection':fields} for i in range(55)],
+                 'claims':{'accepted_evidence':False,'gap_closed':False,'production_ready':False}}
+        raw=(json.dumps(receipt,indent=2,ensure_ascii=False)+'\n').encode()
+        self.assertGreater(len(raw),S.MAX_DOCUMENT_BYTES)
+        self.assertLess(len(raw),B.MAX_COMPOSITE_RECEIPT_BYTES)
+        with self.assertRaises(S.SelectionError):B.strict(raw,'standalone_source')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for profile,token in zip(B.PROFILES,tokens):
+                B.write_annex(token,ROOT,root/'source-selection'/profile,commit=HEAD,tree=TREE)
+            path=root/'external-workflow-collection.json';path.write_bytes(raw)
+            args={'prefix':'source-selection','receipt_filename':path.name,'commit':HEAD,'tree':TREE}
+            result=B.validate_composite_directory(tokens,root,**args)
+            self.assertEqual(result['execution_schema_version'],4)
+            self.assertEqual(result['authoritative_source_files_per_profile'],18)
+            self.assertFalse(result['accepted']);self.assertFalse(result['runtime_execution_verified'])
+            mutations=[receipt|{'schema':'unknown'},receipt|{'head':'c'*40},
+                       receipt|{'schema_source_selection':{'postgresql':B.binding_document(tokens[0])}},
+                       receipt|{'schema_source_selection':receipt['schema_source_selection']|{'other':{}}},
+                       receipt|{'workflows':receipt['workflows'][:-1]},receipt|{'workflows':receipt['workflows']+[receipt['workflows'][0]]}]
+            wrong=copy.deepcopy(receipt);wrong['workflows'][-1]['schema_source_selection']['cockroachdb']['execution_schema_version']=5
+            mutations.append(wrong)
+            for changed in mutations:
+                with self.subTest(mutation=changed.keys()):
+                    path.write_bytes(B.canonical(changed))
+                    with self.assertRaises(B.BindingError):B.validate_composite_directory(tokens,root,**args)
+            path.write_bytes(b'{}'+b' '*(B.MAX_COMPOSITE_RECEIPT_BYTES-1))
+            with self.assertRaises((B.BindingError,S.SelectionError)):B.validate_composite_directory(tokens,root,**args)
+
+    def test_composite_json_exact_cap_duplicate_nonfinite_and_standalone_limit(self):
+        self.assertEqual(B.MAX_COMPOSITE_RECEIPT_BYTES,512*1024)
+        self.assertEqual(S.MAX_DOCUMENT_BYTES,128*1024)
+        self.assertEqual(len(B.strict_composite_receipt(b'['*64+b'0'+b']'*64)),1)
+        payload=b'{"nested":{"list":[true,null,1]}}'
+        exact=payload+b' '*(B.MAX_COMPOSITE_RECEIPT_BYTES-len(payload))
+        self.assertEqual(B.strict_composite_receipt(exact),{'nested':{'list':[True,None,1]}})
+        quoted=json.dumps({'escaped':'[{}]'+chr(34)+chr(92)}).encode()
+        self.assertEqual(B.strict_composite_receipt(quoted),{'escaped':'[{}]'+chr(34)+chr(92)})
+        for raw in (exact+b' ',bytearray(payload),b'{"nested":{"a":1,"a":2}}',
+                    b'{"a":NaN}',b'{"a":Infinity}',b'\xff',b'['*65+b'0'+b']'*65):
+            with self.subTest(raw_type=type(raw),size=len(raw)),self.assertRaises(B.BindingError):
+                B.strict_composite_receipt(raw)
+        with self.assertRaises(S.SelectionError):B.strict(b'{}'+b' '*S.MAX_DOCUMENT_BYTES)
+
     def test_remote_binding_fetch_full_immutable_tree_without_live_requests(self):
         token=self.token();paths=[r['path'] for r in B.binding_document(token)['full_source_inventory']]
         data={p:(ROOT/p).read_bytes() for p in paths}

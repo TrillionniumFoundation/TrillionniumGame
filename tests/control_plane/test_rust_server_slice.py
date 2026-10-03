@@ -53,7 +53,7 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertEqual(result["schema"], "trillionnium.server-source-check.v3")
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["binary"], "trnm-server")
-        self.assertEqual(result["runtime_module_count"], 34)
+        self.assertEqual(result["runtime_module_count"], 37)
         self.assertGreaterEqual(result["source_marker_count"], 20)
         self.assertFalse(result["claims"]["compiled"])
         self.assertFalse(result["claims"]["live_process_executed"])
@@ -72,7 +72,8 @@ class RustServerSliceContractTests(unittest.TestCase):
         for omitted in ("storage_api_projection_tests.rs", "storage_api_v3_live.rs",
                         "legacy_auth.rs", "legacy_auth_tests.rs", "legacy_device_predicates.rs",
                         "legacy_repository.rs", "legacy_repository_tests.rs", "legacy_uuid.rs",
-                        "legacy_http_api.rs", "legacy_http_api_tests.rs"):
+                        "legacy_http_api.rs", "legacy_http_api_tests.rs",
+                        "legacy_config.rs", "auth_runtime.rs", "auth_app_tests.rs"):
             with self.subTest(omitted=omitted), self.assertRaisesRegex(module.ValidationError, "file set drift"):
                 module.validate_runtime_file_inventory(actual - {omitted})
         with self.assertRaisesRegex(module.ValidationError, "file set drift"):
@@ -132,11 +133,19 @@ class RustServerSliceContractTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         config = (ROOT / "crates/trnm-server/src/runtime/config.rs").read_text()
         app = (ROOT / "crates/trnm-server/src/runtime/app.rs").read_text()
-        interface = module.source_interface(config, app, list_integrated=True)
+        wire = (ROOT / "crates/trnm-server/src/runtime/legacy_http_api.rs").read_text()
+        interface = module.source_interface(config, app, list_integrated=True, legacy_http_source=wire)
         document = (ROOT / "docs/DEVELOPMENT.md").read_text()
         module.check_documented_interface(interface, document)
         self.assertIn("TRNM_SERVER_SCHEMA_TARGET", interface["environment_names"])
-        self.assertNotIn(("POST","/v2/account/authenticate/device"), interface["routes"])
+        # Schema configuration does not invent routes. These three endpoints
+        # are present only through the actual closed Legacy dispatcher source.
+        self.assertEqual({route for route in interface["routes"] if route[1].startswith("/v2/account/") or route[1] == "/v2/session/logout"}, {
+            ("POST", "/v2/account/authenticate/device"),
+            ("POST", "/v2/account/session/refresh"),
+            ("POST", "/v2/session/logout"),
+        })
+        self.assertNotIn(("POST", "/v2/accounts/schema5"), interface["routes"])
         row = next(line for line in document.splitlines() if line.startswith('| `TRNM_SERVER_SCHEMA_TARGET` |'))
         self.assertIn('`storage-v4`', row);self.assertIn('`nakama-accounts-v5`', row)
         for changed in (document.replace(row+'\n',''), document.replace(row, row+'\n'+row),

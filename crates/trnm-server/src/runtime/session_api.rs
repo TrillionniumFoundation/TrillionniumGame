@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use trnm_contracts::{DomainError, RetryClass, StableCode};
@@ -40,15 +41,15 @@ impl From<DomainError> for SessionError {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SessionApi {
-    verifier: Option<AccessTokenVerifier>,
+    verifier: Option<Arc<AccessTokenVerifier>>,
     metrics: SessionApiMetrics,
 }
 
 impl SessionApi {
     pub fn configure(&mut self, verifier: AccessTokenVerifier) {
-        self.verifier = Some(verifier);
+        self.verifier = Some(Arc::new(verifier));
     }
 
     #[must_use]

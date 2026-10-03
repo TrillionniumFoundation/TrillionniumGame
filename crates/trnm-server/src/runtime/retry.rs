@@ -121,6 +121,23 @@ impl<R: super::legacy_repository::LegacyNativeFailureObservation>
 }
 
 impl<R: BudgetedRepository> Repository for RetryingRepository<R> {
+    fn read_legacy_user(
+        &mut self,
+        user: UserId,
+    ) -> Result<
+        Option<super::legacy_auth::LegacyStoredUser>,
+        super::legacy_auth::LegacyRepositoryError,
+    > {
+        Repository::read_legacy_user(&mut self.inner, user)
+    }
+    fn authenticate_legacy_device(
+        &mut self,
+        input: super::legacy_auth::LegacyDeviceRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyDeviceAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        Repository::authenticate_legacy_device(&mut self.inner, input)
+    }
+
     fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
         self.inner.verify_storage_import_serving()
     }

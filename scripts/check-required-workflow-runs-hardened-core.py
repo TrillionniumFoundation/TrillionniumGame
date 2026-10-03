@@ -242,8 +242,16 @@ def print_failures(title: str, failures: list[str]) -> None:
         print(f"- {failure}", file=sys.stderr)
 
 
+def deadline_expired(deadline: float) -> bool:
+    if time.monotonic() >= deadline:
+        print("required workflow gate timed out: absolute collection deadline exceeded", file=sys.stderr)
+        return True
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     options = arguments(argv)
+    deadline = time.monotonic() + options.timeout_seconds
     try:
         manifest = Manifest.load(options.manifest)
         if manifest.repository != options.repository:
@@ -251,11 +259,17 @@ def main(argv: list[str] | None = None) -> int:
         local_failures = verify_files(Path.cwd(), manifest)
         if local_failures:
             raise ValueError("; ".join(local_failures))
+        if deadline_expired(deadline):
+            return 1
         source_fields = source_selection_fields(Path.cwd(), options.head_sha)
+        if deadline_expired(deadline):
+            return 1
         api = GitHubApi(__import__("os").environ.get("GITHUB_TOKEN", ""))
         current = api.current_run(
             options.repository, options.current_run_id
         )
+        if deadline_expired(deadline):
+            return 1
         tuple_failures = current_run_failures(
             current, manifest, options.head_sha
         )
@@ -267,18 +281,21 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         )
+        if deadline_expired(deadline):
+            return 1
         if tuple_failures:
             raise ValueError("; ".join(tuple_failures))
     except (KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
         print(f"required workflow gate failed: {error}", file=sys.stderr)
         return 1
 
-    deadline = time.monotonic() + options.timeout_seconds
     previous: tuple[tuple[int, int, int], ...] | None = None
     stable = 0
     last_pending: list[str] = []
 
     while True:
+        if deadline_expired(deadline):
+            return 1
         try:
             raw = api.runs(
                 options.repository, options.head_sha, manifest.event
@@ -286,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
             runs, selection_failures = select_runs(
                 raw, manifest, options.head_sha
             )
+            if deadline_expired(deadline):
+                return 1
         except (KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
             print(f"required workflow gate failed: {error}", file=sys.stderr)
             return 1
@@ -330,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
             receipt: list[dict[str, Any]] = []
             try:
                 for requirement in manifest.workflows:
+                    if deadline_expired(deadline):
+                        return 1
                     run = by_id[requirement.workflow_id]
                     metadata = api.workflow(
                         options.repository, requirement.workflow_id
@@ -338,9 +359,13 @@ def main(argv: list[str] | None = None) -> int:
                         requirement, metadata, source_root=Path.cwd(),
                         run=run, expected_head=options.head_sha,
                     )
+                    if deadline_expired(deadline):
+                        return 1
                     jobs = api.jobs_attempt(
                         options.repository, run.id, run.attempt
                     )
+                    if deadline_expired(deadline):
+                        return 1
                     errors.extend(
                         job_failures(
                             jobs,
@@ -376,6 +401,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
 
+            if deadline_expired(deadline):
+                return 1
+
             try:
                 final_raw = api.runs(
                     options.repository,
@@ -385,6 +413,8 @@ def main(argv: list[str] | None = None) -> int:
                 final_runs, final_failures = select_runs(
                     final_raw, manifest, options.head_sha
                 )
+                if deadline_expired(deadline):
+                    return 1
             except (KeyError, TypeError, ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
                 print(f"required workflow gate failed: {error}", file=sys.stderr)
                 return 1
@@ -439,20 +469,24 @@ def main(argv: list[str] | None = None) -> int:
                 stable = stable + 1 if identity == previous else 1
                 previous = identity
                 if stable >= options.stable_polls:
+                    if deadline_expired(deadline):
+                        return 1
+                    payload = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+                    if deadline_expired(deadline):
+                        return 1
                     print(
                         "required workflow gate: OK "
                         f"({len(runs)}/{len(manifest.workflows)} "
                         "manifest-bound exact-head workflows active, "
                         "terminal-success, exact-attempt verified, and "
-                        "non-empty without masked step failures)"
+                        "non-empty without masked step failures)",
+                        flush=True,
                     )
-                    print(
-                        json.dumps(
-                            receipt,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                    )
+                    if deadline_expired(deadline):
+                        return 1
+                    print(payload, flush=True)
+                    if deadline_expired(deadline):
+                        return 1
                     return 0
         else:
             stable = 0

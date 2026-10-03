@@ -89,6 +89,10 @@ A change touching multiple trust domains requires every applicable owner class.
 
 The candidate must be current with `main` or pass a merge queue/prospective-merge check. Required workflows bind the expected head SHA and tree. A successful run on a pre-update base or prior head receives no credit.
 
+Composite aggregate and prospective receipts retain the complete 55-workflow set and both profile source proofs. Their JSON domain has a separate 512 KiB byte ceiling and depth 64; standalone selection documents retain the 128 KiB ceiling. Neither budget changes the full source5 annex, selected StorageV4 execution identity, required workflow count, closed claims or source/head/profile checks. This ceiling is a local resource policy, not an observed maximum deployment artifact size.
+
+The workflow collector establishes one absolute deadline before local source custody and initial API admission. It checks the same deadline during verification and after serialization and flushed success output; expiration returns failure even when a late diagnostic was already written. Three stable exact-run observations remain required. This return/delivery gate does not cancel a synchronous OS call or blocked stdout, and the generic metadata/log transport's socket timeout is not an absolute HTTP supervision guarantee. A prior failed run remains failed; source checks and pure timing models do not qualify a later head or close independent acceptance.
+
 Self-merge is prohibited when independent review is required. Administrator bypass and auto-merge cannot override unresolved P0/P1, missing evidence or stale identity.
 
 ## 7. Workflow governance

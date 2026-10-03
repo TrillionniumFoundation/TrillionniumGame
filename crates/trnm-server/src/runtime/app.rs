@@ -12,12 +12,18 @@ use trnm_persistence_pg::{
 };
 use trnm_session_core::RevocationReason;
 
+#[cfg(test)]
 use super::auth::AccessTokenVerifier;
+use super::auth_runtime::{AccessError, AuthAuthorityRuntime};
 use super::codec::{decode_hex, encode_hex};
 use super::error::InputError;
 use super::http::{Request, Response};
 use super::json::Object;
-use super::session_api::{SessionApi, SessionError};
+use super::legacy_auth::{
+    LegacyDeviceAccount, LegacyDeviceRepositoryInput, LegacyRepositoryError, LegacyStoredUser,
+};
+use super::legacy_http_api::legacy_auth_http_route;
+use super::session_api::SessionError;
 use super::{storage_api, storage_list_api};
 
 // Authoritative dynamic route templates consumed by the live matcher.
@@ -151,12 +157,44 @@ pub trait Repository: std::fmt::Debug {
         Err(session_repository_unavailable())
     }
 
+    fn read_legacy_user(
+        &mut self,
+        _user: UserId,
+    ) -> Result<Option<LegacyStoredUser>, LegacyRepositoryError> {
+        Err(LegacyRepositoryError::Unimplemented)
+    }
+    fn authenticate_legacy_device(
+        &mut self,
+        _input: LegacyDeviceRepositoryInput<'_>,
+    ) -> Result<LegacyDeviceAccount, LegacyRepositoryError> {
+        Err(LegacyRepositoryError::Unimplemented)
+    }
+
     fn operational_metrics(&self) -> RepositoryOperationalMetrics {
         RepositoryOperationalMetrics::default()
     }
 }
 
 impl Repository for PgRepository {
+    fn read_legacy_user(
+        &mut self,
+        user: UserId,
+    ) -> Result<Option<LegacyStoredUser>, LegacyRepositoryError> {
+        super::legacy_auth::LegacyUserRepository::read_legacy_user(
+            &mut super::legacy_repository::PgLegacyAuthRepository::new(self),
+            user,
+        )
+    }
+    fn authenticate_legacy_device(
+        &mut self,
+        input: LegacyDeviceRepositoryInput<'_>,
+    ) -> Result<LegacyDeviceAccount, LegacyRepositoryError> {
+        super::legacy_auth::LegacyDeviceRepository::authenticate_legacy_device(
+            &mut super::legacy_repository::PgLegacyAuthRepository::new(self),
+            input,
+        )
+    }
+
     fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
         PgRepository::verify_storage_import_serving(self)
     }
@@ -351,7 +389,7 @@ impl Drop for AdmissionPermit {
 pub struct App<R> {
     repository: R,
     admin_token: String,
-    sessions: SessionApi,
+    authority: AuthAuthorityRuntime,
     drain: SharedDrain,
     metrics: SharedAppMetrics,
 }
@@ -394,15 +432,22 @@ impl<R: Repository> App<R> {
         Self {
             repository,
             admin_token,
-            sessions: SessionApi::default(),
+            authority: AuthAuthorityRuntime::default(),
             drain,
             metrics,
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_access_token_verifier(mut self, verifier: AccessTokenVerifier) -> Self {
-        self.sessions.configure(verifier);
+        self.authority = AuthAuthorityRuntime::durable(verifier);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_auth_authority(mut self, authority: AuthAuthorityRuntime) -> Self {
+        self.authority = authority;
         self
     }
 
@@ -417,7 +462,9 @@ impl<R: Repository> App<R> {
             match self.drain.try_admit() {
                 Some(permit) => Some(permit),
                 None => {
-                    if storage_path(&request.target) {
+                    if storage_path(&request.target)
+                        || legacy_auth_http_route(&request.method, &request.target).is_some()
+                    {
                         return storage_api::gateway_error(503, 14, "Service is draining.");
                     }
                     return error_response(503, "unavailable", "Service is draining.", "backoff");
@@ -450,6 +497,11 @@ impl<R: Repository> App<R> {
             ("GET", "/v1/session/me")
             | ("POST", "/v1/session/refresh")
             | ("POST", "/v1/session/logout") => self.session_request(request),
+            ("POST", target) if legacy_auth_http_route("POST", target).is_some() => {
+                let route = legacy_auth_http_route("POST", target).expect("matched closed route");
+                self.authority
+                    .legacy_request(&mut self.repository, request, route)
+            }
             ("POST", "/v2/storage") | ("PUT", "/v2/storage") | ("PUT", "/v2/storage/delete") => {
                 self.storage_request(request)
             }
@@ -500,7 +552,7 @@ impl<R: Repository> App<R> {
         );
         let metrics = self.metrics.snapshot();
         let repository = self.repository.operational_metrics();
-        let session = self.sessions.metrics();
+        let session = self.authority.metrics();
         let mut body = format!(
             "# TYPE trnm_server_requests_total counter\n\
 trnm_server_requests_total {}\n\
@@ -599,9 +651,9 @@ trnm_server_session_logout_revoked_total {}\n",
 
     fn session_request(&mut self, request: &Request) -> Response {
         let result = {
-            let sessions = &mut self.sessions;
+            let sessions = &mut self.authority;
             let repository = &mut self.repository;
-            sessions.handle(repository, request)
+            sessions.session_request(repository, request)
         };
         match result {
             Ok(response) => response,
@@ -613,15 +665,18 @@ trnm_server_session_logout_revoked_total {}\n",
     fn storage_request(&mut self, request: &Request) -> Response {
         // Session verification and persisted revocation precede all business
         // decoding. The operator credential cannot act as a storage owner.
-        match self.sessions.authenticate(&mut self.repository, request) {
+        match self.authority.access(&mut self.repository, request) {
             Ok(principal) if request.method == "GET" => {
-                storage_list_api::handle(&mut self.repository, request, principal.user)
+                storage_list_api::handle(&mut self.repository, request, principal.user())
             }
-            Ok(principal) => storage_api::handle(&mut self.repository, request, principal.user),
-            Err(SessionError::Domain(error)) => storage_api::authentication_error(error),
-            Err(SessionError::Input(_)) => {
+            Ok(principal) => storage_api::handle(&mut self.repository, request, principal.user()),
+            Err(AccessError::Durable(SessionError::Domain(error))) => {
+                storage_api::authentication_error(error)
+            }
+            Err(AccessError::Durable(SessionError::Input(_))) => {
                 storage_api::gateway_error(401, 16, "Auth token invalid")
             }
+            Err(AccessError::Legacy(error)) => super::auth_runtime::gateway_response(error),
         }
     }
 
@@ -727,6 +782,9 @@ trnm_server_session_logout_revoked_total {}\n",
 }
 
 fn is_mutating_request(request: &Request) -> bool {
+    if legacy_auth_http_route(&request.method, &request.target).is_some() {
+        return true;
+    }
     if request.method == "PUT" && storage_path(&request.target) {
         return true;
     }
@@ -742,6 +800,9 @@ fn is_mutating_request(request: &Request) -> bool {
 }
 
 fn known_path(path: &str) -> bool {
+    if legacy_auth_http_route("POST", path).is_some() {
+        return true;
+    }
     matches!(
         path,
         "/healthz"
@@ -1384,7 +1445,7 @@ mod tests {
         App {
             repository,
             admin_token,
-            sessions: SessionApi::default(),
+            authority: AuthAuthorityRuntime::Disabled,
             drain: SharedDrain::default(),
             metrics: SharedAppMetrics::default(),
         }
@@ -1485,3 +1546,7 @@ mod tests {
         assert_eq!(app.metrics.snapshot().drain_requests, 1);
     }
 }
+
+#[cfg(test)]
+#[path = "auth_app_tests.rs"]
+mod auth_app_tests;

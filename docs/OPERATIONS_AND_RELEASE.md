@@ -22,7 +22,7 @@ compiled defaults
 
 Every field has type, default, range, source, reload class and redacted effective value. Unknown keys and invalid combinations fail according to the declared profile. Secrets are provider references rather than ordinary values.
 
-The current database-backed server has explicit environment configuration for bind addresses, database profile/URL/TLS, pool/timeouts, schema source commit, administrator token, optional session auth and request limits. Non-loopback and plaintext database modes require explicit candidate opt-in.
+The current database-backed server has explicit environment configuration for bind addresses, database profile/URL/TLS, pool/timeouts, schema source commit, administrator token, one explicitly selected authentication authority and request limits. Non-loopback and plaintext database modes require explicit candidate opt-in.
 
 ## 3. Startup and readiness
 
@@ -38,6 +38,10 @@ Target startup order:
 8. publish readiness.
 
 Liveness reports process health only. Readiness means the process can safely accept the declared traffic class. Schema mismatch, failed mandatory child, missing authority dependency, exhausted pool or active drain removes readiness.
+
+`TRNM_SERVER_AUTH_MODE` accepts exactly `disabled`, `durable-family` or `nakama-legacy`. Unset preserves the old explicit Durable enablement rule; no material defaults to Disabled. Explicit Legacy requires `TRNM_SERVER_SCHEMA_TARGET=nakama-accounts-v5`, `TRNM_SERVER_LEGACY_SERVER_KEY`, `TRNM_SERVER_LEGACY_ACCESS_KEY`, `TRNM_SERVER_LEGACY_REFRESH_KEY`, `TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS` and `TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS`; `TRNM_SERVER_LEGACY_SINGLE_SESSION` defaults false. All key/TTL values are operator supplied. Legacy keys use exact untrimmed 1–4096 UTF-8 bytes, without the Durable 32-byte minimum; equal access/refresh keys reject under inherited local policy. Mixed profiles reject, including a leftover Durable enablement flag. See the [canonical configuration table](DEVELOPMENT.md#current-environment-configuration-reference) and the separately scoped [development environment example](../deploy/dev.env.example). These are parsing/source contracts, not a runnable Legacy profile.
+
+The Legacy source routes require explicit NakamaLegacy keys/TTLs and AccountsV5. The capture gate stays false, so this selection fails before database material/socket access and no Legacy listener starts. If admitted in a future reviewed native profile, one service owns the shared blacklist/sweeper and startup failures drain/join every started worker before releasing that authority. This source change grants no activation or compatibility claim.
 
 The current PostgreSQL test harness waits for the final post-initialization server and executes SQL rather than accepting one transient readiness probe. CockroachDB readiness is independently verified.
 
@@ -289,10 +293,12 @@ The next account schema is an isolated source frontier: locked `0005_nakama_acco
 
 The live-storage, backup, retry and outbox evidence validators implement the typed source/execution-prefix contract: they bind the complete five-file source frontier and the selected four-file StorageV4 execution identity separately. The source frontier remains closed for production promotion. Actual native packets for the new HEAD, profile-specific capacity and independent acceptance remain pending. Existing guards and the immutable roadmap, gap scope and compatibility denominator remain in force.
 
-Direct and pooled repository constructors keep an immutable serving schema target. Existing constructors choose StorageV4 (schema 4, epoch 4, 12 tables); explicit AccountsV5 selects the fifth source revision but fails before I/O while the production capture gate is false. Source frontier 5 and ten total profile SQL files do not authorize schema-5 runtime publication, backup, transfer or a release profile. Startup configuration does not yet select or install the inactive legacy HTTP authority.
+Direct and pooled repository constructors keep an immutable serving schema target. Existing constructors choose StorageV4 (schema 4, epoch 4, 12 tables); explicit AccountsV5 selects the fifth source revision but fails before I/O while the production capture gate is false. Source frontier 5 and ten total profile SQL files do not authorize schema-5 runtime publication, backup, transfer or a release profile. Startup configuration selects one source authority; explicit Legacy requires AccountsV5 and is rejected by the false capture gate before constructing that authority or listeners.
 
 The typed legacy-account pool boundary retains the native outcome independently of deadline/shutdown delivery. Late observed creation does not issue a token or permit replay; its confirmed commit and cleanup remain available in the bounded private diagnostic. Missing observation cannot establish no durable effect. Canceled, unknown-completion or failed-cleanup leases are discarded on return, and no compensating write is performed. These are source contracts, not a multiworker cancellation/commit proof.
 
-The inactive HTTP codec uses local bounded JSON/query/Authorization/response parsing and the exact locked base64 dependency. Seven captured registered option names are rejected at message scope, while map keys stay ordinary data. Device/Refresh/Logout routes, headers and the legacy principal are not connected to the live App. Operator activation, native pool fault/crash/restore qualification and multiworker blacklist consistency remain open. Existing epoch credentials, full Nakama denominator, required workflows and acceptance flags are unchanged.
+The capture-gated selected Legacy HTTP source codec uses local bounded JSON/query/Authorization/response parsing and the exact locked base64 dependency. Seven captured registered option names are rejected at message scope, while map keys stay ordinary data. Device/Refresh/Logout routes, static challenge headers and the private Legacy storage principal are connected in App source; actual HTTP execution remains unqualified. Operator activation, native pool fault/crash/restore qualification and same-process multiworker blacklist qualification remain open; the source cache has no restart persistence or multi-node coordination. Existing epoch credentials, full Nakama denominator, required workflows and acceptance flags are unchanged.
 
 The explicit AccountsV5 target expects 14 tables and retains storage writer epoch 4; its closed production gate prevents this source target from authorizing publication.
+
+The transport drain precheck and App drain admission both use the existing numeric gateway envelope for the three Legacy POST paths and their query variants: HTTP 503, code 14, "Service is draining.", without a retry field. This source repair preserves generic control-route drain behavior and still requires actual HTTP and independent review.

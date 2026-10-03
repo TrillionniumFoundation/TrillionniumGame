@@ -14,6 +14,8 @@ CRATE = ROOT / "crates/trnm-server"
 EXPECTED_RUNTIME_FILES = {
     "app.rs",
     "auth.rs",
+    "auth_app_tests.rs",
+    "auth_runtime.rs",
     "codec.rs",
     "config.rs",
     "error.rs",
@@ -22,6 +24,7 @@ EXPECTED_RUNTIME_FILES = {
     "json.rs",
     "legacy_auth.rs",
     "legacy_auth_tests.rs",
+    "legacy_config.rs",
     "legacy_device_predicates.rs",
     "legacy_http_api.rs",
     "legacy_http_api_tests.rs",

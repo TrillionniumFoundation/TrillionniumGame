@@ -138,7 +138,7 @@ mod tests {
                     schema_source_commit: "a".repeat(40),
                     schema_target: AuthoritativeSchemaTarget::NakamaAccountsV5,
                     admin_token: "not-used".to_owned(),
-                    session_auth: None,
+                    auth_authority: super::super::config::AuthAuthorityConfig::Disabled,
                     max_request_bytes: 128 * 1024,
                     read_timeout: std::time::Duration::from_secs(5),
                     write_timeout: std::time::Duration::from_secs(10),

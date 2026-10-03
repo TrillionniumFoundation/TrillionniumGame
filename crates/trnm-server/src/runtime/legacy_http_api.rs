@@ -1,8 +1,9 @@
-//! Inactive, bounded JSON transport for the server-owned legacy auth service.
+//! Bounded JSON transport used by the selected Legacy App source authority.
 //! Studied Nakama d4d92f93 apigrpc.proto/apigrpc.pb.gw.go, api.go,
 //! api_authenticate.go/api_session.go and the vendored gateway/protojson decoders.
 //! Nakama source: Apache-2.0, The Nakama Authors & Contributors. This independent
-//! Rust implementation registers no App route and grants no HTTP parity claim.
+//! Rust App source connects three routes; AccountsV5 capture remains false.
+//! Actual HTTP execution and parity qualification remain ungranted.
 //! Authentication precedes business parsing (AGENTS rule 11); the upstream
 //! gateway instead decodes before its security interceptor. That difference is
 //! intentional and must remain visible in a future paired profile.
@@ -23,7 +24,8 @@ use super::legacy_auth::{
     LegacyDeviceAuthInput, LegacyRepositoryError, LegacySession,
 };
 
-/// Source functions exist, but no authority, pool or HTTP route is installed.
+/// App source connects the selected authority, typed pool and three routes.
+/// The AccountsV5 gate remains false; actual HTTP qualification is not granted.
 pub const LEGACY_HTTP_ROUTES_QUALIFIED: bool = false;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -686,7 +688,7 @@ impl LegacyGatewayError {
         self.message
     }
     /// DefaultHTTPErrorHandler emits this header for unauthenticated errors.
-    /// Installing it in the actual Response transport is still an App task.
+    /// App Response source installs this static value; actual HTTP remains unqualified.
     #[must_use]
     pub const fn www_authenticate(self) -> Option<&'static str> {
         if matches!(self.code, StableCode::Unauthenticated) {

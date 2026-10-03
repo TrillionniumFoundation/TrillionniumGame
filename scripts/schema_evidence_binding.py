@@ -19,6 +19,10 @@ ANNEX = 'full-schema-source'
 SIDECAR = 'schema-source-selection.json'
 HEAD_PROOF = 'schema-source-head.json'
 MAX_FILE_BYTES = 512 * 1024
+# Composite receipts retain all 55 workflow rows plus both full-source proofs.
+# This local ceiling does not change the standalone selection JSON limit.
+MAX_COMPOSITE_RECEIPT_BYTES = 512 * 1024
+MAX_COMPOSITE_JSON_DEPTH = 64
 MAX_ANNEX_BYTES = 2 * 1024 * 1024
 # Complete both-profile frontier: no second chain and no prefix lock generated.
 CONTROL_PATHS = (SOURCE.LOCK_PATH, SOURCE.AUTHORITY_PATH, SOURCE.VALIDATOR_PATH,
@@ -43,6 +47,39 @@ def same(a, b):
 def strict(raw, label='evidence'):
     # Reuse bounded duplicate/nonfinite/closed-type parsing, never permissive JSON.
     return SOURCE._strict_json(raw, label)
+
+def strict_composite_receipt(raw):
+    """Bound the composite domain independently of standalone source documents."""
+    require(type(raw) is bytes and len(raw) <= MAX_COMPOSITE_RECEIPT_BYTES,
+            'composite_receipt_byte_budget')
+    depth = 0
+    quoted = escaped = False
+    for byte in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == 92:
+                escaped = True
+            elif byte == 34:
+                quoted = False
+        elif byte == 34:
+            quoted = True
+        elif byte in (91, 123):
+            depth += 1
+            require(depth <= MAX_COMPOSITE_JSON_DEPTH, 'composite_receipt_depth_budget')
+        elif byte in (93, 125):
+            depth -= 1
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, 'composite_receipt_duplicate_key')
+            value[key] = item
+        return value
+    try:
+        return json.loads(raw, object_pairs_hook=unique,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite_JSON_number')))
+    except (UnicodeError, ValueError, RecursionError) as error:
+        raise BindingError('composite_receipt_invalid_JSON') from error
 
 def blob(raw):
     return hashlib.sha1(f'blob {len(raw)}\0'.encode() + raw).hexdigest()
@@ -180,7 +217,7 @@ def validate_composite_directory(tokens, root, *, prefix, receipt_filename, comm
         os.close(fd)
     for profile,(token,_) in documents.items():
         validate_annex_directory(token,directory/profile,commit=commit,tree=tree)
-    receipt=strict(SOURCE._regular(root,receipt_filename,MAX_FILE_BYTES),'composite_receipt')
+    receipt=strict_composite_receipt(SOURCE._regular(root,receipt_filename,MAX_COMPOSITE_RECEIPT_BYTES))
     schema,keys=shapes[(prefix,receipt_filename)]
     require(type(receipt) is dict and set(receipt)==keys and receipt['schema']==schema,'composite_receipt_closed_schema')
     expected={profile:document for profile,(_,document) in documents.items()}

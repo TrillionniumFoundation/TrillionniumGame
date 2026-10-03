@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ PRODUCT_CLAIMS = (
     "nakama_replaced",
 )
 
+CLOSED_SOURCE_ROUTES = [{'method': 'GET', 'path': '/healthz', 'classification': 'liveness-source'}, {'method': 'GET', 'path': '/readyz', 'classification': 'readiness-source'}, {'method': 'GET', 'path': '/metrics', 'classification': 'redacted-metrics-source'}, {'method': 'POST', 'path': '/-/drain', 'classification': 'authenticated-control-source'}, {'method': 'POST', 'path': '/v1/authority/bootstrap', 'classification': 'internal-json-source'}, {'method': 'POST', 'path': '/v1/authority/commit', 'classification': 'internal-json-source'}, {'method': 'GET', 'path': '/v1/session/me', 'classification': 'durable-family-session-source'}, {'method': 'POST', 'path': '/v1/session/refresh', 'classification': 'durable-family-session-source'}, {'method': 'POST', 'path': '/v1/session/logout', 'classification': 'durable-family-session-source'}, {'method': 'POST', 'path': '/v2/account/authenticate/device', 'classification': 'nakama-legacy-source-accounts5-gated'}, {'method': 'POST', 'path': '/v2/account/session/refresh', 'classification': 'nakama-legacy-source-accounts5-gated'}, {'method': 'POST', 'path': '/v2/session/logout', 'classification': 'nakama-legacy-source-accounts5-gated'}]
 
 class ContractError(RuntimeError):
     pass
@@ -127,7 +129,17 @@ def main() -> int:
             require(marker in readme, f"README missing no-credit marker: {marker}")
 
         routes = contract.get("implemented_routes")
-        require(isinstance(routes, list) and len(routes) == 9, "exact nine HTTP source routes required")
+        require(type(routes) is list and routes == CLOSED_SOURCE_ROUTES,
+                "exact twelve classified HTTP source routes required")
+        spec = importlib.util.spec_from_file_location("selected_authority_source_contract",
+                                                     ROOT / "scripts/check-trnm-server.py")
+        require(spec is not None and spec.loader is not None, "source contract loader missing")
+        selected = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(selected)
+        selected_sources = {Path(path): read(ROOT / path)
+                            for path in selected.SELECTED_AUTH_APP_FULL_SOURCE_SHA256}
+        selected.validate_selected_auth_app_source(selected_sources,
+            load(ROOT / "docs/status/TRNM_SERVER_STATUS.json"), contract, status)
         print(json.dumps({
             "schema": "trillionnium.rust-server-vertical-slice-check.v2",
             "status": "passed-source-contract",

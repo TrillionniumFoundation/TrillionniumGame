@@ -3,6 +3,10 @@
 Status: **authoritative current documentation**  
 Revision: 2026-10-03
 
+
+The canonical App now has one selected `AuthAuthorityRuntime`: disabled, durable-family, or Nakama legacy. Server startup verifies the selected schema/catalog/import state before constructing one Legacy service or owned durable verifier, then shares the selected keys/cache across workers. The three Legacy POST routes and storage Access context are source candidates; Legacy never uses durable session-family verification/rotation/revocation. `check-config` constructs no service, pool or worker, default schema remains StorageV4/epoch4, and the AccountsV5 capture gate remains false before account SQL or listeners. HTTP credential/query/body/response Debug is redacted and unauthenticated Legacy errors install a bounded static WWW-Authenticate header. Partial startup errors use the same drain/cancellation/join cleanup as normal shutdown. Exact native HTTP, paired oracle and production lifecycle qualification remain pending.
+
+
 ## 1. Development contract
 
 All changes are made against the full Rust reimplementation plan in [`../CURRENT_PLAN.md`](../CURRENT_PLAN.md). A source change is not complete until its tests, machine status, evidence boundary and the applicable current topic document agree.
@@ -137,6 +141,9 @@ This table documents the bounded HTTP application dispatcher in `crates/trnm-ser
 | `PUT` | `/v2/storage/delete` | Bounded candidate-session storage delete batch. |
 | `GET` | `/v2/storage/{collection}` | Nakama client-profile public list with unsigned gob position and authenticated SQL ACL. |
 | `GET` | `/v2/storage/{collection}/{user_id}` | Nakama client-profile own/foreign/global owner list; genuine timestamps projected to seconds; exact differential remains open. |
+| `POST` | `/v2/account/authenticate/device` | Legacy source route, including query variants; fixed Basic server key before complete business decode and account access; AccountsV5 gate closed. |
+| `POST` | `/v2/account/session/refresh` | Legacy source route; fixed Basic server key, no durable-family rotate or fallback; AccountsV5 gate closed. |
+| `POST` | `/v2/session/logout` | Legacy source route; AccessBearer before body decode and blacklist mutation; AccountsV5 gate closed. |
 <!-- trnm-server-routes:end -->
 
 A known path with an unsupported method currently returns HTTP 405; an unknown dispatcher path returns 404. These custom routes cannot inflate Nakama parity. Authentication, error precedence, headers and exact response bytes still require their native tests and oracle/profile decisions.
@@ -158,7 +165,7 @@ The following names are read by the canonical `runtime/config.rs`. Values are re
 | `TRNM_SERVER_DATABASE_TLS_ROOT_CERT_PEM` | Optional path | Validated nonempty path, at most 4096 bytes, no control characters; mode constraints apply. |
 | `TRNM_SERVER_DATABASE_TLS_IDENTITY_CERT_PEM` | Optional path | Must be paired with the identity key. |
 | `TRNM_SERVER_DATABASE_TLS_IDENTITY_KEY_PKCS8_PEM` | Optional secret path | Must be paired with the certificate; never print key material. |
-| `TRNM_SERVER_SCHEMA_TARGET` | `storage-v4` | Only `storage-v4` or `nakama-accounts-v5`; immutable across pool leases. AccountsV5 remains capture-gated before DB I/O and does not install legacy HTTP authority. |
+| `TRNM_SERVER_SCHEMA_TARGET` | `storage-v4` | Only `storage-v4` or `nakama-accounts-v5`; immutable across pool leases. AccountsV5 remains capture-gated before DB I/O or Legacy runtime/listener construction; App source routes alone do not activate it. |
 | `TRNM_SERVER_SCHEMA_SOURCE_COMMIT` | Required | Exactly 40 lowercase hex characters; schema verification is a separate step. |
 | `TRNM_SERVER_ADMIN_TOKEN` | Required candidate credential | 32–512 permitted token bytes; not production RBAC/MFA identity. |
 | `TRNM_SERVER_MAX_REQUEST_BYTES` | 131072 | 4096–1048576 bytes. |
@@ -172,11 +179,18 @@ The following names are read by the canonical `runtime/config.rs`. Values are re
 | `TRNM_SERVER_DATABASE_STATEMENT_TIMEOUT_MS` | 5000 | 50–600000 milliseconds. |
 | `TRNM_SERVER_DATABASE_LOCK_TIMEOUT_MS` | 1000 | 10 through configured statement timeout. |
 | `TRNM_SERVER_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS` | 5000 | 50–600000 milliseconds. |
-| `TRNM_SERVER_SESSION_AUTH_ENABLED` | `false` | Supplying any session material while disabled is rejected. |
+| `TRNM_SERVER_AUTH_MODE` | Unset selects the old explicit enablement rule | Exactly `disabled`, `durable-family` or `nakama-legacy`; unknown, mixed and partial profiles reject. With no materials the authority is Disabled. |
+| `TRNM_SERVER_SESSION_AUTH_ENABLED` | `false` when mode is absent | Old `true` requires all four Durable fields. Explicit durable-family permits an absent flag and rejects false; disabled rejects true or any material; Legacy rejects even a leftover false flag. |
 | `TRNM_SERVER_SESSION_AUTH_ISSUER` | Required when enabled | Nonempty, at most 512 bytes; no ASCII whitespace/control characters. |
 | `TRNM_SERVER_SESSION_AUTH_AUDIENCE` | Required when enabled | Same bounded profile-text rule as issuer. |
 | `TRNM_SERVER_SESSION_AUTH_EPOCH` | Required valid value when enabled | 1–4294967295; zero/default is rejected. |
 | `TRNM_SERVER_SESSION_AUTH_KEY_HEX` | Required when enabled | Exactly 64 lowercase hex characters representing 32 secret bytes; development/migration profile only. |
+| `TRNM_SERVER_LEGACY_SERVER_KEY` | Required in explicit nakama-legacy mode | Exact untrimmed UTF-8 bytes, 1–4096 bytes; no public/default key. |
+| `TRNM_SERVER_LEGACY_ACCESS_KEY` | Required in explicit nakama-legacy mode | Exact 1–4096 bytes; no Durable 32-byte minimum or implicit decoding. |
+| `TRNM_SERVER_LEGACY_REFRESH_KEY` | Required in explicit nakama-legacy mode | Exact 1–4096 bytes; equal access/refresh values reject under inherited local policy, an explicit parity residual. |
+| `TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS` | Explicit positive integer required | Positive i64 with actual local duration checks; maximum 4611686018 seconds, no implicit TTL. |
+| `TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS` | Explicit positive integer required | Positive i64 with actual local duration checks; maximum 9223372036 seconds, no implicit TTL. |
+| `TRNM_SERVER_LEGACY_SINGLE_SESSION` | `false` | Exactly true/false/1/0; in Legacy mode only. |
 <!-- trnm-server-config:end -->
 
 `engineering_readiness.py` compares the exact command list, route pairs and environment **names** with the recognized source regions. It is deliberately not a Rust syntax/semantic parser and does not establish default values, auth correctness, handler execution or resource safety. A refactor of those source regions requires updating the extractor and its hostile fixtures, not suppressing the check.
@@ -440,7 +454,7 @@ The complete frontier5 source and selected runtime4 identity now have separate t
 `NakamaAccountsV5` 仍在来源或数据库 I/O 前拒绝，账号运行、账号传输和 schema5 备份恢复未获得资格。源 kernel 不授予 Git、数据库执行或独立 acceptance；真实 2005 条目录负例只验证源枚举采用有界流式 `os.scandir`，非 `.sql` FIFO 不读取也不构成整个命名空间的常规文件保证。历史 source4 只能使用显式历史 envelope 与真实原 validator、authority、八份 SQL，不能冒充当前源。新调用接入的 native、remote 和 Git fixture 验证仍由独立执行矩阵负责。
 
 
-Legacy authentication now has an owned source composition in `runtime/legacy_auth.rs`, the concrete `legacy_repository.rs` adapter, and the distinct issuer/header/claims/verifier/blacklist/device-predicate modules. `python3 scripts/check-trnm-server.py` checks their finite source regions, registrations, deferred UUID/clock/error ordering, fixed-purpose references and truthful no-credit status; `tests/control_plane/test_nakama_accounts_schema5.py` includes mutation negatives. These checks are source contracts, not Cargo, HTTP or native authentication execution. The two new first-party crypto-provider dependency edges are explicit in the existing closed dependency table; no new external version, SDK, key fallback, route or default gate is implied. The existing epoch credential path remains the application's authentication authority.
+Legacy authentication now has an owned source composition in `runtime/legacy_auth.rs`, the concrete `legacy_repository.rs` adapter, and the distinct issuer/header/claims/verifier/blacklist/device-predicate modules. `python3 scripts/check-trnm-server.py` checks their finite source regions, registrations, deferred UUID/clock/error ordering, fixed-purpose references and truthful no-credit status; `tests/control_plane/test_nakama_accounts_schema5.py` includes mutation negatives. These checks are source contracts, not Cargo, HTTP or native authentication execution. The first-party crypto-provider dependency edges remain explicit in the existing closed dependency table; source registration adds no external version, SDK, key fallback or default gate. Three Legacy routes are now registered separately as capture-gated source wiring. Exactly one selected authority now owns App authentication: Disabled, DurableFamily or NakamaLegacy. This source selection does not activate the false AccountsV5 gate or grant native HTTP execution.
 
 The new Device error envelope distinguishes `CommittedCreation`, `Unconfirmed` and `UnconfirmedCleanup`; false confirmation is not proof of no commit. Preserve the original cause/code and cleanup diagnostic, permit neither caller replay nor compensation, and leave native transaction attempts to the repository. Stored username/disable timestamps are account read data, not freshly validated Device input. Treat the relation catalog observations, pure predicate/codec comparisons, local service mocks and official-only HTTP observations as separate finite records. Root's combined-source partial Cargo checks do not establish this full source or native Device qualification. The current source frontier is five, but default execution remains four/epoch4/twelve tables until exact native activation is independently qualified.
 
@@ -450,6 +464,8 @@ The inactive target/pool/HTTP composition is checked against complete raw produc
 
 `AuthoritativeSchemaTarget::StorageV4` remains the default. Explicit AccountsV5 is carried immutably but its production capture gate remains false; five source SQL files per profile are not a schema-5 publication. Legacy user/Device repository calls keep one native result under the pool deadline and bypass generic retry. Late confirmed creation prevents token success while retaining commit facts; unknown or unobserved outcomes never imply no effect. The native engine's bounded attempts and cleanup remain distinct from caller replay and compensation, both of which are forbidden.
 
-`legacy_http_api.rs` is an uninstalled adapter, with local ceilings of 512 KiB body/decoded strings, depth 64, 8192 JSON nodes, 2048 members, 128 KiB scalar, 256 vars, 8192 query bytes/64 pairs, 64 KiB Authorization and 2 MiB response. Its seven captured registered extensions apply to message names, not vars keys. First-object trailing input, StdEncoding padding/unused bits/CRLF, null/duplicates and fixed public errors have source/pure tests; live App/header/authority wiring, full invalid-UTF8 and overlap-create parity, platform resource containment and multiworker revocation remain unqualified. The old nine-file token claims/source lock is retained with a separate HTTP primary-source subsection. No source check or isolated donor Cargo result confers current-HEAD CI, HTTP or native compatibility credit.
+`legacy_http_api.rs` is connected to the selected App source authority behind the false AccountsV5 gate, with local ceilings of 512 KiB body/decoded strings, depth 64, 8192 JSON nodes, 2048 members, 128 KiB scalar, 256 vars, 8192 query bytes/64 pairs, 64 KiB Authorization and 2 MiB response. Its seven captured registered extensions apply to message names, not vars keys. First-object trailing input, StdEncoding padding/unused bits/CRLF, null/duplicates and fixed public errors have source/pure tests; actual App/header/authority HTTP execution, full invalid-UTF8 and overlap-create parity, platform resource containment and shared-worker revocation remain unqualified. Source clones share one process-owned service/cache; neither restart persistence nor multi-node coordination is claimed. The old nine-file token claims/source lock is retained with a separate HTTP primary-source subsection. No source check or isolated donor Cargo result confers current-HEAD CI, HTTP or native compatibility credit.
 
 The explicit AccountsV5 target expects 14 tables and retains storage writer epoch 4; its closed production gate prevents this source target from authorizing publication.
+
+The transport drain precheck and App drain admission both use the existing numeric gateway envelope for the three Legacy POST paths and their query variants: HTTP 503, code 14, "Service is draining.", without a retry field. This source repair preserves generic control-route drain behavior and still requires actual HTTP and independent review.

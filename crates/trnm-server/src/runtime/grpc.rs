@@ -43,7 +43,7 @@ impl Nakama for HealthcheckService {
 
 #[derive(Debug)]
 pub struct GrpcWorker {
-    worker: JoinHandle<Result<(), ServerError>>,
+    worker: Option<JoinHandle<Result<(), ServerError>>>,
     draining: SharedDrain,
     worker_failed: Arc<AtomicBool>,
 }
@@ -71,21 +71,33 @@ pub fn spawn(
             )
         })?;
     Ok(Some(GrpcWorker {
-        worker,
+        worker: Some(worker),
         draining,
         worker_failed,
     }))
 }
 
 pub fn join(worker: Option<GrpcWorker>) -> Result<(), ServerError> {
-    let Some(worker) = worker else {
+    let Some(mut worker) = worker else {
         return Ok(());
     };
-    match worker.worker.join() {
+    let Some(handle) = worker.worker.take() else {
+        return Ok(());
+    };
+    match handle.join() {
         Ok(result) => result,
         Err(_) => {
             signal_failure(&worker.draining, worker.worker_failed.as_ref());
             Err(ServerError::Configuration("grpc_worker_panicked"))
+        }
+    }
+}
+
+impl Drop for GrpcWorker {
+    fn drop(&mut self) {
+        if let Some(handle) = self.worker.take() {
+            self.draining.begin();
+            let _ = handle.join();
         }
     }
 }

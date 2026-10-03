@@ -121,6 +121,23 @@ impl super::legacy_auth::LegacyDeviceRepository for PooledRepository {
 }
 
 impl Repository for PooledRepository {
+    fn read_legacy_user(
+        &mut self,
+        user: UserId,
+    ) -> Result<
+        Option<super::legacy_auth::LegacyStoredUser>,
+        super::legacy_auth::LegacyRepositoryError,
+    > {
+        super::legacy_auth::LegacyUserRepository::read_legacy_user(self, user)
+    }
+    fn authenticate_legacy_device(
+        &mut self,
+        input: super::legacy_auth::LegacyDeviceRepositoryInput<'_>,
+    ) -> Result<super::legacy_auth::LegacyDeviceAccount, super::legacy_auth::LegacyRepositoryError>
+    {
+        super::legacy_auth::LegacyDeviceRepository::authenticate_legacy_device(self, input)
+    }
+
     fn verify_storage_import_serving(&mut self) -> Result<(), DomainError> {
         self.pool
             .run_with_deadline(self.operation_budget, |repository| {

@@ -85,6 +85,8 @@ REQUIRED_FILES = {
     ROOT / "crates/trnm-storage-core/src/nakama_sort.rs",
     ROOT / "crates/trnm-storage-core/src/nakama_batch_tests.rs",
     ROOT / "crates/trnm-server/src/runtime/app.rs",
+    ROOT / "crates/trnm-server/src/runtime/auth_runtime.rs",
+    ROOT / "crates/trnm-server/src/runtime/auth_app_tests.rs",
     ROOT / "crates/trnm-server/src/runtime/pool.rs",
     ROOT / "crates/trnm-server/src/runtime/retry.rs",
     ROOT / "crates/trnm-persistence-pg/tests/storage_duplicate_batches.rs",
@@ -446,6 +448,8 @@ FORBIDDEN_SOURCE = (
     "unsafe {",
 )
 
+REQUIRED_TESTS.update({'durable_mode_preserves_old_enablement_and_never_falls_back', 'accidental_public_bind_and_implicit_plaintext_database_fail_closed', 'legacy_key_limits_reuse_actual_provider_without_durable_minimum', 'authority_profiles_reject_every_mixed_material_field', 'grpc_bind_is_optional_distinct_and_public_bind_requires_opt_in', 'legacy_authentication_and_complete_decode_precede_native_and_cache_mutation', 'legacy_check_config_is_pure_and_serve_rejects_before_repository_setup', 'legacy_explicit_twenty_and_twenty_seven_byte_keys_are_redacted', 'legacy_material_requires_explicit_authority_mode', 'shared_legacy_runtime_revocation_crosses_app_and_never_uses_family_calls', 'wrong_authority_never_falls_back_or_calls_native_accounts', 'request_response_debug_and_static_challenge_cannot_disclose_secrets', 'legacy_mode_requires_explicit_accounts_five_target', 'legacy_mode_requires_all_five_operator_key_and_ttl_values', 'secrets_and_source_identity_are_strictly_validated', 'authority_modes_are_closed_and_default_is_disabled', 'session_auth_is_explicit_bounded_and_redacted', 'legacy_single_session_is_bounded_boolean_with_explicit_false_default', 'verify_full_tls_is_secure_by_default_and_material_is_paired', 'legacy_refresh_reads_once_and_invalid_logout_second_token_changes_no_cache', 'durable_mode_rejects_each_missing_profile_field', 'default_candidate_config_is_loopback_bounded_and_redacted', 'legacy_ttls_reject_zero_parse_overflow_and_actual_duration_overflow', 'session_auth_rejects_partial_or_noncanonical_key_material', 'selected_legacy_guard_is_static_and_never_uses_durable_verifier', 'schema_target_syntax_is_closed_and_defaults_to_storage_four', 'operator_messages_are_static_and_secret_free', 'pool_and_timeout_bounds_fail_closed', 'every_legacy_post_query_variant_is_rejected_by_drain_before_parsing', 'selected_legacy_drain_rejects_before_native_and_blacklist_mutation'})
+REQUIRED_TESTS.add('legacy_transport_drain_preserves_gateway_code_for_every_post_query_variant')
 
 def fail(message: str) -> None:
     raise SystemExit(f"trnm-server contract failed: {message}")
@@ -2359,49 +2363,7 @@ def validate_accounts_schema_source() -> None:
 
 
 # Finite source candidate bindings; identity checks grant no runtime evidence.
-LEGACY_AUTH_REQUIRED_FILES = tuple(Path(value) for value in (
-    'crates/trnm-server/src/lib.rs',
-    'crates/trnm-server/src/runtime/mod.rs',
-    'crates/trnm-server/src/runtime/legacy_auth.rs',
-    'crates/trnm-server/src/runtime/legacy_auth_tests.rs',
-    'crates/trnm-server/src/runtime/legacy_repository.rs',
-    'crates/trnm-server/src/runtime/legacy_repository_tests.rs',
-    'crates/trnm-server/src/runtime/legacy_device_predicates.rs',
-    'crates/trnm-server/src/runtime/legacy_uuid.rs',
-    'crates/trnm-server/src/runtime/config.rs',
-    'crates/trnm-token-crypto-provider/src/lib.rs',
-    'crates/trnm-token-crypto-provider/src/nakama_legacy.rs',
-    'crates/trnm-token-jwt-adapter/src/lib.rs',
-    'crates/trnm-token-jwt-adapter/src/nakama_legacy.rs',
-    'crates/trnm-token-jwt-adapter/src/nakama_legacy_payload.rs',
-    'crates/trnm-token-jwt-adapter/src/nakama_legacy_decode.rs',
-    'crates/trnm-token-jwt-adapter/src/nakama_legacy_header.rs',
-    'crates/trnm-token-jwt-adapter/src/nakama_legacy_verify.rs',
-    'crates/trnm-session-core/src/lib.rs',
-    'crates/trnm-session-core/src/nakama_legacy_blacklist.rs',
-    'crates/trnm-persistence-pg/src/nakama_account.rs',
-    'crates/trnm-persistence-pg/src/nakama_account/native.rs',
-    'crates/trnm-persistence-pg/src/nakama_account/tests.rs',
-    'crates/trnm-persistence-pg/src/schema_parts/account_native_attributes.rs',
-    'crates/trnm-persistence-pg/src/schema_parts/account_native_columns.rs',
-    'crates/trnm-persistence-pg/src/schema_parts/account_native_objects.rs',
-    'crates/trnm-persistence-pg/src/schema_parts/account_native_triggers.rs',
-    'crates/trnm-persistence-pg/src/schema_parts/account_relation_semantics.rs',
-    'contracts/session/nakama-v340-token-source-lock.json',
-    'crates/trnm-token-crypto-provider/src/software.rs',
-    'crates/trnm-server/src/runtime/legacy_http_api.rs',
-    'crates/trnm-server/src/runtime/legacy_http_api_tests.rs',
-    'crates/trnm-server/src/runtime/pool.rs',
-    'crates/trnm-server/src/runtime/retry.rs',
-    'crates/trnm-persistence-pg/src/lib.rs',
-    'crates/trnm-persistence-pg/src/pool.rs',
-    'crates/trnm-persistence-pg/src/pool_parts/base.rs',
-    'crates/trnm-persistence-pg/src/pool_parts/pool.rs',
-    'crates/trnm-persistence-pg/src/schema_parts/migrate.rs',
-    'crates/trnm-persistence-pg/src/storage_parts/01_repository.rs',
-    'crates/trnm-persistence-pg/src/storage_parts/04_delete_authorize.rs',
-    'crates/trnm-persistence-pg/src/storage_import.rs',
-))
+LEGACY_AUTH_REQUIRED_FILES = tuple(Path(value) for value in ('crates/trnm-server/src/lib.rs', 'crates/trnm-server/src/runtime/mod.rs', 'crates/trnm-server/src/runtime/legacy_auth.rs', 'crates/trnm-server/src/runtime/legacy_auth_tests.rs', 'crates/trnm-server/src/runtime/legacy_repository.rs', 'crates/trnm-server/src/runtime/legacy_repository_tests.rs', 'crates/trnm-server/src/runtime/legacy_device_predicates.rs', 'crates/trnm-server/src/runtime/legacy_uuid.rs', 'crates/trnm-server/src/runtime/config.rs', 'crates/trnm-token-crypto-provider/src/lib.rs', 'crates/trnm-token-crypto-provider/src/nakama_legacy.rs', 'crates/trnm-token-jwt-adapter/src/lib.rs', 'crates/trnm-token-jwt-adapter/src/nakama_legacy.rs', 'crates/trnm-token-jwt-adapter/src/nakama_legacy_payload.rs', 'crates/trnm-token-jwt-adapter/src/nakama_legacy_decode.rs', 'crates/trnm-token-jwt-adapter/src/nakama_legacy_header.rs', 'crates/trnm-token-jwt-adapter/src/nakama_legacy_verify.rs', 'crates/trnm-session-core/src/lib.rs', 'crates/trnm-session-core/src/nakama_legacy_blacklist.rs', 'crates/trnm-persistence-pg/src/nakama_account.rs', 'crates/trnm-persistence-pg/src/nakama_account/native.rs', 'crates/trnm-persistence-pg/src/nakama_account/tests.rs', 'crates/trnm-persistence-pg/src/schema_parts/account_native_attributes.rs', 'crates/trnm-persistence-pg/src/schema_parts/account_native_columns.rs', 'crates/trnm-persistence-pg/src/schema_parts/account_native_objects.rs', 'crates/trnm-persistence-pg/src/schema_parts/account_native_triggers.rs', 'crates/trnm-persistence-pg/src/schema_parts/account_relation_semantics.rs', 'contracts/session/nakama-v340-token-source-lock.json', 'crates/trnm-token-crypto-provider/src/software.rs', 'crates/trnm-server/src/runtime/legacy_http_api.rs', 'crates/trnm-server/src/runtime/legacy_http_api_tests.rs', 'crates/trnm-server/src/runtime/pool.rs', 'crates/trnm-server/src/runtime/retry.rs', 'crates/trnm-persistence-pg/src/lib.rs', 'crates/trnm-persistence-pg/src/pool.rs', 'crates/trnm-persistence-pg/src/pool_parts/base.rs', 'crates/trnm-persistence-pg/src/pool_parts/pool.rs', 'crates/trnm-persistence-pg/src/schema_parts/migrate.rs', 'crates/trnm-persistence-pg/src/storage_parts/01_repository.rs', 'crates/trnm-persistence-pg/src/storage_parts/04_delete_authorize.rs', 'crates/trnm-persistence-pg/src/storage_import.rs', 'crates/trnm-server/src/runtime/auth.rs', 'crates/trnm-server/src/runtime/legacy_config.rs', 'crates/trnm-server/src/runtime/schema.rs', 'crates/trnm-server/src/runtime/server.rs', 'crates/trnm-server/src/runtime/app.rs', 'crates/trnm-server/src/runtime/http.rs', 'crates/trnm-server/src/runtime/session_api.rs', 'crates/trnm-server/src/runtime/grpc.rs', 'crates/trnm-server/src/runtime/auth_runtime.rs', 'crates/trnm-server/src/runtime/auth_app_tests.rs'))
 REQUIRED_FILES.update(ROOT / path for path in LEGACY_AUTH_REQUIRED_FILES)
 REQUIRED_TESTS.update({
     'ban_samples_clock_before_bounds_preparation_and_preserves_atomic_quota',
@@ -2714,7 +2676,7 @@ def validate_legacy_auth_source(sources: dict[Path, str], status: dict, source_l
         if path not in sources:
             fail(f"legacy auth required source absent: {path}")
     candidate = status.get("nakama_legacy_auth_source_candidate", {})
-    if candidate.get("status") != "source-candidate-http-unconnected-accounts5-gated":
+    if candidate.get("status") != "source-candidate-http-app-connected-accounts5-gated":
         fail("legacy auth source state drift")
     expected = {
         "source_composition_present": True, "native_repository_adapter_present": True,
@@ -2732,7 +2694,7 @@ def validate_legacy_auth_source(sources: dict[Path, str], status: dict, source_l
         if type(candidate.get(key)) is not int or candidate[key] != value:
             fail(f"legacy auth bounded schema/profile policy drift: {key}")
     if candidate.get("account_gate_reason") != "schema5_native_catalog_capture_pending" or (
-        candidate.get("active_authentication_profile") != "durable-Trillionnium-family-and-key-epoch"
+        candidate.get("active_authentication_profile") != "explicitly-selected-disabled-durable-family-nakama-legacy-source"
     ) or candidate.get("device_error_variants") != ["Unconfirmed","CommittedCreation","UnconfirmedCleanup"]:
         fail("legacy auth gate, active authority or error-envelope drift")
     flags = candidate.get("acceptance_flags", {})
@@ -2810,72 +2772,14 @@ def validate_legacy_auth_source(sources: dict[Path, str], status: dict, source_l
     for path, markers in registrations.items():
         require_markers("legacy auth local module registration", sources[Path(path)], markers)
     validate_legacy_adapter_composition(sources, status, source_lock)
-    # No transport/startup admission is fabricated by this library composition.
-    for path in ("crates/trnm-server/src/runtime/app.rs","crates/trnm-server/src/runtime/config.rs"):
-        source = sources[Path(path)]
-        if any(marker in source for marker in ("/v2/account/authenticate/device",
-            "/v2/session/refresh","/v2/account/session/refresh","/v2/session/logout","LegacyAuthService")):
-            fail("legacy auth HTTP/startup integration is outside this gated source slice")
+    validate_selected_auth_app_source(sources, status)
 
 
-# Complete raw files close this finite inactive target/pool/HTTP seam. These
+
+# Complete raw files close the finite target/pool/HTTP source seam. These
 # checks do not parse arbitrary Rust or prove native, route or resource parity.
-LEGACY_ADAPTER_FULL_SOURCE_SHA256 = {'crates/trnm-server/src/runtime/legacy_http_api.rs': 'b3e5c60e95ed94515e7c6f971cf3956a3d211a63c5d6519fcde090a061a5931a',
- 'crates/trnm-server/src/runtime/pool.rs': '9ff92919a035750c59c815f13fc3a377213a63aab7117d48fa65454187f66cde',
- 'crates/trnm-server/src/runtime/retry.rs': '8b1a3a2cb78d7088c14e34e16d0b1680bb5246e7851ba41983652ec9d9847487',
- 'crates/trnm-persistence-pg/src/lib.rs': 'b14d3e26d42500ead67d56d7c7e0bbc3a48ef13abb2330115c65fb7e8eeff61c',
- 'crates/trnm-persistence-pg/src/pool.rs': 'd4d7f3cff7e922c215ab345ed7e167a6a1c21dbb56b61c0a11ed799902381883',
- 'crates/trnm-persistence-pg/src/pool_parts/base.rs': 'fb4ba2c9e069476032dec4d542b842efee314613b05a42f7cff8c3f2cf4c95dc',
- 'crates/trnm-persistence-pg/src/pool_parts/pool.rs': 'b5ef7f83218785290366ba21490389bca23f182c3ec9e5e6dec879c5a171792d',
- 'crates/trnm-persistence-pg/src/schema_parts/migrate.rs': '8324f47213f1ea9172e01d6524cd1280649b6c8ffdd07e3fd1b348ae2e2dec16',
- 'crates/trnm-persistence-pg/src/storage_parts/01_repository.rs': '34abe49096eb1f9df15b0ed8a45295de050616971839a3df354c37b3f32fb301',
- 'crates/trnm-persistence-pg/src/storage_parts/04_delete_authorize.rs': '15d15ef36ef214ed518ef15fdf8acb3c4856faa1b9d063987089b1e03e67ae92',
- 'crates/trnm-persistence-pg/src/storage_import.rs': 'd54162a7f65c9923098edfa39642a3010f124c0f7d9515fb3de3e27b514a11d0',
- 'crates/trnm-server/src/runtime/legacy_repository.rs': '1784415b61cf8b10888370636f71e18865110c5923129e97293e0da65a726741',
- 'crates/trnm-server/src/runtime/legacy_auth.rs': '129a4546b3370252282f200e84bcd41fdb77a8a17792f68feeec45267dbf1590',
- 'crates/trnm-server/src/runtime/mod.rs': 'fd6e829dd8c3567d938c65a3d6df125ca5941f45b09bfe2f63601fea630a7921',
- 'crates/trnm-server/src/lib.rs': 'cc28e29f62382b56c719171efed7e95f32ee2ed214db22d15886471491047749'}
-LEGACY_ADAPTER_POLICY = {'immutable_serving_schema_target': True,
- 'legacy_constructors_default': 'StorageV4',
- 'default_schema_version': 4,
- 'default_storage_writer_epoch': 4,
- 'default_table_count': 12,
- 'account_source_schema_version': 5,
- 'account_target_table_count': 14,
- 'account_gate_enabled': False,
- 'typed_single_lease': True,
- 'observed_native_result_retained': True,
- 'late_result_is_successful_ack': False,
- 'unobserved_means_no_effect': False,
- 'generic_business_retry': False,
- 'caller_replay': False,
- 'caller_compensation': False,
- 'canceled_or_unknown_lease_recycled': False,
- 'HTTP_route_or_authority_installed': False,
- 'HTTP_codec_source_present': True,
- 'registered_options_extensions': 7,
- 'registration_scope': 'captured gateway imports; not whole-process GlobalTypes census',
- 'registered_extension_check_before_unknown_and_null': True,
- 'registered_extension_rule_applies_to_vars_map_keys': False,
- 'first_object_only': True,
- 'Go_invalid_UTF8_and_overlap_create_qualified': False,
- 'auth_before_business_policy': 'AGENTS rule 11; differs from pinned gateway decode-first',
- 'Basic_base64_dependency': '=0.22.1',
- 'bounds': {'body_bytes': 524288,
-            'json_depth': 64,
-            'json_nodes': 8192,
-            'json_members': 2048,
-            'decoded_string_bytes': 524288,
-            'scalar_bytes': 131072,
-            'vars_entries': 256,
-            'query_bytes': 8192,
-            'query_pairs': 64,
-            'authorization_bytes': 65536,
-            'response_bytes': 2097152},
- 'accepted': False,
- 'compatibility_credit': False,
- 'production_ready': False,
- 'full_replacement': False}
+LEGACY_ADAPTER_FULL_SOURCE_SHA256 = {'crates/trnm-server/src/runtime/legacy_http_api.rs': 'b00cfce161ae8c30d6d773089e846b5b09ec8714959d7a97cd861453a8fc50b5', 'crates/trnm-server/src/runtime/pool.rs': 'fdc7c1dc0fa3586e2ca7b5bf909b2ac1213f3bc35a823db24de8517828ecac87', 'crates/trnm-server/src/runtime/retry.rs': 'e395e31ff7ef88b6c3612c507b25556e1088377668ad6076fe181b9348c42987', 'crates/trnm-persistence-pg/src/lib.rs': 'b14d3e26d42500ead67d56d7c7e0bbc3a48ef13abb2330115c65fb7e8eeff61c', 'crates/trnm-persistence-pg/src/pool.rs': 'd4d7f3cff7e922c215ab345ed7e167a6a1c21dbb56b61c0a11ed799902381883', 'crates/trnm-persistence-pg/src/pool_parts/base.rs': 'fb4ba2c9e069476032dec4d542b842efee314613b05a42f7cff8c3f2cf4c95dc', 'crates/trnm-persistence-pg/src/pool_parts/pool.rs': 'b5ef7f83218785290366ba21490389bca23f182c3ec9e5e6dec879c5a171792d', 'crates/trnm-persistence-pg/src/schema_parts/migrate.rs': '8324f47213f1ea9172e01d6524cd1280649b6c8ffdd07e3fd1b348ae2e2dec16', 'crates/trnm-persistence-pg/src/storage_parts/01_repository.rs': '34abe49096eb1f9df15b0ed8a45295de050616971839a3df354c37b3f32fb301', 'crates/trnm-persistence-pg/src/storage_parts/04_delete_authorize.rs': '15d15ef36ef214ed518ef15fdf8acb3c4856faa1b9d063987089b1e03e67ae92', 'crates/trnm-persistence-pg/src/storage_import.rs': 'd54162a7f65c9923098edfa39642a3010f124c0f7d9515fb3de3e27b514a11d0', 'crates/trnm-server/src/runtime/legacy_repository.rs': '1784415b61cf8b10888370636f71e18865110c5923129e97293e0da65a726741', 'crates/trnm-server/src/runtime/legacy_auth.rs': '129a4546b3370252282f200e84bcd41fdb77a8a17792f68feeec45267dbf1590', 'crates/trnm-server/src/runtime/mod.rs': 'ecc3cd9ad3b378b5467de23cd80a82d9b83f9d44b0634fbfcf27821a787e23d1', 'crates/trnm-server/src/lib.rs': 'cc28e29f62382b56c719171efed7e95f32ee2ed214db22d15886471491047749'}
+LEGACY_ADAPTER_POLICY = {'immutable_serving_schema_target': True, 'legacy_constructors_default': 'StorageV4', 'default_schema_version': 4, 'default_storage_writer_epoch': 4, 'default_table_count': 12, 'account_source_schema_version': 5, 'account_target_table_count': 14, 'account_gate_enabled': False, 'typed_single_lease': True, 'observed_native_result_retained': True, 'late_result_is_successful_ack': False, 'unobserved_means_no_effect': False, 'generic_business_retry': False, 'caller_replay': False, 'caller_compensation': False, 'canceled_or_unknown_lease_recycled': False, 'HTTP_route_or_authority_installed': False, 'HTTP_codec_source_present': True, 'registered_options_extensions': 7, 'registration_scope': 'captured gateway imports; not whole-process GlobalTypes census', 'registered_extension_check_before_unknown_and_null': True, 'registered_extension_rule_applies_to_vars_map_keys': False, 'first_object_only': True, 'Go_invalid_UTF8_and_overlap_create_qualified': False, 'auth_before_business_policy': 'AGENTS rule 11; differs from pinned gateway decode-first', 'Basic_base64_dependency': '=0.22.1', 'bounds': {'body_bytes': 524288, 'json_depth': 64, 'json_nodes': 8192, 'json_members': 2048, 'decoded_string_bytes': 524288, 'scalar_bytes': 131072, 'vars_entries': 256, 'query_bytes': 8192, 'query_pairs': 64, 'authorization_bytes': 65536, 'response_bytes': 2097152}, 'accepted': False, 'compatibility_credit': False, 'production_ready': False, 'full_replacement': False, 'HTTP_App_source_routes_connected': True, 'selected_authority_config_source_present': True, 'HTTP_route_or_authority_installed_scope': 'actual gated runtime qualification; source wiring is separately registered'}
 LEGACY_HTTP_SOURCE_BINDING = {'upstream_commit': 'd4d92f93f78bbbe62c7fc50a3f85c772ec121a09',
  'verified_files': [{'path': 'apigrpc/apigrpc.proto',
                      'bytes': 24346,
@@ -2993,13 +2897,39 @@ def validate_legacy_adapter_composition(sources: dict[Path, str], status: dict,
     validate_reviewed_complete_production_files(LEGACY_ADAPTER_FULL_SOURCE_SHA256, sources)
     if not same_typed_value(status.get("nakama_legacy_auth_source_candidate", {}).get(
             "target_pool_HTTP_source_policy"), LEGACY_ADAPTER_POLICY):
-        fail("inactive legacy target/pool/HTTP source policy drift")
+        fail("gated legacy target/pool/HTTP source policy drift")
     if not same_typed_value(source_lock.get("HTTP_adapter_source_binding"), LEGACY_HTTP_SOURCE_BINDING):
         fail("legacy HTTP primary source/registry scope drift")
     # These exact file hashes bind the actual call paths, including single FnOnce
     # invocation, delayed native result facts, default4 construction, gate-before-I/O,
     # borrowed boxed lease errors, map-key exception and HTTP call boundaries.
     # No comment or unused literal can stand in for a changed executable body.
+
+
+# Finite complete bytes of the reviewed config/App source slice. This is not a
+# Rust parser or runtime acceptance; subsequent functional changes require rebind.
+SELECTED_AUTH_APP_FULL_SOURCE_SHA256 = {'crates/trnm-server/src/runtime/auth.rs': '0299ab171af1be55ba8b2f939df680f23af2fd58a31c4b438796cb70cb0fd718', 'crates/trnm-server/src/runtime/config.rs': '35948aa76100439bb5293de39083226edc32610d7d4e02cabefb91f7bdc94f3a', 'crates/trnm-server/src/runtime/legacy_config.rs': '6f219b7fc1f336dd8ecd1a4491d92b59c2dd1dcb9a6d0db653429255a906f77a', 'crates/trnm-server/src/runtime/mod.rs': 'ecc3cd9ad3b378b5467de23cd80a82d9b83f9d44b0634fbfcf27821a787e23d1', 'crates/trnm-server/src/runtime/schema.rs': '47254715b43146cc09e6fb5dbe62580d9e2a9b2c9e82b08a6f468ba3f6201982', 'crates/trnm-server/src/runtime/server.rs': '9039e31cfb9463996415d9c20be42037f99510b602bcb2b7c48f53cdc70f71fe', 'crates/trnm-server/src/runtime/app.rs': 'b61cab480976911f0391c2ef3f49ac95b338d68a0ef0d525f649d3e1c9c3cef9', 'crates/trnm-server/src/runtime/http.rs': '3955079824e12afffcfa9853b7084c973b1d2f4b8858a030379104e5b0696f64', 'crates/trnm-server/src/runtime/pool.rs': 'fdc7c1dc0fa3586e2ca7b5bf909b2ac1213f3bc35a823db24de8517828ecac87', 'crates/trnm-server/src/runtime/retry.rs': 'e395e31ff7ef88b6c3612c507b25556e1088377668ad6076fe181b9348c42987', 'crates/trnm-server/src/runtime/session_api.rs': '6797009fa6af9cf21614386fcef57ab4d87e037fba372023598382a77c166bbc', 'crates/trnm-server/src/runtime/grpc.rs': '9c505f70d22adfc40631f820c751d0ba4adb7a977fee59a4b029a98ee24f3d92', 'crates/trnm-server/src/runtime/auth_runtime.rs': '28628bd813d05a66ee04006484da4c2544fae85a046c2a107048f69872ef6e5e', 'crates/trnm-server/src/runtime/auth_app_tests.rs': '7c80332f27df3adeab147158040364cdb26774e9aa9c8a94bf6ef57cea9868f2', 'crates/trnm-server/src/runtime/legacy_http_api.rs': 'b00cfce161ae8c30d6d773089e846b5b09ec8714959d7a97cd861453a8fc50b5'}
+SELECTED_AUTH_APP_POLICY = {'modes': ['Disabled', 'DurableFamily', 'NakamaLegacy'], 'environment_modes': ['disabled', 'durable-family', 'nakama-legacy'], 'default_mode': 'Disabled', 'absent_mode_preserves_explicit_legacy_durable_enablement': True, 'mixed_or_partial_profile_rejected': True, 'canonical_environment': ['TRNM_SERVER_ADMIN_TOKEN', 'TRNM_SERVER_ALLOW_NON_LOOPBACK', 'TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE', 'TRNM_SERVER_AUTH_MODE', 'TRNM_SERVER_BIND', 'TRNM_SERVER_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS', 'TRNM_SERVER_DATABASE_LOCK_TIMEOUT_MS', 'TRNM_SERVER_DATABASE_POOL_ACQUIRE_TIMEOUT_MS', 'TRNM_SERVER_DATABASE_POOL_IDLE_TIMEOUT_MS', 'TRNM_SERVER_DATABASE_POOL_MAX_LIFETIME_MS', 'TRNM_SERVER_DATABASE_POOL_MAX_SIZE', 'TRNM_SERVER_DATABASE_POOL_MIN_IDLE', 'TRNM_SERVER_DATABASE_PROFILE', 'TRNM_SERVER_DATABASE_STATEMENT_TIMEOUT_MS', 'TRNM_SERVER_DATABASE_TLS_IDENTITY_CERT_PEM', 'TRNM_SERVER_DATABASE_TLS_IDENTITY_KEY_PKCS8_PEM', 'TRNM_SERVER_DATABASE_TLS_MODE', 'TRNM_SERVER_DATABASE_TLS_ROOT_CERT_PEM', 'TRNM_SERVER_DATABASE_URL', 'TRNM_SERVER_GRPC_BIND', 'TRNM_SERVER_LEGACY_ACCESS_KEY', 'TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS', 'TRNM_SERVER_LEGACY_REFRESH_KEY', 'TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS', 'TRNM_SERVER_LEGACY_SERVER_KEY', 'TRNM_SERVER_LEGACY_SINGLE_SESSION', 'TRNM_SERVER_MAX_REQUEST_BYTES', 'TRNM_SERVER_READ_TIMEOUT_MS', 'TRNM_SERVER_SCHEMA_SOURCE_COMMIT', 'TRNM_SERVER_SCHEMA_TARGET', 'TRNM_SERVER_SESSION_AUTH_AUDIENCE', 'TRNM_SERVER_SESSION_AUTH_ENABLED', 'TRNM_SERVER_SESSION_AUTH_EPOCH', 'TRNM_SERVER_SESSION_AUTH_ISSUER', 'TRNM_SERVER_SESSION_AUTH_KEY_HEX', 'TRNM_SERVER_WRITE_TIMEOUT_MS'], 'legacy_required_environment': ['TRNM_SERVER_LEGACY_SERVER_KEY', 'TRNM_SERVER_LEGACY_ACCESS_KEY', 'TRNM_SERVER_LEGACY_REFRESH_KEY', 'TRNM_SERVER_LEGACY_ACCESS_TTL_SECONDS', 'TRNM_SERVER_LEGACY_REFRESH_TTL_SECONDS'], 'legacy_optional_environment': 'TRNM_SERVER_LEGACY_SINGLE_SESSION', 'legacy_single_session_default': False, 'legacy_explicit_schema_target': 'nakama-accounts-v5', 'legacy_key_bytes_min': 1, 'legacy_key_bytes_max': 4096, 'legacy_implicit_keys_or_TTLs': False, 'legacy_equal_access_refresh_keys_rejected_inherited_local_policy': True, 'legacy_access_TTL_max_seconds': 4611686018, 'legacy_refresh_TTL_max_seconds': 9223372036, 'shared_legacy_service_per_process': True, 'shared_legacy_cache_scope': 'same-process workers; no restart or multi-node qualification', 'legacy_http_routes_source': ['POST /v2/account/authenticate/device', 'POST /v2/account/session/refresh', 'POST /v2/session/logout'], 'query_variants_use_the_same_closed_routes': True, 'private_storage_access_context': ['durable', 'legacy'], 'administrator_is_not_player': True, 'durable_v1_session_routes_only': True, 'credential_or_key_fallback': False, 'legacy_calls_durable_family_operations': False, 'typed_native_account_single_lease': True, 'generic_business_retry': False, 'confirmed_late_commit_allows_tokens': False, 'authentication_and_complete_decode_before_account_or_cache_mutation': True, 'all_legacy_POSTs_rejected_by_drain_before_parsing_or_mutation': True, 'request_response_debug_redacted': True, 'WWW_Authenticate_static_bounded_source': True, 'startup_failure_owned_cleanup_source': True, 'AccountsV5_gate': False, 'AccountsV5_gate_reason': 'schema5_native_catalog_capture_pending', 'default_schema_version': 4, 'default_storage_writer_epoch': 4, 'default_table_count': 12, 'accounts_target_table_count': 14, 'check_config_starts_runtime': False, 'source_only': True, 'native_HTTP_qualified': False, 'paired_oracle_qualified': False, 'production_ready': False, 'compatibility_credit': False, 'source_sha256': {'crates/trnm-server/src/runtime/auth.rs': '0299ab171af1be55ba8b2f939df680f23af2fd58a31c4b438796cb70cb0fd718', 'crates/trnm-server/src/runtime/config.rs': '35948aa76100439bb5293de39083226edc32610d7d4e02cabefb91f7bdc94f3a', 'crates/trnm-server/src/runtime/legacy_config.rs': '6f219b7fc1f336dd8ecd1a4491d92b59c2dd1dcb9a6d0db653429255a906f77a', 'crates/trnm-server/src/runtime/mod.rs': 'ecc3cd9ad3b378b5467de23cd80a82d9b83f9d44b0634fbfcf27821a787e23d1', 'crates/trnm-server/src/runtime/schema.rs': '47254715b43146cc09e6fb5dbe62580d9e2a9b2c9e82b08a6f468ba3f6201982', 'crates/trnm-server/src/runtime/server.rs': '9039e31cfb9463996415d9c20be42037f99510b602bcb2b7c48f53cdc70f71fe', 'crates/trnm-server/src/runtime/app.rs': 'b61cab480976911f0391c2ef3f49ac95b338d68a0ef0d525f649d3e1c9c3cef9', 'crates/trnm-server/src/runtime/http.rs': '3955079824e12afffcfa9853b7084c973b1d2f4b8858a030379104e5b0696f64', 'crates/trnm-server/src/runtime/pool.rs': 'fdc7c1dc0fa3586e2ca7b5bf909b2ac1213f3bc35a823db24de8517828ecac87', 'crates/trnm-server/src/runtime/retry.rs': 'e395e31ff7ef88b6c3612c507b25556e1088377668ad6076fe181b9348c42987', 'crates/trnm-server/src/runtime/session_api.rs': '6797009fa6af9cf21614386fcef57ab4d87e037fba372023598382a77c166bbc', 'crates/trnm-server/src/runtime/grpc.rs': '9c505f70d22adfc40631f820c751d0ba4adb7a977fee59a4b029a98ee24f3d92', 'crates/trnm-server/src/runtime/auth_runtime.rs': '28628bd813d05a66ee04006484da4c2544fae85a046c2a107048f69872ef6e5e', 'crates/trnm-server/src/runtime/auth_app_tests.rs': '7c80332f27df3adeab147158040364cdb26774e9aa9c8a94bf6ef57cea9868f2', 'crates/trnm-server/src/runtime/legacy_http_api.rs': 'b00cfce161ae8c30d6d773089e846b5b09ec8714959d7a97cd861453a8fc50b5'}, 'Legacy_transport_drain_uses_numeric_gateway_envelope_source': True}
+
+def validate_selected_auth_app_source(sources: dict[Path, str], status: dict,
+                                      contract: dict | None = None,
+                                      vertical_status: dict | None = None) -> None:
+    validate_reviewed_complete_production_files(SELECTED_AUTH_APP_FULL_SOURCE_SHA256, sources)
+    if not same_typed_value(status.get("selected_auth_authority_source"), SELECTED_AUTH_APP_POLICY):
+        fail("selected authority source status, identity or no-credit boundary drift")
+    if contract is None:
+        contract = json.loads((ROOT / "contracts/server/rust-server-vertical-slice.v1.json").read_text())
+    if vertical_status is None:
+        vertical_status = json.loads((ROOT / "docs/status/RUST_SERVER_VERTICAL_SLICE_STATUS.json").read_text())
+    for label, document in (("contract", contract), ("vertical status", vertical_status)):
+        if not same_typed_value(document.get("selected_auth_authority_source"), SELECTED_AUTH_APP_POLICY):
+            fail(f"selected authority {label} binding drift")
+    environment = sorted(set(re.findall(r'"(TRNM_SERVER_[A-Z0-9_]+)"',
+        sources[Path("crates/trnm-server/src/runtime/config.rs")].split("\n#[cfg(test)]", 1)[0])))
+    if not same_typed_value(contract.get("configuration", {}).get("environment"), environment):
+        fail("canonical configuration environment differs from actual pure lookup source")
+    if environment != SELECTED_AUTH_APP_POLICY["canonical_environment"]:
+        fail("selected authority configuration lookup inventory drift")
 
 
 def expected_server_dependencies() -> dict[str, object]:
