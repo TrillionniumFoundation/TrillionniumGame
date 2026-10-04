@@ -1,5 +1,13 @@
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+extern crate self as trnm_persistence_pg;
+#[cfg(test)]
+#[path = "../../trnm-server/src/runtime/mod.rs"]
+pub mod runtime;
+#[cfg(test)]
+pub use runtime::legacy_service_exports::*;
+
 mod auth;
 mod authority;
 mod nakama_account;
@@ -26,10 +34,10 @@ pub use pool::{
     PgTlsConfig,
 };
 pub use schema::{
-    authoritative_chain_digest, authoritative_supported_chain_digest, AuthoritativeSchemaTarget,
-    SchemaIdentity, SchemaMigrationReport, AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM,
-    AUTHORITATIVE_SCHEMA_VERSION, AUTHORITATIVE_STORAGE_WRITER_EPOCH,
-    AUTHORITATIVE_SUPPORTED_SCHEMA_VERSION,
+    authoritative_chain_digest, authoritative_supported_chain_digest,
+    AdmittedTarget as SchemaAdmission, AuthoritativeSchemaTarget, SchemaIdentity,
+    SchemaMigrationReport, AUTHORITATIVE_CHAIN_DIGEST_ALGORITHM, AUTHORITATIVE_SCHEMA_VERSION,
+    AUTHORITATIVE_STORAGE_WRITER_EPOCH, AUTHORITATIVE_SUPPORTED_SCHEMA_VERSION,
 };
 #[cfg(feature = "session-test-hooks")]
 pub use session::SessionMutationPoint;
@@ -195,6 +203,7 @@ pub enum CommitOutcome {
 pub struct PgRepository {
     profile: DatabaseProfile,
     serving_schema_target: AuthoritativeSchemaTarget,
+    schema_admission: SchemaAdmission,
     client: pool::ClientHandle,
 }
 
@@ -229,6 +238,7 @@ impl PgRepository {
         Ok(Self {
             profile,
             serving_schema_target: target,
+            schema_admission: SchemaAdmission::production(target)?,
             client: pool::ClientHandle::direct(client),
         })
     }

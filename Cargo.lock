@@ -1571,6 +1571,7 @@ dependencies = [
 name = "trnm-persistence-pg"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "native-tls",
  "openssl",

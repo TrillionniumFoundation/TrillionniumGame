@@ -506,5 +506,11 @@
     "claims_boundary": "Complete current two-table fields/defaults/constraints are declared; source-display-name GIN/search, full other Nakama tables, account service/import/runtime and native qualification remain open.",
     "current_evidence_binding_supports_fullfrontier5_HEAD": false,
     "blocking_source_boundary": "Existing v4 live, backup, retry and outbox evidence require full locked4 source; fullfrontier5 with selected runtime4 needs distinct typed source-prefix binding before merge."
+  },
+  "native_auth_diagnostic_admission_source": {
+    "contract": "contracts/server/native-auth-admission-source.json",
+    "status": "locally-checked-source-candidate",
+    "production_gate": false,
+    "qualification": "Finite local Cargo checks/tests passed; native auth15 pairing and independent review pending; no startup, restore or compatibility credit"
   }
 }

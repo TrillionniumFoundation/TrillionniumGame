@@ -774,8 +774,8 @@
       "crates/trnm-server/src/runtime/config.rs": "35948aa76100439bb5293de39083226edc32610d7d4e02cabefb91f7bdc94f3a",
       "crates/trnm-server/src/runtime/legacy_config.rs": "6f219b7fc1f336dd8ecd1a4491d92b59c2dd1dcb9a6d0db653429255a906f77a",
       "crates/trnm-server/src/runtime/mod.rs": "57fd8e18930ef6477a3e4c8332dadf823917c056c8e22846ce52064ab7353c93",
-      "crates/trnm-server/src/runtime/schema.rs": "47254715b43146cc09e6fb5dbe62580d9e2a9b2c9e82b08a6f468ba3f6201982",
-      "crates/trnm-server/src/runtime/server.rs": "a3c5d40c29aaab8bc9489b418962f0222820626f6435005ea154a5a666473b3a",
+      "crates/trnm-server/src/runtime/schema.rs": "4bde20f0c86c27b78089126a4794edbbf1b258335f5a31fe56eeb8f1a740b347",
+      "crates/trnm-server/src/runtime/server.rs": "36e7e7b67cf6bd2574b99f880dd8e7cfacbeddeb495c98a1b25d5711f95d0f45",
       "crates/trnm-server/src/runtime/app.rs": "09db9b09bb379909b654a730174e68fd118e45da6067b0be80c40afba766e41b",
       "crates/trnm-server/src/runtime/http.rs": "72e90693b9a672fd77209c80e46625312fef75b086db8ec5638c8f7785468645",
       "crates/trnm-server/src/runtime/pool.rs": "c7058fe9c77228bc2551fd6c02c2f2bd5132f9706d45fbdf40d5b3969be67ba0",
@@ -811,9 +811,9 @@
     "caller_compensation": false,
     "Email_implemented": false,
     "source_sha256": {
-      "crates/trnm-persistence-pg/src/lib.rs": "d604caf57010b71d6d3cebb58455f6a616519412dca2997807bfbc9bea851e96",
+      "crates/trnm-persistence-pg/src/lib.rs": "2afab65c676a13e541a8cd0fbe8795ab40b43869fe3169810f11529c51c2fd01",
       "crates/trnm-persistence-pg/src/nakama_account.rs": "7e045e8b45e3aa35009be6b47f04e4962ba10c4f8ef4b85f7a5c82337e48b430",
-      "crates/trnm-persistence-pg/src/nakama_account/native.rs": "9d1f794d3960963e457f936dac1d03bdbab5428a4fe892e68d4e5d4ce5016cf3",
+      "crates/trnm-persistence-pg/src/nakama_account/native.rs": "8cf441c137ba9bf8ac12d7e718c78dbc13c2ca3037085acfde926ed30bc58d20",
       "crates/trnm-persistence-pg/src/nakama_account/tests.rs": "1277429231aa78c0418a2e793c1edc11dae0a18c0257d08ce9f2132c29a2744a",
       "crates/trnm-persistence-pg/src/pool_parts/base.rs": "1bc565243740e4b639cd69ea49f4ee8974299b2cc101bd6d3054eeae7783ec6c",
       "crates/trnm-server/src/runtime/app.rs": "09db9b09bb379909b654a730174e68fd118e45da6067b0be80c40afba766e41b",
@@ -933,5 +933,10 @@
     "fault_kind": "returned-error-after-native-action-catalog-check",
     "process_crash_qualified": false,
     "power_loss_qualified": false
+  },
+  "native_auth_diagnostic_admission_source": {
+    "contract": "contracts/server/native-auth-admission-source.json",
+    "status": "locally-checked-source-candidate",
+    "production_gate": false
   }
 }

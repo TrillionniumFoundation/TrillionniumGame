@@ -1,20 +1,35 @@
 // The field is private to this module: production callers can acquire a token
 // only through the unchanged public AccountsV5 admission gate. The diagnostic
-// constructor is absent from non-test binaries and never authorizes startup.
+// constructor is absent from non-test binaries. Test admission grants only
+// same-body diagnostic execution, never production startup qualification.
 mod migration_admission {
     #[cfg(test)]
     use super::failed_precondition;
     use super::{require_account_catalog_capture, AuthoritativeSchemaTarget, DomainError};
 
-    #[derive(Clone, Copy)]
-    pub(super) struct AdmittedTarget {
+    /// Opaque admission issued only after the production capture gate.
+    /// No Default, deserialization, public fields or production diagnostic issuer.
+    ///
+    /// ```compile_fail
+    /// let _ = trnm_persistence_pg::SchemaAdmission::diagnostic(None);
+    /// ```
+    /// ```compile_fail
+    /// let _ = trnm_persistence_pg::SchemaAdmission {
+    ///     target: trnm_persistence_pg::AuthoritativeSchemaTarget::NakamaAccountsV5,
+    /// };
+    /// ```
+    /// ```compile_fail
+    /// let _: trnm_persistence_pg::SchemaAdmission = Default::default();
+    /// ```
+    #[derive(Clone, Copy, Debug)]
+    pub struct AdmittedTarget {
         target: AuthoritativeSchemaTarget,
         #[cfg(test)]
         cut_after_action: Option<usize>,
     }
 
     impl AdmittedTarget {
-        pub(super) fn production(target: AuthoritativeSchemaTarget) -> Result<Self, DomainError> {
+        pub fn production(target: AuthoritativeSchemaTarget) -> Result<Self, DomainError> {
             require_account_catalog_capture(target)?;
             Ok(Self {
                 target,
@@ -23,12 +38,12 @@ mod migration_admission {
             })
         }
 
-        pub(super) fn target(self) -> AuthoritativeSchemaTarget {
+        pub fn target(self) -> AuthoritativeSchemaTarget {
             self.target
         }
 
         #[cfg(test)]
-        pub(super) fn diagnostic(cut_after_action: Option<usize>) -> Self {
+        pub(crate) fn diagnostic(cut_after_action: Option<usize>) -> Self {
             Self {
                 target: AuthoritativeSchemaTarget::NakamaAccountsV5,
                 cut_after_action,
@@ -44,7 +59,7 @@ mod migration_admission {
         }
     }
 }
-use migration_admission::AdmittedTarget;
+pub use migration_admission::AdmittedTarget;
 
 /// Complete selected catalog and recorded provenance validation in the caller's
 /// transaction. AccountsV5 remains closed before the first catalog read.
@@ -57,7 +72,7 @@ pub(crate) fn verify_serving_schema_target(
     verify_serving_schema_admitted(client, profile, admitted)
 }
 
-fn verify_serving_schema_admitted(
+pub(crate) fn verify_serving_schema_admitted(
     client: &mut impl GenericClient,
     profile: DatabaseProfile,
     admitted: AdmittedTarget,
@@ -101,7 +116,7 @@ impl PgRepository {
         self.verify_authoritative_schema_admitted(admitted)
     }
 
-    fn verify_authoritative_schema_admitted(
+    pub fn verify_authoritative_schema_admitted(
         &mut self,
         admitted: AdmittedTarget,
     ) -> Result<SchemaIdentity, DomainError> {

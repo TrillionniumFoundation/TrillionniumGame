@@ -18,6 +18,17 @@ const INSERT_DEVICE: &str =
     "INSERT INTO public.user_device (id,user_id) VALUES ($1,$2::TEXT::UUID)";
 
 impl PgRepository {
+    fn verify_selected_accounts_schema(&mut self) -> Result<crate::SchemaIdentity, DomainError> {
+        if self.schema_admission.target() != AuthoritativeSchemaTarget::NakamaAccountsV5 {
+            // Keep the production rejection before any database access.
+            AuthoritativeSchemaTarget::NakamaAccountsV5.require_capture_ready()?;
+            return Err(crate::failed_precondition(
+                "accounts_schema_target_mismatch",
+            ));
+        }
+        self.verify_authoritative_schema_admitted(self.schema_admission)
+    }
+
     /// Full AccountsV5 ready/catalog proof precedes any account business query.
     /// The current capture gate deliberately rejects without account SQL.
     pub fn read_nakama_user(
@@ -88,7 +99,7 @@ impl DeviceDatabase for NativeDatabase<'_> {
         Self: 'a;
     fn require_ready(&mut self) -> Result<(), DomainError> {
         self.repository
-            .verify_authoritative_schema_target(AuthoritativeSchemaTarget::NakamaAccountsV5)
+            .verify_selected_accounts_schema()
             .map(|_| ())
     }
     fn find_device(&mut self, device_id: &str) -> Result<Option<UserId>, AccountSqlFailure> {
@@ -245,7 +256,7 @@ impl PgRepository {
 impl CustomDatabase for NativeDatabase<'_> {
     fn require_custom_ready(&mut self) -> Result<(), DomainError> {
         self.repository
-            .verify_authoritative_schema_target(AuthoritativeSchemaTarget::NakamaAccountsV5)
+            .verify_selected_accounts_schema()
             .map(|_| ())
     }
     fn find_custom(

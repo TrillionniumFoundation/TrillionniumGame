@@ -63,7 +63,7 @@ class AccountsTypedDiagnostic(unittest.TestCase):
     def test_public_gate_and_sealed_test_only_constructor(self):
         source = (ROOT/'crates/trnm-persistence-pg/src/schema_parts/migrate.rs').read_text()
         self.assertIn('mod migration_admission {',source)
-        self.assertIn('#[cfg(test)]\n        pub(super) fn diagnostic',source)
+        self.assertIn('#[cfg(test)]\n        pub(crate) fn diagnostic',source)
         self.assertIn('require_account_catalog_capture(target)?;',source)
         self.assertNotIn('std::env',source)
         self.assertIn('matches!(revision_target.version, 4 | 5)',source)
