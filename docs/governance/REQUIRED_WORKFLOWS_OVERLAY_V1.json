@@ -35,7 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "d0ab2bbbd2bb13d61109e354a36f62d441bc8d54607cd4577ba0d42e0231ee56",
+  "overlay_sha256": "539cb5f9e276e1c8036b9fc711a8aafcefec7a75a173781dea3bca50d2331e38",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -322,7 +322,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "2f7660985f9f79221dc101805f06e511fd0e0e75",
+      "git_blob_sha1": "38b5fab4f2242e40b4511fbb2ccbf4fd005ed2ff",
       "minimum_successful_execution_jobs": 1,
       "name": "trnm-server-live",
       "path": ".github/workflows/trnm-server-live.yml",
