@@ -370,7 +370,8 @@ class SelectedLegacyInterfaceTest(unittest.TestCase):
         wire = (ROOT / 'crates/trnm-server/src/runtime/legacy_http_api.rs').read_text()
         interface = MODULE.source_interface(config, app, list_integrated=True, legacy_http_source=wire)
         MODULE.check_documented_interface(interface, (ROOT / 'docs/DEVELOPMENT.md').read_text())
-        self.assertEqual(len(interface['routes']), 18)
+        self.assertEqual(len(interface['routes']), 19)
+        self.assertIn(('GET', '/healthcheck'), interface['routes'])
 
     def test_legacy_unused_recognizer_wrong_method_query_unknown_or_duplicate_path_rejects(self):
         config = (ROOT / 'crates/trnm-server/src/runtime/config.rs').read_text()

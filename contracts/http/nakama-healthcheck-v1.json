@@ -1,0 +1,96 @@
+{
+  "schema": "trillionnium.http-healthcheck.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "upstream": {
+    "repository": "heroiclabs/nakama",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "api": "apigrpc/apigrpc.proto",
+    "handler": "server/api.go",
+    "gateway": "apigrpc/apigrpc.pb.gw.go",
+    "http_binding": "GET /healthcheck",
+    "handler_sha256": "583942e1fa47902a1b6cd231a08af3c938314cbe665e6a9765c3dc1959b6cae9",
+    "gateway_sha256": "590d0d37be149e158fe514e64ecef06955e5baa5b2b64c7cb4d5bb2b0e1c670d"
+  },
+  "candidate": {
+    "dispatcher": "crates/trnm-server/src/runtime/app.rs",
+    "response": "crates/trnm-server/src/runtime/http.rs",
+    "lifecycle": "crates/trnm-server/src/runtime/server.rs",
+    "method": "GET",
+    "path": "/healthcheck",
+    "authentication": "public",
+    "query": "ignored",
+    "database_access": false,
+    "readiness_dependency": false,
+    "available_before_startup_admission": false,
+    "app_health_during_drain": true,
+    "listener_after_drain": "existing shutdown closes listeners and registered connections"
+  },
+  "fixtures": {
+    "success": {
+      "status": 200,
+      "body": "{}",
+      "headers": {
+        "Content-Type": "application/json",
+        "Content-Length": "2",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Vary": "Accept-Encoding",
+        "Grpc-Metadata-Content-Type": "application/grpc"
+      }
+    },
+    "ordinary_unsupported_method": {
+      "methods": [
+        "POST application/json",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
+      "status": 501,
+      "body": "{\"code\":12,\"message\":\"Method Not Allowed\"}"
+    },
+    "head": {
+      "status": 501,
+      "wire_body": "",
+      "content_length": 42
+    }
+  },
+  "tests": [
+    "nakama_http_healthcheck_is_public_empty_json",
+    "nakama_http_healthcheck_ignores_query_and_credentials",
+    "nakama_http_healthcheck_rejects_other_methods_with_gateway_error",
+    "nakama_http_healthcheck_head_keeps_error_length_without_wire_body",
+    "nakama_http_healthcheck_stays_live_while_readiness_fails_or_app_drains",
+    "nakama_http_healthcheck_loopback_wire_has_empty_json_and_route_headers",
+    "nakama_http_healthcheck_does_not_bypass_startup_admission"
+  ],
+  "source_diagnostic": {
+    "kind": "pinned-source-generated-gateway-and-extracted-wrappers",
+    "cases": 17,
+    "results_sha256": "7a7d9ab42511fca9a9f19a79a2a94c77b46a747a5467cf343d7f52ad8ef2a63b",
+    "full_immutable_oracle": false,
+    "security_interceptor_executed": false,
+    "public_access_basis": "explicit pinned Healthcheck exemption in securityInterceptorFunc; candidate native unauthenticated test"
+  },
+  "gap_ids": [
+    "GAP-P0-SERVER-001"
+  ],
+  "task_ids": [
+    "TG-V3-023"
+  ],
+  "migration": "No DDL, schema selection, writer epoch, auth authority, migration lock or data changes.",
+  "rollback": "Revert this bounded route/header change and its source bindings together; existing healthz and readyz remain available. Reversion reopens the HTTP healthcheck 404.",
+  "remaining_divergences": [
+    "Full immutable Nakama image and independently reviewed normalizers remain required.",
+    "Candidate retains Connection: close and X-Content-Type-Options: nosniff and does not emit Date.",
+    "POST form fallback, OPTIONS/CORS, configured response headers and gzip/deflate negotiation remain outside this source repair.",
+    "Pinned protobuf error JSON comma whitespace can vary by binary; diagnostic error bytes do not qualify immutable-image bytes.",
+    "Neighboring-path 404 envelopes and process-wide transport/lifecycle behavior remain outside this bounded repair."
+  ],
+  "claims": {
+    "wire_differential_accepted": false,
+    "compatibility_credit": false,
+    "gap_closed": false,
+    "production_ready": false,
+    "full_replacement": false
+  }
+}

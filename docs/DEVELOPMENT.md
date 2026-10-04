@@ -127,6 +127,7 @@ This table documents the bounded HTTP application dispatcher in `crates/trnm-ser
 <!-- trnm-server-routes:start -->
 | Method | Path | Current scope |
 | --- | --- | --- |
+| `GET` | `/healthcheck` | Public Nakama health source route; query ignored, empty JSON; bounded header profile. |
 | `GET` | `/healthz` | Process liveness response. |
 | `GET` | `/readyz` | Current application drain/readiness response; not complete dependency health. |
 | `GET` | `/metrics` | Bounded application, session and repository metrics. |
@@ -147,7 +148,11 @@ This table documents the bounded HTTP application dispatcher in `crates/trnm-ser
 | `POST` | `/v2/session/logout` | Legacy source route; AccessBearer before body decode and blacklist mutation; AccountsV5 gate closed. |
 <!-- trnm-server-routes:end -->
 
-A known path with an unsupported method currently returns HTTP 405; an unknown dispatcher path returns 404. These custom routes cannot inflate Nakama parity. Authentication, error precedence, headers and exact response bytes still require their native tests and oracle/profile decisions.
+For `/healthcheck`, ordinary unsupported methods return HTTP 501/code 12; form-POST and OPTIONS/CORS parity remain open. Other known paths with an unsupported method currently return HTTP 405; an unknown dispatcher path returns 404. These custom routes cannot inflate Nakama parity. Authentication, error precedence, headers and exact response bytes still require their native tests and oracle/profile decisions.
+
+The canonical HTTP dispatcher now includes a public GET `/healthcheck` source candidate with exact `{}` success bytes and the pinned JSON/cache/Vary/gRPC-metadata header values. It ignores query parameters and does not consult session or repository authority. Health remains a liveness signal while `/readyz` rejects incomplete import or drain; verified startup admission and listener shutdown are unchanged. Ordinary unsupported methods use HTTP 501/code 12, and HEAD suppresses the wire body while retaining its response length. The bounded contract and native fixtures are in `contracts/http/nakama-healthcheck-v1.json`.
+
+The 17-case source-derived gateway diagnostic is not the immutable Nakama process. Date, connection/header differences, form-POST fallback, OPTIONS/CORS, configured headers and compression remain explicit residuals. No compatibility, gap, production or replacement claim is promoted. This change has no migration impact; rollback reverts the route and its bindings together and restores the prior `/healthcheck` 404.
 
 ### Current environment configuration reference
 

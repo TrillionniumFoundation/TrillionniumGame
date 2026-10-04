@@ -508,6 +508,15 @@ impl<R: Repository> App<R> {
 
     fn handle_inner(&mut self, request: &Request) -> Response {
         let response = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/healthcheck") => Response::nakama_healthcheck(200, b"{}".to_vec(), false),
+            ("GET", target) if healthcheck_path(target) => {
+                Response::nakama_healthcheck(200, b"{}".to_vec(), false)
+            }
+            (_, target) if healthcheck_path(target) => Response::nakama_healthcheck(
+                501,
+                br#"{"code":12,"message":"Method Not Allowed"}"#.to_vec(),
+                request.method == "HEAD",
+            ),
             ("GET", "/healthz") => Response::json(200, br#"{"status":"ok"}"#.to_vec()),
             ("GET", "/readyz") => self.readiness(),
             ("GET", "/metrics") => self.metrics_response(),
@@ -796,6 +805,10 @@ trnm_server_session_logout_revoked_total {}\n",
             retry_name(error.retry()),
         )
     }
+}
+
+fn healthcheck_path(target: &str) -> bool {
+    target.split_once('?').map_or(target, |(path, _)| path) == "/healthcheck"
 }
 
 fn is_mutating_request(request: &Request) -> bool {
@@ -1134,6 +1147,169 @@ mod tests {
         fn operational_metrics(&self) -> RepositoryOperationalMetrics {
             self.operational_metrics
         }
+    }
+
+    #[test]
+    fn nakama_http_healthcheck_is_public_empty_json() {
+        let contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/http/nakama-healthcheck-v1.json"
+        ))
+        .unwrap();
+        let mut app = App::new(FakeRepository::default(), token());
+        let response = app.handle(&Request::new(
+            "GET",
+            "/healthcheck",
+            BTreeMap::new(),
+            Vec::new(),
+        ));
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"{}");
+        assert_eq!(response.content_type, "application/json");
+        assert_eq!(contract["fixtures"]["success"]["status"], response.status);
+        assert_eq!(contract["fixtures"]["success"]["body"], "{}");
+        assert_eq!(contract["candidate"]["authentication"], "public");
+    }
+
+    #[test]
+    fn nakama_http_healthcheck_ignores_query_and_credentials() {
+        let mut app = App::new(FakeRepository::default(), token());
+        for target in [
+            "/healthcheck",
+            "/healthcheck?",
+            "/healthcheck?probe=ready&probe=live",
+        ] {
+            for credentials in [BTreeMap::new(), headers("unused-probe-credential")] {
+                let response = app.handle(&Request::new("GET", target, credentials, Vec::new()));
+                assert_eq!(response.status, 200, "{target}");
+                assert_eq!(response.body, b"{}");
+                assert_eq!(response.content_type, "application/json");
+            }
+        }
+        for target in ["/healthcheck/", "/healthcheck-extra", "/Healthcheck"] {
+            assert_eq!(
+                app.handle(&Request::new("GET", target, BTreeMap::new(), Vec::new()))
+                    .status,
+                404,
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn nakama_http_healthcheck_rejects_other_methods_with_gateway_error() {
+        let mut app = App::new(FakeRepository::default(), token());
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            for target in ["/healthcheck", "/healthcheck?probe=live"] {
+                let response =
+                    app.handle(&Request::new(method, target, BTreeMap::new(), Vec::new()));
+                assert_eq!(response.status, 501, "{method} {target}");
+                assert_eq!(
+                    response.body,
+                    br#"{"code":12,"message":"Method Not Allowed"}"#
+                );
+                assert_eq!(response.content_type, "application/json");
+            }
+        }
+    }
+
+    #[test]
+    fn nakama_http_healthcheck_head_keeps_error_length_without_wire_body() {
+        let mut app = App::new(FakeRepository::default(), token());
+        let response = app.handle(&Request::new(
+            "HEAD",
+            "/healthcheck?probe=live",
+            BTreeMap::new(),
+            Vec::new(),
+        ));
+        assert_eq!(response.status, 501);
+        let mut wire = Vec::new();
+        response.write_to(&mut wire).unwrap();
+        let wire = String::from_utf8(wire).unwrap();
+        let (head, body) = wire.split_once("\r\n\r\n").unwrap();
+        assert!(head.starts_with("HTTP/1.1 501 Not Implemented\r\n"));
+        assert!(head.split("\r\n").any(|line| line == "Content-Length: 42"));
+        assert!(!head.contains("Grpc-Metadata-Content-Type"));
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn nakama_http_healthcheck_stays_live_while_readiness_fails_or_app_drains() {
+        let mut app = App::new(
+            FakeRepository {
+                import_incomplete: true,
+                ..FakeRepository::default()
+            },
+            token(),
+        );
+        let health = Request::new(
+            "GET",
+            "/healthcheck?probe=live",
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let ready = Request::new("GET", "/readyz", BTreeMap::new(), Vec::new());
+        assert_eq!(app.handle(&ready).status, 503);
+        assert_eq!(app.handle(&health).status, 200);
+        app.repository.import_incomplete = false;
+        assert_eq!(app.handle(&ready).status, 200);
+        app.drain.begin();
+        assert_eq!(app.handle(&ready).status, 503);
+        assert_eq!(app.handle(&health).body, b"{}");
+        assert_eq!(app.handle(&health).status, 200);
+        assert_eq!(app.drain.admitted_operations(), 0);
+        assert!(app.should_stop());
+    }
+
+    #[test]
+    fn nakama_http_healthcheck_loopback_wire_has_empty_json_and_route_headers() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let worker = std::thread::spawn(move || {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = super::super::http::read_request(&mut stream, 4096).unwrap();
+            let mut app = App::new(FakeRepository::default(), token());
+            app.handle(&request).write_to(&mut stream).unwrap();
+        });
+        client
+            .write_all(b"GET /healthcheck?probe=live HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut wire = String::new();
+        client.read_to_string(&mut wire).unwrap();
+        worker.join().unwrap();
+        let (head, body) = wire.split_once("\r\n\r\n").unwrap();
+        assert_eq!(body, "{}");
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
+        for expected in [
+            "Content-Type: application/json",
+            "Content-Length: 2",
+            "Cache-Control: no-store, no-cache, must-revalidate",
+            "Vary: Accept-Encoding",
+            "Grpc-Metadata-Content-Type: application/grpc",
+            "Connection: close",
+            "X-Content-Type-Options: nosniff",
+        ] {
+            assert!(
+                head.split("\r\n").any(|line| line == expected),
+                "{expected}"
+            );
+        }
+        assert!(!head.contains("WWW-Authenticate"));
     }
 
     #[test]
