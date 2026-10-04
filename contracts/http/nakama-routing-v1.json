@@ -1,0 +1,234 @@
+{
+  "schema": "trillionnium.nakama-routing.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "upstream": {
+    "repository": "heroiclabs/nakama",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "source_sha256": {
+      "server/api.go": "583942e1fa47902a1b6cd231a08af3c938314cbe665e6a9765c3dc1959b6cae9",
+      "apigrpc/apigrpc.pb.gw.go": "590d0d37be149e158fe514e64ecef06955e5baa5b2b64c7cb4d5bb2b0e1c670d",
+      "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/mux.go": "f970d6e68ec52945a9f106d25a5edbb15e3f39ecbd04e71cc8e4bb667f46912f"
+    }
+  },
+  "source": "crates/trnm-server/src/runtime/app.rs",
+  "scope": "Ordinary unsupported methods on installed storage and Legacy authentication targets, with query-insensitive route membership. No global gateway or form fallback claim.",
+  "fixtures": [
+    {
+      "method": "DELETE",
+      "target": "/v2/storage",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "DELETE",
+      "target": "/v2/storage?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "DELETE",
+      "target": "/v2/storage?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "HEAD",
+      "target": "/v2/storage",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "HEAD",
+      "target": "/v2/storage?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "HEAD",
+      "target": "/v2/storage?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "POST",
+      "target": "/v2/storage/delete",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "POST",
+      "target": "/v2/storage/delete?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "POST",
+      "target": "/v2/storage/delete?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "PATCH",
+      "target": "/v2/storage/inventory",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "PATCH",
+      "target": "/v2/storage/inventory?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "PATCH",
+      "target": "/v2/storage/inventory?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "DELETE",
+      "target": "/v2/storage/inventory/00000000-0000-0000-0000-000000000001",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "DELETE",
+      "target": "/v2/storage/inventory/00000000-0000-0000-0000-000000000001?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "DELETE",
+      "target": "/v2/storage/inventory/00000000-0000-0000-0000-000000000001?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "GET",
+      "target": "/v2/account/authenticate/device",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "GET",
+      "target": "/v2/account/authenticate/device?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "GET",
+      "target": "/v2/account/authenticate/device?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "PUT",
+      "target": "/v2/account/authenticate/custom",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "PUT",
+      "target": "/v2/account/authenticate/custom?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "PUT",
+      "target": "/v2/account/authenticate/custom?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "DELETE",
+      "target": "/v2/account/session/refresh",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "DELETE",
+      "target": "/v2/account/session/refresh?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "DELETE",
+      "target": "/v2/account/session/refresh?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "HEAD",
+      "target": "/v2/session/logout",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "HEAD",
+      "target": "/v2/session/logout?",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    },
+    {
+      "method": "HEAD",
+      "target": "/v2/session/logout?ignored=true",
+      "status": 501,
+      "code": 12,
+      "message": "Method Not Allowed"
+    }
+  ],
+  "native_tests": [
+    "installed_nakama_method_errors_ignore_queries_and_credentials",
+    "nakama_method_errors_preserve_valid_routes_and_operator_errors",
+    "installed_nakama_method_errors_match_reference_over_tcp"
+  ],
+  "reference_runner": "scripts/capture-nakama-routing-reference.py",
+  "gap_ids": [
+    "GAP-P0-SERVER-001"
+  ],
+  "task_ids": [
+    "TG-V3-023"
+  ],
+  "migration": "No schema, database, writer, authentication authority, dependency or persistent settings changes.",
+  "rollback": "Revert dispatcher change and matching bindings to restore the earlier custom 405/404 method responses.",
+  "limitations": [
+    "Generated gateway source diagnostic is not the immutable Nakama image or security interceptor qualification.",
+    "Form POST fallback and method override remain unimplemented; malformed/encoded path and full routing error precedence remain outside this scope.",
+    "Connection close, nosniff, absent Date, compression and full header/wire equivalence remain unaccepted.",
+    "No private 51-pair authentication capture is reconstructed, replaced or credited."
+  ],
+  "claims": {
+    "accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "full_replacement": false
+  }
+}

@@ -90,3 +90,12 @@ vendored github.com/gorilla/handlers/cors.go. Gorilla handlers is Copyright
 (c) 2023 The Gorilla Authors under the BSD 3-Clause license retained in
 third_party/gorilla-handlers/LICENSE. Source identities and the restricted
 client-route profile are recorded in contracts/http/nakama-cors-v1.json.
+
+Nakama client method-routing behavior study
+The bounded Rust routing repair studies the pinned Nakama server/api.go routing
+callback and apigrpc/apigrpc.pb.gw.go registrations, Copyright 2018 The Nakama
+Authors under Apache-2.0. The diagnostic runner extracts the exact callback into
+a temporary main package, retaining its license header and marking that
+modification, and invokes the original generated gateway and vendored runtime.
+Source identities and the restricted method-error cases are recorded in
+contracts/http/nakama-routing-v1.json. No Go code is added to the Rust service.

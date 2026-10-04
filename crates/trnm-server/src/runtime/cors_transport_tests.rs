@@ -213,3 +213,43 @@ fn cors_preflight_does_not_admit_mutations_during_drain() {
         wire("PUT", "/v2/storage", &[], true)
     );
 }
+
+#[test]
+fn installed_nakama_method_errors_match_reference_over_tcp() {
+    let contract: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../contracts/http/nakama-routing-v1.json"
+    ))
+    .unwrap();
+    let fixtures = contract["fixtures"].as_array().unwrap();
+    assert_eq!(fixtures.len(), 27);
+    for case in fixtures {
+        let method = case["method"].as_str().unwrap();
+        let target = case["target"].as_str().unwrap();
+        let response = wire(
+            method,
+            target,
+            &[
+                ("Origin", "https://client.example"),
+                ("Authorization", "Bearer invalid"),
+            ],
+            false,
+        );
+        assert!(
+            response.starts_with("HTTP/1.1 501 Not Implemented\r\n"),
+            "{method} {target}: {response}"
+        );
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        assert!(head.contains("Content-Length: 42\r\n"));
+        assert!(head
+            .split("\r\n")
+            .any(|line| line == "Access-Control-Allow-Origin: *"));
+        assert!(!head.contains("WWW-Authenticate"));
+        if method == "HEAD" {
+            assert_eq!(body, "");
+        } else {
+            let decoded: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(decoded["code"], case["code"]);
+            assert_eq!(decoded["message"], case["message"]);
+        }
+    }
+}
