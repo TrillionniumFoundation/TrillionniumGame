@@ -541,6 +541,11 @@ impl<R: Repository> App<R> {
             ("POST", "/-/drain") => self.drain(request),
             ("POST", "/v1/authority/bootstrap") => self.bootstrap(request),
             ("POST", "/v1/authority/commit") => self.commit(request),
+            (_, target) if nakama_client_path(target) => Response::nakama_healthcheck(
+                501,
+                br#"{"code":12,"message":"Method Not Allowed"}"#.to_vec(),
+                request.method == "HEAD",
+            ),
             (_, path) if known_path(path) => {
                 error_response(405, "unimplemented", "Method is not allowed.", "never")
             }
@@ -827,6 +832,15 @@ fn is_mutating_request(request: &Request) -> bool {
             | ("PUT", "/v2/storage")
             | ("PUT", "/v2/storage/delete")
     )
+}
+
+// Only installed Nakama targets receive gateway routing errors. Keep this
+// after successful route dispatch: /v2/storage/delete is also a valid GET list
+// target whose collection is "delete". Query strings do not change membership.
+fn nakama_client_path(target: &str) -> bool {
+    storage_path(target)
+        || storage_list_api::is_list_target(target)
+        || legacy_auth_http_route("POST", target).is_some()
 }
 
 fn known_path(path: &str) -> bool {
@@ -1146,6 +1160,92 @@ mod tests {
 
         fn operational_metrics(&self) -> RepositoryOperationalMetrics {
             self.operational_metrics
+        }
+    }
+
+    #[test]
+    fn installed_nakama_method_errors_ignore_queries_and_credentials() {
+        let mut app = App::new(FakeRepository::default(), token());
+        for (method, path) in [
+            ("DELETE", "/v2/storage"),
+            ("HEAD", "/v2/storage"),
+            ("POST", "/v2/storage/delete"),
+            ("PATCH", "/v2/storage/inventory"),
+            (
+                "DELETE",
+                "/v2/storage/inventory/00000000-0000-0000-0000-000000000001",
+            ),
+            ("GET", "/v2/account/authenticate/device"),
+            ("PUT", "/v2/account/authenticate/custom"),
+            ("DELETE", "/v2/account/session/refresh"),
+            ("HEAD", "/v2/session/logout"),
+        ] {
+            for query in ["", "?", "?ignored=true"] {
+                for credentials in [BTreeMap::new(), headers("invalid-credential")] {
+                    let response = app.handle(&Request::new(
+                        method,
+                        format!("{path}{query}"),
+                        credentials,
+                        b"invalid body".to_vec(),
+                    ));
+                    assert_eq!(response.status, 501, "{method} {path}{query}");
+                    assert_eq!(
+                        response.body,
+                        br#"{"code":12,"message":"Method Not Allowed"}"#
+                    );
+                    assert_eq!(response.content_type, "application/json");
+                    let mut wire = Vec::new();
+                    response.write_to(&mut wire).unwrap();
+                    let wire = String::from_utf8(wire).unwrap();
+                    let (head, body) = wire.split_once("\r\n\r\n").unwrap();
+                    assert!(head.contains("Content-Length: 42\r\n"));
+                    assert_eq!(body.is_empty(), method == "HEAD");
+                    assert!(!head.contains("WWW-Authenticate"));
+                    assert!(!head.contains("Grpc-Metadata-Content-Type"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nakama_method_errors_preserve_valid_routes_and_operator_errors() {
+        let mut app = App::new(FakeRepository::default(), token());
+        for (method, path) in [
+            ("GET", "/v2/storage/delete"),
+            ("GET", "/v2/storage/inventory?limit=1"),
+            ("PUT", "/v2/storage?ignored=true"),
+            ("POST", "/v2/storage?ignored=true"),
+        ] {
+            let response = app.handle(&Request::new(method, path, BTreeMap::new(), Vec::new()));
+            assert_eq!(response.status, 501, "{method} {path}");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&response.body).unwrap()["message"],
+                "Session authentication unavailable"
+            );
+        }
+        for path in [
+            "/healthz",
+            "/readyz",
+            "/metrics",
+            "/-/drain",
+            "/v1/authority/commit",
+        ] {
+            let response = app.handle(&Request::new("DELETE", path, BTreeMap::new(), Vec::new()));
+            assert_eq!(response.status, 405, "{path}");
+            assert!(String::from_utf8(response.body)
+                .unwrap()
+                .contains("Method is not allowed."));
+        }
+        for path in [
+            "/v2/unknown",
+            "/v2/account/authenticate/unknown",
+            "/v2/storage/a/b/c",
+        ] {
+            assert_eq!(
+                app.handle(&Request::new("DELETE", path, BTreeMap::new(), Vec::new()))
+                    .status,
+                404
+            );
         }
     }
 

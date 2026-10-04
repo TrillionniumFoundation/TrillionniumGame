@@ -103,7 +103,7 @@
   },
   "source_sha256": {
     "crates/trnm-server/src/runtime/cors.rs": "c4f821aec5a0c69b3abc3af8244f7346bbf9ec0dfb9689f3c64f198c0d3d6898",
-    "crates/trnm-server/src/runtime/cors_transport_tests.rs": "07f6a2ab3b6bc4542f4afc20662263489d96ce0e79271b307f705b7bc8a2a873"
+    "crates/trnm-server/src/runtime/cors_transport_tests.rs": "e0d32b68cfd066c21feebea75e0aaef8abcf9f5b447332c8c7f11ebcd60c0322"
   },
   "fixtures_sha256": "007398ac3df52313b4809deca0d6b6d41764c5be7659895e89d61a6621210b49"
 }
