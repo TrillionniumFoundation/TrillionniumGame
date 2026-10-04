@@ -306,7 +306,10 @@ fn shadow_namespace_cannot_replace_public_storage_or_clock(
         assert_eq!(read.object.value, native_fixture_value(control, VALUE));
         assert_eq!(read.times, initial[0].times);
         let batch_read = repository
-            .read_storage_objects_with_metadata(StorageActor::User(OWNER), &[public_key.clone()])
+            .read_storage_objects_with_metadata(
+                StorageActor::User(OWNER),
+                std::slice::from_ref(&public_key),
+            )
             .unwrap();
         assert_eq!(batch_read, vec![read.clone()]);
         let typed = repository
@@ -844,7 +847,7 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
                     read_repository
                         .read_storage_objects_with_metadata(
                             StorageActor::Server,
-                            &[missing.clone()]
+                            std::slice::from_ref(&missing)
                         )
                         .unwrap_err()
                         .code(),
@@ -923,13 +926,16 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
             for invalid in invalid_times {
                 set_times(&mut control, &corrupt, invalid, invalid);
                 let error = repository
-                    .read_storage_objects_with_metadata(StorageActor::Server, &[corrupt.clone()])
+                    .read_storage_objects_with_metadata(
+                        StorageActor::Server,
+                        std::slice::from_ref(&corrupt),
+                    )
                     .unwrap_err();
                 assert_eq!(error.code(), StableCode::DataLoss);
                 assert!(repository
                     .read_storage_objects_with_metadata(
                         StorageActor::User(OWNER),
-                        &[corrupt.clone()]
+                        std::slice::from_ref(&corrupt)
                     )
                     .unwrap()
                     .is_empty());
@@ -987,7 +993,10 @@ fn storage_timestamps_database_clock_no_op_and_atomicity() {
         assert_eq!(deleted[0].receipt.current_version, None);
         assert_eq!(deleted[0].times, before_failure.times);
         assert!(repository
-            .read_storage_objects_with_metadata(StorageActor::User(OWNER), &[first.clone()])
+            .read_storage_objects_with_metadata(
+                StorageActor::User(OWNER),
+                std::slice::from_ref(&first)
+            )
             .unwrap()
             .is_empty());
         let recreated = repository

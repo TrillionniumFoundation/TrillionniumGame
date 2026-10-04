@@ -100,6 +100,10 @@ pub trait Repository: std::fmt::Debug {
         ))
     }
 
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "Internal heterogeneous batch hook is retained for bounded tests")
+    )]
     fn apply_storage_batch(
         &mut self,
         actor: StorageActor,

@@ -62,7 +62,7 @@
   },
   "fixtures_sha256": "be470c0bf69d58024de1b7464e8bddc3dd471696c08832bffaf5ad964d07db89",
   "source_sha256": {
-    "crates/trnm-server/src/runtime/app.rs": "09db9b09bb379909b654a730174e68fd118e45da6067b0be80c40afba766e41b",
+    "crates/trnm-server/src/runtime/app.rs": "afc785fb482e8c2d13e8f0b48ffa94bb0ba7cb3d6bad60de67205c179697960b",
     "crates/trnm-server/src/runtime/http.rs": "72e90693b9a672fd77209c80e46625312fef75b086db8ec5638c8f7785468645",
     "crates/trnm-server/src/runtime/cors.rs": "21ccba309b9268a298315ac8be66861436cbb415ca4bcab2f84c078f767d73f8",
     "crates/trnm-server/src/runtime/cors_transport_tests.rs": "40398b88bdcabaaa9f9aaa2e18ab34d6297f0a406cbbed2da4c8ab3cb3e0b003"

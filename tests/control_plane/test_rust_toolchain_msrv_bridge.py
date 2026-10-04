@@ -26,9 +26,45 @@ BRIDGES = {
         '36e7e7b67cf6bd2574b99f880dd8e7cfacbeddeb495c98a1b25d5711f95d0f45',
     ),
 }
+TEST_ONLY_SURFACES = {
+    'crates/trnm-server/src/runtime/app.rs': (
+        '    #[cfg_attr(\n'
+        '        not(test),\n'
+        '        allow(dead_code, reason = "Internal heterogeneous batch hook is retained for bounded tests")\n'
+        '    )]\n',
+        '    fn apply_storage_batch(',
+        '09db9b09bb379909b654a730174e68fd118e45da6067b0be80c40afba766e41b',
+    ),
+    'crates/trnm-server/src/runtime/legacy_repository.rs': (
+        '#[cfg_attr(\n'
+        '    not(test),\n'
+        '    allow(dead_code, reason = "Diagnostic observation is exercised by the test-only native seam")\n'
+        ')]\n',
+        'pub trait LegacyNativeFailureObservation {',
+        'df8ac88d58aa19b57cf28fe341669a49355d1c348be279c81cd70d2d3995e141',
+    ),
+}
 
 
 class AtomicMsrvBridgeTests(unittest.TestCase):
+    def test_non_test_exceptions_cover_only_two_tested_internal_surfaces(self) -> None:
+        paths = subprocess.check_output(
+            ['git', 'ls-files', '-z', '*.rs'], cwd=ROOT
+        ).decode().split('\0')
+        observed = {}
+        for relative in filter(None, paths):
+            count = len(re.findall(r'allow\s*\(\s*dead_code\b', (ROOT / relative).read_text()))
+            if count:
+                observed[relative] = count
+        self.assertEqual(observed, dict.fromkeys(TEST_ONLY_SURFACES, 1))
+        for relative, (attribute, next_line, original_sha256) in TEST_ONLY_SURFACES.items():
+            with self.subTest(path=relative):
+                text = (ROOT / relative).read_text()
+                self.assertEqual(text.count(attribute), 1)
+                self.assertIn(attribute + next_line, text)
+                original = text.replace(attribute, '')
+                self.assertEqual(hashlib.sha256(original.encode()).hexdigest(), original_sha256)
+
     def test_declared_msrv_and_build_compiler_remain_distinct(self) -> None:
         workspace = tomllib.loads((ROOT / 'Cargo.toml').read_text())
         toolchain = tomllib.loads((ROOT / 'rust-toolchain.toml').read_text())
