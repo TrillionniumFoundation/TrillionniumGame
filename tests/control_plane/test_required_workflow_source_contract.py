@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import sys
 import unittest
@@ -107,6 +108,21 @@ class RequiredWorkflowRepositoryIntegrationTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertIn(name, by_name)
                 self.assertGreaterEqual(by_name[name].minimum_successful_execution_jobs, 2)
+
+    def test_healthcheck_task_push_only_adds_one_exact_branch_without_granting_pr_credit(self):
+        path = ".github/workflows/w1-rust-foundation.yml"
+        text = (ROOT / path).read_text()
+        clause = "    branches: [main, fix/http-healthcheck-parity-20261004]"
+        self.assertEqual(text.count(clause), 1)
+        original = text.replace(clause, "    branches: [main]").encode()
+        # This immutable base blob includes every permission, command, path,
+        # PR/dispatch trigger and exact-SHA check, not just selected markers.
+        blob = hashlib.sha1(b"blob " + str(len(original)).encode() + b"\0" + original).hexdigest()
+        self.assertEqual(blob, "2f8a01521940bba530a39a5982bbad0510b41bdc")
+        _, manifest = self.manifest()
+        requirement = next(entry for entry in manifest.workflows if entry.path == path)
+        self.assertEqual(requirement.allowed_events, ("pull_request",))
+        self.assertEqual(len(manifest.workflows), 55)
 
 
 if __name__ == "__main__":

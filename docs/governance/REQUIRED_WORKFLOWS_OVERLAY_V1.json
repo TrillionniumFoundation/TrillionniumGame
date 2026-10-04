@@ -35,7 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "3189c472f307f682dcd2762f75b66a8b1ad6979d204c82949028604d6fed2ab1",
+  "overlay_sha256": "67b8140cf49ae8752477df42e3db4991e2f76532636aeb8c472bc11bf9750f78",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -212,7 +212,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "2f8a01521940bba530a39a5982bbad0510b41bdc",
+      "git_blob_sha1": "c53001093c3d35cbd8f43b75578df1654847a196",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-rust-foundation",
       "path": ".github/workflows/w1-rust-foundation.yml",
