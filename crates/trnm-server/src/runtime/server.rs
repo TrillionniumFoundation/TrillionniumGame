@@ -11,6 +11,7 @@ use super::app::{App, Repository, SharedAppMetrics, SharedDrain};
 use super::auth::require_installed_http_authority;
 use super::auth_runtime::AuthAuthorityRuntime;
 use super::config::ServerConfig;
+use super::cors;
 use super::error::ServerError;
 use super::grpc;
 use super::http::{read_request, Request, Response};
@@ -23,6 +24,10 @@ const MAX_CONNECTION_WORKERS: usize = 32;
 const QUEUED_CONNECTIONS_PER_WORKER: usize = 16;
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STARTUP_MESSAGE: &str = "trnm-server source candidate started";
+
+#[cfg(test)]
+#[path = "cors_transport_tests.rs"]
+mod cors_transport_tests;
 
 #[derive(Debug)]
 struct QueuedConnection {
@@ -282,10 +287,21 @@ fn handle_connection<R: Repository>(
         Err(error) => return Err(error),
     };
 
+    let cors_headers = match cors::evaluate(&request) {
+        cors::Decision::Continue(headers) => headers,
+        cors::Decision::Respond(response) => {
+            write_response(stream, &response);
+            return Ok(());
+        }
+    };
+
     if draining.is_draining()
         && (is_readiness(&request) || request_rejected_while_draining(&request))
     {
-        write_response(stream, &request_draining_response(&request));
+        write_response(
+            stream,
+            &request_draining_response(&request).with_cors(cors_headers),
+        );
         return Ok(());
     }
 
@@ -299,7 +315,7 @@ fn handle_connection<R: Repository>(
         return Ok(());
     }
 
-    let response = app.handle(&request);
+    let response = app.handle(&request).with_cors(cors_headers);
     if app.should_stop() {
         draining.begin();
     }
