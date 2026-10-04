@@ -49,6 +49,8 @@ pub struct Response {
     pub content_type: &'static str,
     pub body: Vec<u8>,
     www_authenticate: Option<&'static str>,
+    nakama_healthcheck_headers: bool,
+    suppress_body: bool,
 }
 
 impl Response {
@@ -59,6 +61,8 @@ impl Response {
             content_type: "application/json; charset=utf-8",
             body: body.into(),
             www_authenticate: None,
+            nakama_healthcheck_headers: false,
+            suppress_body: false,
         }
     }
 
@@ -69,7 +73,17 @@ impl Response {
             content_type: "text/plain; charset=utf-8",
             body: body.into(),
             www_authenticate: None,
+            nakama_healthcheck_headers: false,
+            suppress_body: false,
         }
+    }
+
+    pub(super) fn nakama_healthcheck(status: u16, body: Vec<u8>, head_only: bool) -> Self {
+        let mut response = Self::json(status, body);
+        response.content_type = "application/json";
+        response.nakama_healthcheck_headers = true;
+        response.suppress_body = head_only;
+        response
     }
 
     pub(crate) fn with_www_authenticate(mut self, value: Option<&'static str>) -> Self {
@@ -80,17 +94,30 @@ impl Response {
     pub fn write_to(&self, output: &mut impl Write) -> Result<(), ServerError> {
         write!(
             output,
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n",
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: {}\r\nX-Content-Type-Options: nosniff\r\n",
             self.status,
             reason_phrase(self.status),
             self.content_type,
-            self.body.len()
+            self.body.len(),
+            if self.nakama_healthcheck_headers {
+                "no-store, no-cache, must-revalidate"
+            } else {
+                "no-store"
+            }
         )?;
+        if self.nakama_healthcheck_headers {
+            output.write_all(b"Vary: Accept-Encoding\r\n")?;
+            if self.status == 200 {
+                output.write_all(b"Grpc-Metadata-Content-Type: application/grpc\r\n")?;
+            }
+        }
         if let Some(challenge) = self.www_authenticate {
             write!(output, "WWW-Authenticate: {challenge}\r\n")?;
         }
         output.write_all(b"\r\n")?;
-        output.write_all(&self.body)?;
+        if !self.suppress_body {
+            output.write_all(&self.body)?;
+        }
         output.flush()?;
         Ok(())
     }

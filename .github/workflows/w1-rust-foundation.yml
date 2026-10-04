@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, fix/http-healthcheck-parity-20261004]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'

@@ -27,6 +27,10 @@ Package-level authority has converged; layer-level separation is not finished. `
 
 The current commands, application routes, configuration names and the narrower process-smoke boundary are specified in [`DEVELOPMENT.md`](DEVELOPMENT.md). Source-level composition does not grant durable, operational, compatibility or production acceptance.
 
+The canonical HTTP dispatcher now includes a public GET `/healthcheck` source candidate with exact `{}` success bytes and the pinned JSON/cache/Vary/gRPC-metadata header values. It ignores query parameters and does not consult session or repository authority. Health remains a liveness signal while `/readyz` rejects incomplete import or drain; verified startup admission and listener shutdown are unchanged. Ordinary unsupported methods use HTTP 501/code 12, and HEAD suppresses the wire body while retaining its response length. The bounded contract and native fixtures are in `contracts/http/nakama-healthcheck-v1.json`.
+
+The 17-case source-derived gateway diagnostic is not the immutable Nakama process. Date, connection/header differences, form-POST fallback, OPTIONS/CORS, configured headers and compression remain explicit residuals. No compatibility, gap, production or replacement claim is promoted. This change has no migration impact; rollback reverts the route and its bindings together and restores the prior `/healthcheck` 404.
+
 ## 2. Target topology
 
 ```text

@@ -260,7 +260,7 @@
       "crates/trnm-persistence-pg/src/nakama_account/native.rs": "9d1f794d3960963e457f936dac1d03bdbab5428a4fe892e68d4e5d4ce5016cf3",
       "crates/trnm-persistence-pg/src/nakama_account/tests.rs": "1277429231aa78c0418a2e793c1edc11dae0a18c0257d08ce9f2132c29a2744a",
       "crates/trnm-persistence-pg/src/pool_parts/base.rs": "1bc565243740e4b639cd69ea49f4ee8974299b2cc101bd6d3054eeae7783ec6c",
-      "crates/trnm-server/src/runtime/app.rs": "26f8982f837670174ad8fadad0a27f2b61315a4701f55e628b21dfef57175229",
+      "crates/trnm-server/src/runtime/app.rs": "75eb42ec0ee28d804383128c2666925728a7d9b609e7354264eeefca741e2221",
       "crates/trnm-server/src/runtime/auth_app_tests.rs": "743a9f87e62cb4cca90bf2170d622e0998f192f2c3394391a4c04e815aa6ddd8",
       "crates/trnm-server/src/runtime/auth_runtime.rs": "4363223b9be6f40f9794e3799a02a0a0e18c1211efc32c42c2945c4fc681260a",
       "crates/trnm-server/src/runtime/legacy_auth.rs": "20830ff85bbb0d608a525cd2a99dcb1645188a1af57dd9a695f60f24e2596fb1",

@@ -31,6 +31,15 @@ GitHub's repository workflow catalog may temporarily expose the full registered 
 
 ### Pull-request metadata freshness
 
+The bounded HTTP healthcheck task branch `fix/http-healthcheck-parity-20261004`
+additionally runs the existing Rust foundation workflow on relevant pushes.
+Only that exact branch is added to its push selector; the main/path selectors,
+read-only permissions, immutable checkout, commands and jobs are unchanged.
+Its source definition is rebound through the existing workflow overlay. These
+push results are supplemental Rust execution diagnostics: the required-workflow
+admission remains `pull_request` only, with all 55 mandatory workflows retained.
+They cannot qualify the merge aggregate, independent acceptance or replacement.
+
 The stable aggregate listens to `opened`, `edited`, `synchronize`, `reopened`, `ready_for_review`, and `converted_to_draft`. On every pull-request event, its control-plane lane validates the current PR body, exact head/tree and Draft state with `scripts/check-pull-request-contract.py` before any aggregate success can be emitted. Editing the body or changing Draft state therefore creates a new aggregate check on the same source head; an earlier green aggregate cannot remain the current metadata decision.
 
 A Draft PR may carry an incomplete execution description but always has `merge_ready=false`. A non-Draft PR must satisfy the complete body contract, including exact identity, gap linkage, result policy, independent-review section and fail-closed claims. The checker's legacy `merge_ready` output means only that the PR body and Draft state are internally consistent. It does not establish reviewer independence, conversation resolution, branch protection, administrative no-bypass state or merge authorization.

@@ -426,6 +426,75 @@ mod tests {
         assert!(request_rejected_while_draining(&mutation));
         assert!(!request_rejected_while_draining(&metrics));
         assert!(is_readiness(&readiness));
+        for target in ["/healthcheck", "/healthcheck?probe=live"] {
+            let health = Request::new("GET", target, BTreeMap::new(), Vec::new());
+            assert!(!request_rejected_while_draining(&health));
+            assert!(!is_readiness(&health));
+        }
+    }
+
+    #[test]
+    fn nakama_http_healthcheck_does_not_bypass_startup_admission() {
+        use trnm_contracts::{Digest32, DomainError, StableCode};
+        use trnm_persistence_pg::{CommitOutcome, CommitRequest, EntityHead, EntityId};
+
+        #[derive(Clone, Debug)]
+        struct UnavailableRepository;
+        impl Repository for UnavailableRepository {
+            fn bootstrap_entity(
+                &mut self,
+                _: EntityId,
+                _: u64,
+                _: Digest32,
+                _: u64,
+            ) -> Result<EntityHead, DomainError> {
+                panic!("startup must not mutate authority")
+            }
+            fn commit_command(&mut self, _: &CommitRequest) -> Result<CommitOutcome, DomainError> {
+                panic!("startup must not commit")
+            }
+        }
+        impl BudgetedRepository for UnavailableRepository {
+            fn commit_command_with_budget(
+                &mut self,
+                _: &CommitRequest,
+                _: Duration,
+            ) -> Result<CommitOutcome, DomainError> {
+                panic!("startup must not retry")
+            }
+        }
+        impl InflightCancellation for UnavailableRepository {
+            fn cancel_inflight(&self) -> u64 {
+                0
+            }
+        }
+
+        // An occupied address makes the ordering observable: import admission
+        // must fail before bind, even when only public health is desired.
+        let occupied = TestTcpListener::bind("127.0.0.1:0").unwrap();
+        let mut values = BTreeMap::from([
+            (
+                "TRNM_SERVER_DATABASE_URL",
+                "postgresql://unopened/fixture".to_owned(),
+            ),
+            ("TRNM_SERVER_DATABASE_PROFILE", "postgresql".to_owned()),
+            ("TRNM_SERVER_ALLOW_PLAINTEXT_DATABASE", "true".to_owned()),
+            ("TRNM_SERVER_SCHEMA_SOURCE_COMMIT", "0".repeat(40)),
+            ("TRNM_SERVER_ADMIN_TOKEN", "a".repeat(32)),
+        ]);
+        values.insert(
+            "TRNM_SERVER_BIND",
+            occupied.local_addr().unwrap().to_string(),
+        );
+        let (_, config) =
+            ServerConfig::from_lookup(&["trnm-server".to_owned(), "serve".to_owned()], |name| {
+                values.get(name).cloned()
+            })
+            .unwrap();
+        assert!(matches!(
+            serve(&config, UnavailableRepository),
+            Err(ServerError::Domain(error)) if error.code() == StableCode::FailedPrecondition && error.reason() == "storage_import_admission_unavailable"
+        ));
     }
 
     #[test]
