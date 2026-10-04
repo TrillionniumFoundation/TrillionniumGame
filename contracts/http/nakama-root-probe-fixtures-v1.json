@@ -1,0 +1,287 @@
+{
+  "upstream_commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+  "fixtures": [
+    {
+      "id": "root-001",
+      "method": "GET",
+      "target": "/",
+      "headers": {},
+      "status": 200,
+      "body": "",
+      "asserted_headers": {
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    },
+    {
+      "id": "root-002",
+      "method": "GET",
+      "target": "/?probe=live",
+      "headers": {},
+      "status": 200,
+      "body": "",
+      "asserted_headers": {
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    },
+    {
+      "id": "root-003",
+      "method": "GET",
+      "target": "/?probe=%",
+      "headers": {},
+      "status": 200,
+      "body": "",
+      "asserted_headers": {
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    },
+    {
+      "id": "root-004",
+      "method": "GET",
+      "target": "/",
+      "headers": {
+        "Authorization": "Bearer invalid",
+        "Origin": "https://client.example"
+      },
+      "status": 200,
+      "body": "",
+      "asserted_headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ],
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ],
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    },
+    {
+      "id": "root-005",
+      "method": "GET",
+      "target": "/",
+      "headers": {
+        "Accept-Encoding": "gzip"
+      },
+      "status": 200,
+      "body": "",
+      "asserted_headers": {
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    },
+    {
+      "id": "root-006",
+      "method": "OPTIONS",
+      "target": "/",
+      "headers": {},
+      "status": 200,
+      "body": "",
+      "asserted_headers": {
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    },
+    {
+      "id": "root-007",
+      "method": "OPTIONS",
+      "target": "/",
+      "headers": {
+        "Access-Control-Request-Method": "GET",
+        "Origin": "https://client.example"
+      },
+      "status": 200,
+      "body": "",
+      "asserted_headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ],
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ],
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    },
+    {
+      "id": "root-008",
+      "method": "OPTIONS",
+      "target": "/",
+      "headers": {
+        "Access-Control-Request-Method": "PATCH",
+        "Origin": "https://client.example"
+      },
+      "status": 405,
+      "body": "",
+      "asserted_headers": {
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    },
+    {
+      "id": "root-009",
+      "method": "OPTIONS",
+      "target": "/",
+      "headers": {
+        "Access-Control-Request-Headers": "X-HTTP-Method-Override",
+        "Access-Control-Request-Method": "GET",
+        "Origin": "https://client.example"
+      },
+      "status": 403,
+      "body": "",
+      "asserted_headers": {
+        "Content-Length": [
+          "0"
+        ]
+      },
+      "raw_source_headers": {
+        "Content-Length": [
+          "0"
+        ],
+        "Date": [
+          "Sun, 04 Oct 2026 06:43:25 GMT"
+        ]
+      },
+      "absent_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Vary",
+        "Grpc-Metadata-Content-Type",
+        "Content-Encoding"
+      ]
+    }
+  ],
+  "date_is_retained_but_not_qualified": true,
+  "full_immutable_oracle": false,
+  "compatibility_credit": false
+}

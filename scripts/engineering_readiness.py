@@ -663,7 +663,7 @@ def source_interface(config: str, app: str, *, list_integrated: bool = False,
 
 def check_documented_interface(interface: dict[str, Any], document: str) -> None:
     commands = re.findall(r'^`([a-z-]+)`\s*$', doc_block(document, "cli"), re.MULTILINE)
-    routes = re.findall(r'^\| `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` \| `(/[^`]+)` \|',
+    routes = re.findall(r'^\| `(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)` \| `(/[^`]*)` \|',
                         doc_block(document, "routes"), re.MULTILINE)
     environment = re.findall(r'^\| `(TRNM_SERVER_[A-Z0-9_]+)` \|',
                              doc_block(document, "config"), re.MULTILINE)

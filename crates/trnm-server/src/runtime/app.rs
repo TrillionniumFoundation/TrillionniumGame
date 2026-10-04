@@ -508,6 +508,8 @@ impl<R: Repository> App<R> {
 
     fn handle_inner(&mut self, request: &Request) -> Response {
         let response = match (request.method.as_str(), request.target.as_str()) {
+            ("GET", "/") => Response::public_root_probe(),
+            ("GET", target) if root_path(target) => Response::public_root_probe(),
             ("GET", "/healthcheck") => Response::nakama_healthcheck(200, b"{}".to_vec(), false),
             ("GET", target) if healthcheck_path(target) => {
                 Response::nakama_healthcheck(200, b"{}".to_vec(), false)
@@ -815,6 +817,10 @@ trnm_server_session_logout_revoked_total {}\n",
             retry_name(error.retry()),
         )
     }
+}
+
+fn root_path(target: &str) -> bool {
+    target.split_once('?').map_or(target, |(path, _)| path) == "/"
 }
 
 fn healthcheck_path(target: &str) -> bool {
@@ -1296,6 +1302,57 @@ mod tests {
                 row["id"]
             );
         }
+    }
+
+    #[test]
+    fn public_root_probe_keeps_readiness_and_method_boundaries() {
+        let mut app = App::new(
+            FakeRepository {
+                import_incomplete: true,
+                ..FakeRepository::default()
+            },
+            token(),
+        );
+        assert_eq!(
+            app.handle(&Request::new("GET", "/readyz", BTreeMap::new(), Vec::new()))
+                .status,
+            503
+        );
+        for target in ["/", "/?", "/?probe=live", "/?probe=%"] {
+            let response = app.handle(&Request::new(
+                "GET",
+                target,
+                headers("invalid-credential"),
+                Vec::new(),
+            ));
+            assert_eq!(response.status, 200);
+            assert!(response.body.is_empty());
+        }
+        let unknown = app.handle(&Request::new(
+            "GET",
+            "/not-installed",
+            BTreeMap::new(),
+            Vec::new(),
+        ));
+        for method in ["POST", "PUT", "DELETE", "HEAD"] {
+            let response = app.handle(&Request::new(method, "/", BTreeMap::new(), Vec::new()));
+            assert_eq!(response.status, unknown.status);
+            assert_eq!(response.body, unknown.body);
+        }
+        for target in ["//", "/./", "/%2f"] {
+            assert_eq!(
+                app.handle(&Request::new("GET", target, BTreeMap::new(), Vec::new()))
+                    .status,
+                404
+            );
+        }
+        app.drain.begin();
+        assert_eq!(
+            app.handle(&Request::new("GET", "/", BTreeMap::new(), Vec::new()))
+                .status,
+            200
+        );
+        assert_eq!(app.drain.admitted_operations(), 0);
     }
 
     #[test]

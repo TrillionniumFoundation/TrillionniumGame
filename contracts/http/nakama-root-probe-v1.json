@@ -1,0 +1,74 @@
+{
+  "schema": "trillionnium.nakama-root-probe.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "upstream": {
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "go_version": "go1.26.5",
+    "source_sha256": {
+      "server/api.go": "583942e1fa47902a1b6cd231a08af3c938314cbe665e6a9765c3dc1959b6cae9",
+      "vendor/github.com/gorilla/mux/mux.go": "9fe967437d9bc37d9dfa8e3e7f742bd9a74561c8bdc2f63b73387ca90dfa3e16",
+      "vendor/github.com/gorilla/handlers/cors.go": "0e40c03e8dd6acae5db5bacda60240bb4ae7683e1366a0fb7b4ba0c9a6c7e8ec"
+    }
+  },
+  "fixtures": "contracts/http/nakama-root-probe-fixtures-v1.json",
+  "reference_runner": "scripts/capture-nakama-root-probe-reference.py",
+  "source_reference_cases": 9,
+  "native_tests": [
+    "public_root_probe_matches_nine_original_router_cases",
+    "public_root_probe_keeps_readiness_and_method_boundaries",
+    "root_probe_does_not_enable_mutations_or_bypass_ingress_limits"
+  ],
+  "scope": {
+    "method": "GET",
+    "path": "/",
+    "query": "ignored",
+    "request_body_profile": "empty",
+    "response_status": 200,
+    "response_body": "",
+    "content_length": 0,
+    "content_type": false,
+    "cache_control": false,
+    "vary": false,
+    "authentication": "public",
+    "database_access": false,
+    "root_cors_target_installed": true,
+    "credentials_enabled": false,
+    "ingress_limits_unchanged": true,
+    "startup_and_drain_boundaries_unchanged": true
+  },
+  "gap_ids": [
+    "GAP-P0-SERVER-001"
+  ],
+  "task_ids": [
+    "TG-V3-023"
+  ],
+  "migration": "No DDL, schema, writer, authentication authority, dependency, persistent permission or deployment changes.",
+  "rollback": "Revert the root GET adapter and root-only CORS membership plus matching bindings; the root returns its earlier404 response.",
+  "limitations": [
+    "The original root/router/CORS subset runs over loopback; it is not the full immutable Nakama process or accepted full wire evidence.",
+    "Original raw Date headers are retained. Candidate absence of Date, Connection:close and nosniff remain unaccepted transport differences; no normalizer is added.",
+    "Only GET root and its CORS target are added. Other root methods retain existing native errors; full method/error and HEAD equivalence remain open.",
+    "Neighboring, encoded and cleaned paths retain existing routing; pinned Gorilla redirects such as /./ are not emulated by this repair.",
+    "Candidate request/success metrics, configured response headers and complete startup/shutdown lifecycle remain outside accepted equivalence.",
+    "All request/header byte limits, framing, deadlines, startup verification and transport drain restrictions remain in force."
+  ],
+  "claims": {
+    "accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "full_replacement": false
+  },
+  "fixtures_sha256": "be470c0bf69d58024de1b7464e8bddc3dd471696c08832bffaf5ad964d07db89",
+  "source_sha256": {
+    "crates/trnm-server/src/runtime/app.rs": "09db9b09bb379909b654a730174e68fd118e45da6067b0be80c40afba766e41b",
+    "crates/trnm-server/src/runtime/http.rs": "72e90693b9a672fd77209c80e46625312fef75b086db8ec5638c8f7785468645",
+    "crates/trnm-server/src/runtime/cors.rs": "21ccba309b9268a298315ac8be66861436cbb415ca4bcab2f84c078f767d73f8",
+    "crates/trnm-server/src/runtime/cors_transport_tests.rs": "40398b88bdcabaaa9f9aaa2e18ab34d6297f0a406cbbed2da4c8ab3cb3e0b003"
+  },
+  "reference_source_sha256": {
+    "scripts/capture-nakama-root-probe-reference.py": "cf8bedfddc356baacb1acd0a626171b3d9ccbbf9b2fe43377a4d12728910189c",
+    "tests/reference/nakama_root_probe/main.go": "2211ad6742ce6c8bf0c1746ba020fb3fe403fd60e7bb75434c5651626bd39bb9"
+  }
+}
