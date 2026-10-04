@@ -6,6 +6,7 @@ pub(crate) mod config;
 mod cors;
 pub(crate) mod error;
 pub(crate) mod grpc;
+mod healthcheck_form;
 pub(crate) mod http;
 pub(crate) mod json;
 mod legacy_auth;

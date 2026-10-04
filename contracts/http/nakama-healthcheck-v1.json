@@ -82,7 +82,7 @@
   "remaining_divergences": [
     "Full immutable Nakama image and independently reviewed normalizers remain required.",
     "Candidate retains Connection: close and X-Content-Type-Options: nosniff and does not emit Date.",
-    "POST form fallback, configured response headers and gzip/deflate negotiation remain outside this source repair. Bounded installed-client CORS is tracked separately in contracts/http/nakama-cors-v1.json and is not accepted full gateway parity.",
+    "Healthcheck-only form fallback is tracked in contracts/http/nakama-healthcheck-form-v1.json; wider form routing, configured response headers and gzip/deflate negotiation remain outside this source repair. Bounded installed-client CORS is tracked separately in contracts/http/nakama-cors-v1.json and is not accepted full gateway parity.",
     "Pinned protobuf error JSON comma whitespace can vary by binary; diagnostic error bytes do not qualify immutable-image bytes.",
     "Neighboring-path 404 envelopes and process-wide transport/lifecycle behavior remain outside this bounded repair."
   ],

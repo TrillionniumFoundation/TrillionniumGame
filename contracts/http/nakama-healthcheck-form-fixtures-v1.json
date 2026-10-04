@@ -1,0 +1,692 @@
+{
+  "upstream_commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+  "go_version": "go1.26.5",
+  "fixtures": [
+    {
+      "id": "form-001",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-002",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+        "x-http-method-override": ""
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-003",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "Application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-004",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/json",
+        "x-http-method-override": ""
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-005",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "",
+        "x-http-method-override": ""
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-006",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-007",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "GET"
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-008",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "get"
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-009",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "POST"
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-010",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "HEAD"
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-011",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "DELETE"
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-012",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "INVALID"
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-013",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": " GET "
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-014",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "poſt"
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-015",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "poﬆ"
+      },
+      "body_hex": "70726f62653d6c697665",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-016",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-017",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "666f6f",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-018",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d6226613d63",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-019",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d25",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%\""
+      }
+    },
+    {
+      "id": "form-020",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d257a7a",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%zz\""
+      }
+    },
+    {
+      "id": "form-021",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d2531",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%1\""
+      }
+    },
+    {
+      "id": "form-022",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d257a7a3b623d63",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid semicolon separator in query"
+      }
+    },
+    {
+      "id": "form-023",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d25787826623d257979",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%xx\""
+      }
+    },
+    {
+      "id": "form-024",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d25787826623d783b79",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid semicolon separator in query"
+      }
+    },
+    {
+      "id": "form-025",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d783b7926623d257878",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid semicolon separator in query"
+      }
+    },
+    {
+      "id": "form-026",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d253030",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-027",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d254646",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-028",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d25ff",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%\\xff\""
+      }
+    },
+    {
+      "id": "form-029",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d25c3a9",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%é\""
+      }
+    },
+    {
+      "id": "form-030",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d2500",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%\\x00\""
+      }
+    },
+    {
+      "id": "form-031",
+      "method": "POST",
+      "target": "/healthcheck?a=%",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%\""
+      }
+    },
+    {
+      "id": "form-032",
+      "method": "POST",
+      "target": "/healthcheck?a=%",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d257171",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%qq\""
+      }
+    },
+    {
+      "id": "form-033",
+      "method": "POST",
+      "target": "/healthcheck?a=x;y",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid semicolon separator in query"
+      }
+    },
+    {
+      "id": "form-034",
+      "method": "POST",
+      "target": "/healthcheck?a=x;y",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d257171",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%qq\""
+      }
+    },
+    {
+      "id": "form-035",
+      "method": "POST",
+      "target": "/healthcheck?a=%xx&b=x;y",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid semicolon separator in query"
+      }
+    },
+    {
+      "id": "form-036",
+      "method": "POST",
+      "target": "/healthcheck?a=%xx&b=x;y",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d257171",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%qq\""
+      }
+    },
+    {
+      "id": "form-037",
+      "method": "POST",
+      "target": "/healthcheck?a=x;y&b=%xx",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid semicolon separator in query"
+      }
+    },
+    {
+      "id": "form-038",
+      "method": "POST",
+      "target": "/healthcheck?a=x;y&b=%xx",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d257171",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%qq\""
+      }
+    },
+    {
+      "id": "form-039",
+      "method": "GET",
+      "target": "/healthcheck?a=%",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "DELETE"
+      },
+      "body_hex": "613d25",
+      "status": 200,
+      "response": {}
+    },
+    {
+      "id": "form-040",
+      "method": "PUT",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "GET"
+      },
+      "body_hex": "613d25",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-041",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "HEAD"
+      },
+      "body_hex": "613d257171",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%qq\""
+      }
+    },
+    {
+      "id": "form-042",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "DELETE"
+      },
+      "body_hex": "613d783b79",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid semicolon separator in query"
+      }
+    },
+    {
+      "id": "form-043",
+      "method": "POST",
+      "target": "/healthcheck?a=%",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": "GET"
+      },
+      "body_hex": "",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%\""
+      }
+    },
+    {
+      "id": "form-044",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded; charset=utf-8",
+        "x-http-method-override": "GET"
+      },
+      "body_hex": "613d25",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    },
+    {
+      "id": "form-045",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "2571713d257272",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%qq\""
+      }
+    },
+    {
+      "id": "form-046",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "6b65793d25cc80",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%̀\""
+      }
+    },
+    {
+      "id": "form-047",
+      "method": "POST",
+      "target": "/healthcheck",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "6b65793d25c0af",
+      "status": 400,
+      "response": {
+        "code": 3,
+        "message": "invalid URL escape \"%\\xc0\\xaf\""
+      }
+    },
+    {
+      "id": "form-048",
+      "method": "HEAD",
+      "target": "/healthcheck?a=%",
+      "headers": {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-http-method-override": ""
+      },
+      "body_hex": "613d25",
+      "status": 501,
+      "response": {
+        "code": 12,
+        "message": "Method Not Allowed"
+      }
+    }
+  ],
+  "full_immutable_oracle": false,
+  "compatibility_credit": false
+}

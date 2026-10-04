@@ -512,6 +512,11 @@ impl<R: Repository> App<R> {
             ("GET", target) if healthcheck_path(target) => {
                 Response::nakama_healthcheck(200, b"{}".to_vec(), false)
             }
+            ("POST", target)
+                if healthcheck_path(target) && super::healthcheck_form::is_form_post(request) =>
+            {
+                super::healthcheck_form::respond(request)
+            }
             (_, target) if healthcheck_path(target) => Response::nakama_healthcheck(
                 501,
                 br#"{"code":12,"message":"Method Not Allowed"}"#.to_vec(),
@@ -1245,6 +1250,50 @@ mod tests {
                 app.handle(&Request::new("DELETE", path, BTreeMap::new(), Vec::new()))
                     .status,
                 404
+            );
+        }
+    }
+
+    #[test]
+    fn healthcheck_form_fallback_matches_pinned_gateway_cases() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/http/nakama-healthcheck-form-fixtures-v1.json"
+        ))
+        .unwrap();
+        let rows = fixtures["fixtures"].as_array().unwrap();
+        assert_eq!(rows.len(), 48);
+        let mut app = App::new(FakeRepository::default(), token());
+        for row in rows {
+            let headers = row["headers"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| (key.clone(), value.as_str().unwrap().to_owned()))
+                .collect();
+            let body = row["body_hex"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>();
+            let response = app.handle(&Request::new(
+                row["method"].as_str().unwrap(),
+                row["target"].as_str().unwrap(),
+                headers,
+                body,
+            ));
+            assert_eq!(
+                response.status,
+                row["status"].as_u64().unwrap() as u16,
+                "{}",
+                row["id"]
+            );
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&response.body).unwrap(),
+                row["response"],
+                "{}",
+                row["id"]
             );
         }
     }

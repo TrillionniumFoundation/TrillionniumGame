@@ -220,7 +220,7 @@
   "rollback": "Revert dispatcher change and matching bindings to restore the earlier custom 405/404 method responses.",
   "limitations": [
     "Generated gateway source diagnostic is not the immutable Nakama image or security interceptor qualification.",
-    "Form POST fallback and method override remain unimplemented; malformed/encoded path and full routing error precedence remain outside this scope.",
+    "Storage/Legacy form POST fallback and method override remain unimplemented; healthcheck-only form handling is tracked separately; malformed/encoded path and full routing error precedence remain outside this scope.",
     "Connection close, nosniff, absent Date, compression and full header/wire equivalence remain unaccepted.",
     "No private 51-pair authentication capture is reconstructed, replaced or credited."
   ],

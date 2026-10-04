@@ -22,6 +22,7 @@ EXPECTED_RUNTIME_FILES = {
     "cors_transport_tests.rs",
     "error.rs",
     "grpc.rs",
+    "healthcheck_form.rs",
     "http.rs",
     "json.rs",
     "legacy_auth.rs",
