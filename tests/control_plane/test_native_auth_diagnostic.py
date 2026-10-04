@@ -54,6 +54,20 @@ class NativeAuthDiagnosticTests(unittest.TestCase):
     def test_synthetic_schema_shape_is_not_live_evidence(self):
         M.validate_result(self.synthetic(),'postgresql','a'*40)
 
+    def test_cockroach_timestamp_shape_retains_literal_z_without_normalizing(self):
+        item=self.synthetic()
+        for record in item['records']:
+            for snapshot in (record['before'],record['after']):
+                for user in snapshot['users']:
+                    for key in ('create_time','update_time','disable_time'):
+                        user[key]=user[key].replace('+00:00','Z')
+        before=copy.deepcopy(item)
+        M.validate_result(item,'postgresql','a'*40)
+        self.assertEqual(item,before)
+        self.assertEqual(item['records'][3]['after']['users'][0]['disable_time'],'1970-01-01T00:00:00Z')
+        item['records'][3]['after']['users'][0]['disable_time']='1970-01-01T00:00:00J'
+        with self.assertRaises(AssertionError):M.validate_result(item,'postgresql','a'*40)
+
     def test_rejects_custody_execution_and_claim_changes(self):
         for key,value in [(k,True) for k in (*M.CLAIMS,'normalization_applied','keys_retained','raw_tokens_retained')]+[(k,False) for k in ('capture_complete','actual_authenticated_drain_joined','same_candidate_migration4_to5','prior4_publisher_retained','public_gate_closed')]+[('completed_case_count',14),('attempted_request_count',16),('incomplete_attempt_may_have_effect',True),('profile','cockroachdb'),('source_commit','b'*40),('fixture_sha256','sha256:'+'0'*64)]:
             item=self.synthetic();item[key]=value

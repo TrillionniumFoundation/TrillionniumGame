@@ -276,7 +276,7 @@ def validate_result(result, profile, commit):
                 assert set(user) == {'id','username','custom_id','create_time','update_time','disable_time','metadata','wallet','edge_count'}
                 assert str(uuid.UUID(user['id'])) == user['id']
                 for key in ('create_time','update_time','disable_time'):
-                    assert type(user[key]) is str and re.fullmatch(r'[0-9T:+. -]{19,40}',user[key])
+                    assert type(user[key]) is str and re.fullmatch(r'[0-9TZ:+. -]{19,40}',user[key])
                 assert user['metadata'] == user['wallet'] == {} and type(user['edge_count']) is int and user['edge_count'] == 0
             for device in snapshot['user_device']:
                 assert set(device) == {'id','user_id'} and device['id'] == 'trnm-reference-device'

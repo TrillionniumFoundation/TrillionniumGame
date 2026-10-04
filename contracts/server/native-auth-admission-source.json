@@ -233,11 +233,11 @@
     "scripts/accounts-capture-diagnostic.py": "a43a49cc51337b82df658990c91d19e7bf77199d490b45c6cff04da0117e2ec2",
     "scripts/ci-trnm-server-live.sh": "25aed453b31f6bcfc5b3b12bac6eed107473f1b425534d2e4ccefcd0f3092cf4",
     "scripts/evidence_admission.py": "1e7d98a0ca5c675f54bd741ec7cbcc1fdad6f34e190a477421b45ac7ff044b26",
-    "scripts/native-auth-diagnostic.py": "184b3e7967ad80cc58c83707e275266ab4d1925cbcaafde4508c2caa29663474",
+    "scripts/native-auth-diagnostic.py": "739820b6395828ca81fb58b7029366f83efae1779cdf10e8757efc0e89e8c6df",
     "scripts/oracle/capture-auth-reference.py": "3458f58f61ab2a0efe360d88760c209bc7092211003a4ae2c5f7f70a4bd65580",
     "scripts/schema_evidence_binding.py": "822bb214422884ae656c1412b51ec25b8b32d158b097a38dad3808a800e5bd58",
     "scripts/schema_source_selection.py": "a07a437696351ad9aaef1a4e0941c999bfa58c1f4b6498e8bb290fa06c51e2aa",
-    "tests/control_plane/test_native_auth_diagnostic.py": "6a14474e59310ab3c86da9bbf6b1ae60fefd4c9a96005821203a70840293c245"
+    "tests/control_plane/test_native_auth_diagnostic.py": "5ff3c0f6946a68d9d3ebfce53b1e77d7abd055fa44676b1a38fe3d2ed7f706db"
   },
   "local_validation": {
     "rust_version": "1.85.1",
