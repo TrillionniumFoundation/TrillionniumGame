@@ -178,7 +178,16 @@ fn verify_ready_metadata_target(
     profile: DatabaseProfile,
     target: AuthoritativeSchemaTarget,
 ) -> Result<SchemaIdentity, DomainError> {
-    require_account_catalog_capture(target)?;
+    let admitted = AdmittedTarget::production(target)?;
+    verify_ready_metadata_admitted(recorded, profile, admitted)
+}
+
+fn verify_ready_metadata_admitted(
+    recorded: &RecordedMetadata,
+    profile: DatabaseProfile,
+    admitted: AdmittedTarget,
+) -> Result<SchemaIdentity, DomainError> {
+    let target = admitted.target();
     let descriptor = validate_recorded_revision(recorded, profile)?;
     // A valid historical identity is migration input, not serve readiness.
     if descriptor.version != target.version()

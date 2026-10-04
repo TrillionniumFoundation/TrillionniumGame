@@ -14,7 +14,7 @@ const CASES: &[(&str, &str)] = &[
     ("foreign_key", "ALTER TABLE user_device DROP CONSTRAINT user_device_user_id_fkey; ALTER TABLE user_device ADD CONSTRAINT user_device_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE NO ACTION"),
 ];
 
-fn raw(client: &mut impl GenericClient, sql: &str) -> serde_json::Value {
+pub(super) fn raw(client: &mut impl GenericClient, sql: &str) -> serde_json::Value {
     let rows = client.query(sql, &[]).expect("bounded raw catalog query");
     assert!(rows.len() <= 128, "raw catalog row budget");
     let mut result = Vec::new();
@@ -30,7 +30,7 @@ fn raw(client: &mut impl GenericClient, sql: &str) -> serde_json::Value {
     json!({"query": sql, "rows": result})
 }
 
-fn capture(client: &mut impl GenericClient) -> serde_json::Value {
+pub(super) fn capture(client: &mut impl GenericClient) -> serde_json::Value {
     let mut captures = serde_json::Map::new();
     for (name, query) in QUERIES {
         captures.insert((*name).to_owned(), raw(client, query));

@@ -302,3 +302,11 @@ The capture-gated selected Legacy HTTP source codec uses local bounded JSON/quer
 The explicit AccountsV5 target expects 14 tables and retains storage writer epoch 4; its closed production gate prevents this source target from authorizing publication.
 
 The transport drain precheck and App drain admission both use the existing numeric gateway envelope for the three Legacy POST paths and their query variants: HTTP 503, code 14, "Service is draining.", without a retry field. This source repair preserves generic control-route drain behavior and still requires actual HTTP and independent review.
+
+The internal AccountsV5 typed diagnostic uses disposable hosted databases only.
+Its sealed test-only admission token never opens public migrate, serve or source
+selection. Every ordinary schema4 writer/import fence remains in force for the
+schema5 diagnostic; production migration and restoration stay unqualified.
+Same-candidate schema4 publisher preservation is explicitly narrower than a
+historical-release upgrade. See the AccountsV5 internal typed diagnostic contract
+in `docs/TESTING_AND_EVIDENCE.md` for interruption and retained evidence boundaries.

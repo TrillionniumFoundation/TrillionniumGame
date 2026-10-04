@@ -78,7 +78,17 @@ fn validate_native_storage_import_row(row: &NativeStorageImportRow) -> Result<()
     Ok(())
 }
 
-fn preflight_v3_storage(client: &mut impl GenericClient) -> Result<(), DomainError> {
+fn validate_storage_revision_row(row: &NativeStorageImportRow, published_version: i64) -> Result<(), DomainError> {
+    validate_native_storage_import_row(row)?;
+    // DDL may already expose v4 domains while metadata still publishes v3.
+    // Only a recorded v4 publisher grants the wider persisted domains.
+    if published_version == 3 && (row.collection.is_empty() || row.key.is_empty() || row.read > 2 || row.write > 1) {
+        return Err(failed_precondition("schema_unpublished_stored_domain_drift"));
+    }
+    Ok(())
+}
+
+fn preflight_storage_revision(client: &mut impl GenericClient, published_version: i64) -> Result<(), DomainError> {
     let mut cursor: Option<LegacyStorageCursor> = None;
     loop {
         let collection = cursor.as_ref().map(|item| item.0.as_str());
@@ -130,19 +140,7 @@ fn preflight_v3_storage(client: &mut impl GenericClient) -> Result<(), DomainErr
             write: row.try_get(14).map_err(map_postgres_error)?,
             audit_ms: row.try_get(15).map_err(map_postgres_error)?,
         };
-        validate_native_storage_import_row(&decoded)?;
-        // Metadata is still3 while this revision is being completed. Wider
-        // rows belong only to the journal importer after epoch4 publication;
-        // a removed Cockroach CHECK is not premature data-write authority.
-        if decoded.collection.is_empty()
-            || decoded.key.is_empty()
-            || decoded.read > 2
-            || decoded.write > 1
-        {
-            return Err(failed_precondition(
-                "schema_unpublished_stored_domain_drift",
-            ));
-        }
+        validate_storage_revision_row(&decoded, published_version)?;
         cursor = Some((decoded.collection, decoded.key, decoded.user));
     }
     Ok(())
@@ -195,6 +193,18 @@ mod import_preflight_tests {
             read: 32767,
             write: 2,
             audit_ms: 0,
+        }
+    }
+
+    #[test]
+    fn published_v4_domains_do_not_admit_unpublished_v3_drift() {
+        let mut row = known();
+        row.key.clear();
+        assert_eq!(validate_storage_revision_row(&row, 3).unwrap_err().reason(), "schema_unpublished_stored_domain_drift");
+        validate_storage_revision_row(&row, 4).unwrap();
+        row.raw_digest = Some(vec![0; 32]);
+        for version in [3, 4] {
+            assert_eq!(validate_storage_revision_row(&row, version).unwrap_err().reason(), "schema_storage_known_witness_invalid");
         }
     }
 

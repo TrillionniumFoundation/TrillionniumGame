@@ -614,3 +614,39 @@ production Rust behavior and authoritative schema chains are unchanged.
 The hosted `trnm-server-live` PostgreSQL and CockroachDB jobs additionally run the explicitly ignored `schema::account_capture_diagnostic::accounts_capture_disposable_fixture` library test in newly created `trnm_accounts_capture_*` databases inside the same verified disposable container. The helper accepts no database URL and creates no credentials or roles. Ordinary StorageV4 migration publishes the actual candidate identity first; the byte-locked fifth SQL file is then applied solely as raw fixture DDL. This is not typed 4-to-5 migration execution. Metadata remains schema 4, the prior publisher is unchanged, default StorageV4 readiness rejects the extra account catalog, and the public AccountsV5 gate still rejects before catalog access.
 
 The separate `accounts-capture` artifact retains the complete source annex, per-profile raw native column/type/collation/relation/constraint/index/FK-trigger observations, baseline and altered catalog records, type/default/check/key/predicate/FK drift rejection, PostgreSQL trigger drift rejection, exact producer identity, pinned image identity, and a verified parent-container disposal receipt. A failed reader binding fails the lane even when raw observations were written. The source annex's StorageV4 token authorizes no AccountsV5 execution. The packet grants no schema-5 activation, typed migration, account parity, backup/restore, storage transfer/import or independent acceptance credit. Hosted execution and conflict-free review remain required; source tests alone establish none of these.
+
+### AccountsV5 internal typed migration diagnostics
+
+The separate `accounts-typed` hosted artifact exercises the existing typed migration
+and read-only verification bodies through a private admission token whose diagnostic
+constructor exists only under `cfg(test)`. Public migrate/verify/serve and Python
+source-selection issuance retain the closed AccountsV5 gate. This source candidate
+has not yet established hosted execution or independent qualification.
+
+For each pinned database profile, the ignored library test first invokes ordinary
+StorageV4 migration with the actual candidate commit. It then exercises internal
+4-to-5 publication, all five statement cuts, replay/no-op, and real writer-grant
+and import-journal refusal before fresh upgrade and at every interrupted prefix.
+PostgreSQL cuts must roll back the complete revision transaction; CockroachDB cuts
+must retain precisely that unpublished action prefix and resume the same executor.
+All cases retain populated known/unknown-witness rows with empty identifiers and wide
+v4 ACLs. The populated case rejects corrupt native projection, witness digest and
+invalid raw JSON/UTF8 while retaining data, metadata and catalog. Storage preflight
+uses the recorded publisher: unpublished v3 retains its strict domains, while
+published v4 admits its legal wider domains with the same native/witness validation.
+Revision4 and revision5 retain empty-import checks and exact one-action advancement;
+earlier revision backfill behavior is unchanged and no
+future revision is admitted. Test-only faults run after the real action/catalog
+check, never through an alternate SQL migrator. These are returned-error action
+boundary faults and transaction rollbacks, not OS-process crashes or database
+power-loss qualification.
+
+The source-bound before/after rows preserve foundation, v2/v3 and the actual
+previous schema4 publisher. Both producers are this same candidate. This proves
+only same-candidate provenance preservation, not a distinct historical-release
+upgrade. The packet retains executor/readers, full SQL source annex, native raw
+catalogs before resume and after publication, refusal reasons, exact producer and
+pinned image identity, complete case inventory and parent-container disposal.
+The ordinary source annex still issues only StorageV4 authority. Internal typed
+execution grants no public migration, startup, restore, account parity, activation
+or independent acceptance credit; those flags remain false.

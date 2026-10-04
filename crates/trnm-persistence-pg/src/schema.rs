@@ -448,3 +448,7 @@ mod tests {
 #[cfg(test)]
 #[path = "schema_parts/account_capture_diagnostic.rs"]
 mod account_capture_diagnostic;
+
+#[cfg(test)]
+#[path = "schema_parts/account_typed_diagnostic.rs"]
+mod account_typed_diagnostic;
