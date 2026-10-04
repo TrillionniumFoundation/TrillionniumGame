@@ -30,7 +30,10 @@ TEST_ONLY_SURFACES = {
     'crates/trnm-server/src/runtime/app.rs': (
         '    #[cfg_attr(\n'
         '        not(test),\n'
-        '        allow(dead_code, reason = "Internal heterogeneous batch hook is retained for bounded tests")\n'
+        '        allow(\n'
+        '            dead_code,\n'
+        '            reason = "Internal heterogeneous batch hook is retained for bounded tests"\n'
+        '        )\n'
         '    )]\n',
         '    fn apply_storage_batch(',
         '09db9b09bb379909b654a730174e68fd118e45da6067b0be80c40afba766e41b',
@@ -38,7 +41,10 @@ TEST_ONLY_SURFACES = {
     'crates/trnm-server/src/runtime/legacy_repository.rs': (
         '#[cfg_attr(\n'
         '    not(test),\n'
-        '    allow(dead_code, reason = "Diagnostic observation is exercised by the test-only native seam")\n'
+        '    allow(\n'
+        '        dead_code,\n'
+        '        reason = "Diagnostic observation is exercised by the test-only native seam"\n'
+        '    )\n'
         ')]\n',
         'pub trait LegacyNativeFailureObservation {',
         'df8ac88d58aa19b57cf28fe341669a49355d1c348be279c81cd70d2d3995e141',

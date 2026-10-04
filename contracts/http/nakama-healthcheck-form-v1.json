@@ -80,7 +80,7 @@
   ],
   "fixtures_sha256": "e39153210d7b2b0db0d36c6b78b2f45e1f76d9d5d756f7d3b98af8c1465c3dfd",
   "source_sha256": {
-    "crates/trnm-server/src/runtime/app.rs": "afc785fb482e8c2d13e8f0b48ffa94bb0ba7cb3d6bad60de67205c179697960b",
+    "crates/trnm-server/src/runtime/app.rs": "63aadfb2290ac5f5b29b0f2862491529100659983b76cd40eb697538ecc77747",
     "crates/trnm-server/src/runtime/mod.rs": "57fd8e18930ef6477a3e4c8332dadf823917c056c8e22846ce52064ab7353c93",
     "crates/trnm-server/src/runtime/cors_transport_tests.rs": "40398b88bdcabaaa9f9aaa2e18ab34d6297f0a406cbbed2da4c8ab3cb3e0b003",
     "crates/trnm-server/src/runtime/healthcheck_form.rs": "29c52a482381b3bf19d297111270bf55945ded99d2f0f4dacf4b464bab1f10f6"
