@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 from copy import deepcopy
 import importlib.util
 import json
@@ -289,6 +291,21 @@ if 'logs' in args:
             for path in (link, fifo, large):
                 with self.subTest(path=path.name), self.assertRaises(ValueError):
                     mod.read(path)
+
+    def test_cli_failure_diagnostic_never_prints_exception_or_token_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / 'output'
+            secret = token('22222222-1111-4111-8111-111111111111', 3600)
+            stream = io.StringIO()
+            with patch.object(sys, 'argv', ['capture', '--port', '12345', '--env-file', '/unused',
+                                           '--facts', '/unused', '--output', str(output)]), \
+                 patch.object(mod, 'capture', side_effect=mod.CaptureError(secret)), \
+                 contextlib.redirect_stderr(stream):
+                self.assertEqual(mod.main(), 1)
+            combined = stream.getvalue() + (output / 'failure.json').read_text()
+            self.assertNotIn(secret, combined)
+            self.assertIn(mod.digest(secret.encode()), combined)
+            self.assertIn('CaptureError', combined)
 
 
 if __name__ == '__main__':

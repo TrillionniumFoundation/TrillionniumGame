@@ -361,6 +361,7 @@ def verify_capture(output, facts_path):
                 'body_length', 'body_base64', 'body', 'raw_tokens_retained', 'started_at_epoch',
                 'completed_at_epoch'}, 'unexpected record fields')
         records.append(record)
+        print(f'immutable auth reference captured case={len(records)} status={record["status"]}', flush=True)
     validate(records, fixture)
     return manifest
 
@@ -413,6 +414,7 @@ def capture(port, env_file, output, facts_path):
         check_case(case, record)
         write(output / (case['id'] + '.json'), record)
         records.append(record)
+        print(f'immutable auth reference captured case={len(records)} status={record["status"]}', flush=True)
     validate(records, fixture)
     files = {p.name: digest(read(p)) for p in sorted(output.glob('*.json'))}
     manifest = {'schema': 'trillionnium.immutable-auth-reference.v1',
@@ -459,9 +461,12 @@ def main():
     try:
         result = capture(args.port, args.env_file, args.output, args.facts)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-        write(args.output / 'failure.json', {'status': 'failed', 'error_class': type(exc).__name__,
-                                           'claims': CLAIMS})
-        print('immutable auth reference capture failed; see failure.json', file=sys.stderr)
+        failure = {'status': 'failed', 'error_class': type(exc).__name__, 'claims': CLAIMS,
+                   'reason_sha256': digest(str(exc).encode()) if isinstance(exc, CaptureError) else None}
+        write(args.output / 'failure.json', failure)
+        # Only code-defined exception reasons are hashed; no exception text,
+        # response body, subprocess stream or token is printed.
+        print('immutable auth reference capture failed: ' + canonical(failure).decode(), file=sys.stderr)
         return 1
     print(f"immutable auth reference cases={result['case_count']}; compatibility_credit=false")
     return 0
