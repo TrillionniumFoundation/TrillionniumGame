@@ -211,10 +211,7 @@ fn preflight_native_storage(
 ) -> Result<(), DomainError> {
     let catalog = read_catalog(client)?;
     let mut cursor = None;
-    loop {
-        let Some(row) = read_next_legacy_storage(client, &catalog, cursor.as_ref(), false)? else {
-            break;
-        };
+    while let Some(row) = read_next_legacy_storage(client, &catalog, cursor.as_ref(), false)? {
         let native = native_legacy_projection(client, &row)?;
         validate_partial_native_row(&row, &native, complete)?;
         cursor = Some((row.collection, row.key, row.user));
@@ -250,10 +247,7 @@ fn fill_native_storage_row(
 fn backfill_native_storage(client: &mut impl GenericClient) -> Result<(), DomainError> {
     let catalog = read_catalog(client)?;
     let mut cursor = None;
-    loop {
-        let Some(row) = read_next_legacy_storage(client, &catalog, cursor.as_ref(), true)? else {
-            break;
-        };
+    while let Some(row) = read_next_legacy_storage(client, &catalog, cursor.as_ref(), true)? {
         fill_native_storage_row(client, &row)?;
         cursor = Some((row.collection, row.key, row.user));
     }
