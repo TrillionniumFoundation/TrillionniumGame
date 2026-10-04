@@ -1,3 +1,51 @@
+// The field is private to this module: production callers can acquire a token
+// only through the unchanged public AccountsV5 admission gate. The diagnostic
+// constructor is absent from non-test binaries and never authorizes startup.
+mod migration_admission {
+    #[cfg(test)]
+    use super::failed_precondition;
+    use super::{require_account_catalog_capture, AuthoritativeSchemaTarget, DomainError};
+
+    #[derive(Clone, Copy)]
+    pub(super) struct AdmittedTarget {
+        target: AuthoritativeSchemaTarget,
+        #[cfg(test)]
+        cut_after_action: Option<usize>,
+    }
+
+    impl AdmittedTarget {
+        pub(super) fn production(target: AuthoritativeSchemaTarget) -> Result<Self, DomainError> {
+            require_account_catalog_capture(target)?;
+            Ok(Self {
+                target,
+                #[cfg(test)]
+                cut_after_action: None,
+            })
+        }
+
+        pub(super) fn target(self) -> AuthoritativeSchemaTarget {
+            self.target
+        }
+
+        #[cfg(test)]
+        pub(super) fn diagnostic(cut_after_action: Option<usize>) -> Self {
+            Self {
+                target: AuthoritativeSchemaTarget::NakamaAccountsV5,
+                cut_after_action,
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn after_action(self, next: usize) -> Result<(), DomainError> {
+            if self.cut_after_action == Some(next) {
+                return Err(failed_precondition("schema5_diagnostic_action_cut"));
+            }
+            Ok(())
+        }
+    }
+}
+use migration_admission::AdmittedTarget;
+
 /// Complete selected catalog and recorded provenance validation in the caller's
 /// transaction. AccountsV5 remains closed before the first catalog read.
 pub(crate) fn verify_serving_schema_target(
@@ -5,7 +53,16 @@ pub(crate) fn verify_serving_schema_target(
     profile: DatabaseProfile,
     target: AuthoritativeSchemaTarget,
 ) -> Result<SchemaIdentity, DomainError> {
-    require_account_catalog_capture(target)?;
+    let admitted = AdmittedTarget::production(target)?;
+    verify_serving_schema_admitted(client, profile, admitted)
+}
+
+fn verify_serving_schema_admitted(
+    client: &mut impl GenericClient,
+    profile: DatabaseProfile,
+    admitted: AdmittedTarget,
+) -> Result<SchemaIdentity, DomainError> {
+    let target = admitted.target();
     let catalog = read_catalog(client)?;
     let prefix = catalog_prefix(&catalog, profile)?;
     let recorded = read_metadata(client, &catalog)?
@@ -24,7 +81,7 @@ pub(crate) fn verify_serving_schema_target(
             "authoritative_schema_upgrade_incomplete",
         ));
     }
-    verify_ready_metadata_target(&recorded, profile, target)
+    verify_ready_metadata_admitted(&recorded, profile, admitted)
 }
 
 impl PgRepository {
@@ -40,6 +97,14 @@ impl PgRepository {
         target: AuthoritativeSchemaTarget,
     ) -> Result<SchemaIdentity, DomainError> {
         require_account_catalog_capture(target)?;
+        let admitted = AdmittedTarget::production(target)?;
+        self.verify_authoritative_schema_admitted(admitted)
+    }
+
+    fn verify_authoritative_schema_admitted(
+        &mut self,
+        admitted: AdmittedTarget,
+    ) -> Result<SchemaIdentity, DomainError> {
         let profile = self.profile;
         let mut transaction = self
             .client
@@ -48,7 +113,7 @@ impl PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        let identity = verify_serving_schema_target(&mut transaction, profile, target)?;
+        let identity = verify_serving_schema_admitted(&mut transaction, profile, admitted)?;
         transaction.commit().map_err(map_postgres_error)?;
         Ok(identity)
     }
@@ -82,6 +147,23 @@ impl PgRepository {
         target: AuthoritativeSchemaTarget,
     ) -> Result<SchemaMigrationReport, DomainError> {
         require_account_catalog_capture(target)?;
+        let admitted = AdmittedTarget::production(target)?;
+        self.migrate_authoritative_schema_admitted(
+            source_commit,
+            applied_at_ms,
+            legacy_writer_role,
+            admitted,
+        )
+    }
+
+    fn migrate_authoritative_schema_admitted(
+        &mut self,
+        source_commit: &str,
+        applied_at_ms: u64,
+        legacy_writer_role: Option<&str>,
+        admitted: AdmittedTarget,
+    ) -> Result<SchemaMigrationReport, DomainError> {
+        let target = admitted.target();
         validate_source_commit(source_commit)?;
         let applied_at_ms = to_i64(applied_at_ms)?;
         if let Some(role) = legacy_writer_role {
@@ -133,7 +215,7 @@ impl PgRepository {
         let mut recorded = read_metadata(&mut *self.client, &catalog)?;
         if let Some(metadata) = &recorded {
             if next_revision_for_prefix_target(metadata, profile, prefix, target)?.is_none() {
-                let identity = self.verify_authoritative_schema_target(target)?;
+                let identity = self.verify_authoritative_schema_admitted(admitted)?;
                 return Ok(SchemaMigrationReport {
                     identity,
                     migration_applied: applied_steps != 0,
@@ -171,9 +253,12 @@ impl PgRepository {
         if original.version < 3 {
             preflight_native_storage(&mut *self.client, profile, false)?;
         } else {
-            preflight_v3_storage(&mut *self.client)?;
+            preflight_storage_revision(&mut *self.client, original.version)?;
             require_empty_import_journals(&mut *self.client, &catalog)?;
         }
+        // Revisions4 and5 share epoch4 storage/import safety. Both require one
+        // exact catalog action per step and empty import journals through publish.
+        // Earlier backfill grammars remain unchanged; no future revision is admitted.
         loop {
             let catalog = read_catalog(&mut *self.client)?;
             let prefix = catalog_prefix(&catalog, profile)?;
@@ -228,7 +313,7 @@ impl PgRepository {
                         if revision_target.version == 3 {
                             preflight_native_storage(&mut transaction, profile, false)?;
                         } else {
-                            preflight_v3_storage(&mut transaction)?;
+                            preflight_storage_revision(&mut transaction, original.version)?;
                             require_empty_import_journals(&mut transaction, &locked_catalog)?;
                         }
                     }
@@ -247,16 +332,18 @@ impl PgRepository {
                         let advanced = catalog_prefix(&catalog, profile)?;
                         if advanced <= next
                             || advanced > revision_target.action_range.end
-                            || (revision_target.version == 4 && advanced != next + 1)
+                            || (matches!(revision_target.version, 4 | 5) && advanced != next + 1)
                         {
                             return Err(failed_precondition("schema_action_catalog_not_ready"));
                         }
+                        #[cfg(test)]
+                        admitted.after_action(advanced)?;
                         next = advanced;
                     }
                     if revision_target.version == 3 {
                         preflight_native_storage(&mut transaction, profile, true)?;
-                    } else if revision_target.version == 4 {
-                        preflight_v3_storage(&mut transaction)?;
+                    } else if matches!(revision_target.version, 4 | 5) {
+                        preflight_storage_revision(&mut transaction, original.version)?;
                     }
                     let complete = read_catalog(&mut transaction)?;
                     if catalog_prefix(&complete, profile)? != revision_target.action_range.end {
@@ -264,7 +351,7 @@ impl PgRepository {
                             "authoritative_schema_upgrade_incomplete",
                         ));
                     }
-                    if revision_target.version == 4 {
+                    if matches!(revision_target.version, 4 | 5) {
                         require_empty_import_journals(&mut transaction, &complete)?;
                     }
                     let published = publish_metadata(
@@ -284,8 +371,8 @@ impl PgRepository {
                     // DDL can fail this attempt; it is not silently repaired.
                     if revision_target.version == 3 {
                         preflight_native_storage(&mut *self.client, profile, false)?;
-                    } else if revision_target.version == 4 {
-                        preflight_v3_storage(&mut *self.client)?;
+                    } else if matches!(revision_target.version, 4 | 5) {
+                        preflight_storage_revision(&mut *self.client, original.version)?;
                         require_empty_import_journals(&mut *self.client, &catalog)?;
                     }
                     let mut index = prefix;
@@ -297,8 +384,8 @@ impl PgRepository {
                         let current = read_metadata(&mut *self.client, &before)?
                             .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
                         ensure_metadata_unchanged(&original, &current)?;
-                        if revision_target.version == 4 {
-                            preflight_v3_storage(&mut *self.client)?;
+                        if matches!(revision_target.version, 4 | 5) {
+                            preflight_storage_revision(&mut *self.client, original.version)?;
                             require_empty_import_journals(&mut *self.client, &before)?;
                         }
                         if !fresh {
@@ -324,16 +411,18 @@ impl PgRepository {
                         let advanced = catalog_prefix(&updated, profile)?;
                         if advanced <= index
                             || advanced > revision_target.action_range.end
-                            || (revision_target.version == 4 && advanced != index + 1)
+                            || (matches!(revision_target.version, 4 | 5) && advanced != index + 1)
                         {
                             return Err(failed_precondition("schema_action_catalog_not_ready"));
                         }
                         let after_metadata = read_metadata(&mut *self.client, &updated)?
                             .ok_or_else(|| failed_precondition("schema_metadata_missing"))?;
                         ensure_metadata_unchanged(&original, &after_metadata)?;
-                        if revision_target.version == 4 {
+                        if matches!(revision_target.version, 4 | 5) {
                             require_empty_import_journals(&mut *self.client, &updated)?;
                         }
+                        #[cfg(test)]
+                        admitted.after_action(advanced)?;
                         index = advanced;
                     }
                     let mut transaction = self
@@ -362,8 +451,8 @@ impl PgRepository {
                     validate_recorded_revision(&current, profile)?;
                     if revision_target.version == 3 {
                         preflight_native_storage(&mut transaction, profile, true)?;
-                    } else if revision_target.version == 4 {
-                        preflight_v3_storage(&mut transaction)?;
+                    } else if matches!(revision_target.version, 4 | 5) {
+                        preflight_storage_revision(&mut transaction, original.version)?;
                         require_empty_import_journals(&mut transaction, &complete)?;
                     }
                     let published = publish_metadata(
@@ -381,7 +470,7 @@ impl PgRepository {
             // of an already-applied foundation, or a read-only repeat call.
             applied_steps += 1;
         }
-        let identity = self.verify_authoritative_schema_target(target)?;
+        let identity = self.verify_authoritative_schema_admitted(admitted)?;
         Ok(SchemaMigrationReport {
             identity,
             migration_applied: applied_steps != 0,
@@ -421,5 +510,41 @@ impl PgRepository {
             transaction.commit().map_err(map_postgres_error)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod migration_admission_tests {
+    use super::*;
+
+    #[test]
+    fn production_admission_remains_closed_and_diagnostic_cut_is_local() {
+        assert_eq!(
+            AdmittedTarget::production(AuthoritativeSchemaTarget::NakamaAccountsV5)
+                .err()
+                .unwrap()
+                .reason(),
+            "schema5_native_catalog_capture_pending"
+        );
+        assert_eq!(
+            AdmittedTarget::production(AuthoritativeSchemaTarget::StorageV4)
+                .unwrap()
+                .target(),
+            AuthoritativeSchemaTarget::StorageV4
+        );
+        let cut = AdmittedTarget::diagnostic(Some(2));
+        cut.after_action(1).unwrap();
+        assert_eq!(
+            cut.after_action(2).unwrap_err().reason(),
+            "schema5_diagnostic_action_cut"
+        );
+        AdmittedTarget::diagnostic(None).after_action(2).unwrap();
+        assert_eq!(
+            AuthoritativeSchemaTarget::NakamaAccountsV5
+                .require_capture_ready()
+                .unwrap_err()
+                .reason(),
+            "schema5_native_catalog_capture_pending"
+        );
     }
 }

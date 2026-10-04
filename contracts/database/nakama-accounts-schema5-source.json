@@ -56,5 +56,33 @@
   ],
   "rollback": "Default schema4 service cannot admit5 or downgrade metadata. Root must use forward fix/owned scratch reset and later approved migration policy; no production DROP rollback.",
   "current_evidence_binding_supports_fullfrontier5_HEAD": false,
-  "blocking_source_boundary": "Existing v4 live, backup, retry and outbox evidence require full locked4 source; fullfrontier5 with selected runtime4 needs distinct typed source-prefix binding before merge."
+  "blocking_source_boundary": "Existing v4 live, backup, retry and outbox evidence require full locked4 source; fullfrontier5 with selected runtime4 needs distinct typed source-prefix binding before merge.",
+  "internal_typed_diagnostic_source_candidate": {
+    "status": "internal-typed-diagnostic-source-candidate",
+    "execution": "same-private-admitted-typed-executor",
+    "admission": "cfg(test)-only sealed capability; public pre-I/O refusal unchanged",
+    "publisher_scope": "same-candidate-real-storage4-publisher-only",
+    "profiles": [
+      "postgresql",
+      "cockroachdb"
+    ],
+    "case_count_per_profile": 9,
+    "action_cut_count_per_profile": 5,
+    "postgresql_transaction_rollback": true,
+    "cockroachdb_statement_cut_resume": true,
+    "writer_and_import_barriers_each_cut": true,
+    "same_candidate_publisher_preservation": true,
+    "replay_noop": true,
+    "hosted_execution_verified": false,
+    "prior_release_producer_qualified": false,
+    "public_migration_qualified": false,
+    "schema5_activation": false,
+    "startup_qualified": false,
+    "backup_restore_qualified": false,
+    "compatibility_credit": false,
+    "accepted": false,
+    "fault_kind": "returned-error-after-native-action-catalog-check",
+    "process_crash_qualified": false,
+    "power_loss_qualified": false
+  }
 }

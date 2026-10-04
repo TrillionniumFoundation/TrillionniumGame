@@ -257,3 +257,10 @@ Account source composition uses an immutable `AuthoritativeSchemaTarget`. Old di
 `PgPool::run_account_with_deadline` returns a typed observation rather than replacing a late native result with a generic error. It invokes one account operation and keeps setup, deadline/shutdown, native completion and lease disposition separately. Late creation cannot produce a successful reply but preserves confirmed commit/cleanup facts; unobserved or unknown completion does not prove no effect. Retiring a pooled lease prevents return recycling and does not disable direct repository calls. Caller retry and compensation remain forbidden; the account engine alone owns its existing bounded attempts. Full pool/native account qualification remains false.
 
 The explicit AccountsV5 target expects 14 tables and retains storage writer epoch 4; its closed production gate prevents this source target from authorizing publication.
+
+The ignored AccountsV5 internal typed diagnostic shares the existing migrate and
+verify bodies through a sealed `cfg(test)` admission capability. Public entry
+points still fail before I/O. Disposable tests cover the five native action cuts,
+PostgreSQL rollback, CockroachDB resume, writer/import refusals, same-candidate
+schema4 publisher preservation and no-op replay. Source and local tests grant no
+hosted execution, historical producer, public migration, startup or restore credit.
