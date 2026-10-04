@@ -1,0 +1,192 @@
+{
+  "schema": "trillionnium.grpc-native-auth-source-proposal.v1",
+  "status": "locally-checked-source-candidate",
+  "baseline": {
+    "repository": "TrillionniumFoundation/TrillionniumGame",
+    "pull_request": 201,
+    "commit": "1db02c4f1178bfe1a58a1de29ddf95c4cc96d4f2",
+    "rust": "1.85.1",
+    "published_blob_readback": {
+      "crates/trnm-server/src/runtime/grpc.rs": "2b4343a071723b83fd18d2bbbf9aad7613679b0b",
+      "crates/trnm-server/src/runtime/auth_runtime.rs": "807b6357d47e52d69ba6f807ae88f4fa9c71b9a0",
+      "crates/trnm-server/src/runtime/pool.rs": "c119f7f7cd1c2330f7d0ffd24a669fd774201f05",
+      "crates/trnm-server/build.rs": "4e6c8430b4acc5b5e2b2be5d5a2f141fec59606d",
+      "crates/trnm-server/proto/nakama-healthcheck.proto": "d72568669c1cdae97cc8ec9d035c6d496d1553c2"
+    }
+  },
+  "upstream": [
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "apigrpc/apigrpc.proto",
+      "blob": "1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c",
+      "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/apigrpc/apigrpc.proto"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "apigrpc/apigrpc.pb.go",
+      "blob": "b14e5fd82e934fee10b7a0b7d619eeaa488f9366",
+      "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/apigrpc/apigrpc.pb.go"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/api.go",
+      "blob": "61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb",
+      "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api.go"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/api_authenticate.go",
+      "blob": "1f938603160ef1dc7f6546926de5481622139dd2",
+      "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api_authenticate.go"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/api_session.go",
+      "blob": "1cef7b9d967e93745b19bdd048ff203fc212acea",
+      "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api_session.go"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "vendor/github.com/heroiclabs/nakama-common/api/api.proto",
+      "blob": "ddd2744739a252c268b2be004ff0e45c498adb35",
+      "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/heroiclabs/nakama-common/api/api.proto"
+    }
+  ],
+  "common": {
+    "version": "1.47.0",
+    "commit": "449b77ecc8789aa466c36b67f6e498033dfcd9c5"
+  },
+  "service": "nakama.api.Nakama",
+  "methods": [
+    "Healthcheck",
+    "AuthenticateDevice",
+    "AuthenticateCustom",
+    "SessionRefresh",
+    "SessionLogout"
+  ],
+  "full_rpc_denominator": 85,
+  "bounds": {
+    "native_jobs_total_including_queued_and_abandoned": 16,
+    "max_blocking_threads": 16,
+    "protobuf_decoded_bytes": 524288,
+    "protobuf_encoded_bytes": 2097152,
+    "metadata_header_list_bytes": 65536,
+    "concurrent_streams_per_connection": 32,
+    "concurrent_requests_per_connection": 32,
+    "transport_timeout_seconds": 5,
+    "existing_native_operation_budget_seconds": 2,
+    "vars_entries": 256,
+    "vars_scalar_bytes": 131072,
+    "accepted_connections_global": 32,
+    "transport_graceful_drain_seconds": 1,
+    "transport_force_close": "seal socket admission, shutdown Both on every registered accepted socket, abort and join server task; drop dedicated runtime to cancel async connections before joining blocking native work",
+    "accepted_connection_lifetime_seconds": 30,
+    "connection_expiry_maintenance_interval_milliseconds": 10,
+    "connection_expiry_custody": "normal supervisor closes the exact owned socket at lifetime expiry; no SharedDrain, no admission sealing, and no capacity release until actual OwnedSocket drop"
+  },
+  "authority": {
+    "same_installed_service_keys_and_blacklist": true,
+    "same_admitted_repository_and_native_accounts_engine": true,
+    "new_store": false,
+    "public_v5_gate_change": false,
+    "global_cancel_for_rpc": false,
+    "caller_retry": false,
+    "caller_compensation": false,
+    "started_native_call_abort": false,
+    "transport_cancel_proves_no_effect": false,
+    "native_panic_process_fence": true,
+    "preparation_panic_process_fence": true,
+    "panic_after_rpc_abandonment_process_fence": true
+  },
+  "static_validation": {
+    "protobuf_field_and_rpc_checks": {
+      "AccountDevice": true,
+      "AccountCustom": true,
+      "AuthenticateDeviceRequest": true,
+      "AuthenticateCustomRequest": true,
+      "SessionRefreshRequest": true,
+      "SessionLogoutRequest": true,
+      "Session": true,
+      "Healthcheck": true,
+      "AuthenticateDevice": true,
+      "AuthenticateCustom": true,
+      "SessionRefresh": true,
+      "SessionLogout": true
+    },
+    "rustfmt_1_85_1": "passed",
+    "rust_build": "offline locked Rust 1.85.1 two-crate all-targets check passed",
+    "rust_tests": "offline locked two-crate all-target tests passed: persistence lib 498 passed/2 ignored; canonical server lib 326 passed; additional target tests passed. Environment-gated DB paths confer no live evidence.",
+    "native_grpc_oracle": "not-run",
+    "http_auth15_grpc_credit": false,
+    "review_repairs": {
+      "btree_map": "pinned 0.14.5 string API compiled in both build contexts",
+      "panic_fence": "preparation and abandoned native panic regressions executed and passed",
+      "owned_transport_shutdown": "real tonic zero-window flush, socket saturation and forced closure tests executed and passed",
+      "silent_connection_saturation": "30-second production lifetime enforced from accept; same implementation tested with two-second interval and generated Healthcheck readmission",
+      "native_runtime_join_test": "shutdown witness and withheld native release test executed and passed",
+      "silent_healthcheck_rpc_timeout_seconds": 3,
+      "generated_context_isolation": "separate canonical-grpc output in canonical server and persistence lib-test; diagnostic Healthcheck service unchanged and all-target check/tests/Clippy passed"
+    },
+    "strict_clippy": "offline locked two-crate all-targets -D warnings passed"
+  },
+  "claims": {
+    "compiled": true,
+    "native_grpc_executed": false,
+    "oracle_paired": false,
+    "compatibility_credit": false,
+    "full_replacement": false,
+    "production_ready": false,
+    "accepted_independent_review": false,
+    "grpc_transport_tests_executed": true
+  },
+  "residuals": [
+    "Started blocking native work is not individually aborted by RPC cancellation; existing per-lease budget remains. Result after response abandonment may be committed or unknown.",
+    "Generated Go handler decodes protobuf before security interceptor; candidate intentionally authenticates metadata first, so malformed-body/auth error precedence is not qualified.",
+    "Native runtime before/after hooks are absent.",
+    "Only five signatures are represented, without shrinking the 85-method denominator. No grpc-gateway generated annotations, TLS, reflection, HTTP2 attack/load, SDK, multi-node, HA or production qualification.",
+    "Generic Repository interface does not itself certify finite I/O; production PooledRepository retains configured existing pool timeout/cancellation semantics. Cancellation dispatch race remains upstream native residual.",
+    "Native gRPC database/oracle evidence must use actual admitted native engines for PostgreSQL and CockroachDB; HTTP auth15 cannot be credited.",
+    "Resource caps are local limits, not a claim of Nakama limit equivalence.",
+    "Transport force-close is bounded independently of stalled response flushing; total process exit still joins started blocking native work under the existing native pool deadline/cancellation semantics. This does not prove an absolute native I/O termination bound.",
+    "Every accepted TCP connection has a local fixed 30-second absolute lifetime, including active healthy clients, not merely idle or pre-request clients. Forced closure can interrupt long-lived sessions or in-flight auth and requires client reconnection; it does not prove no durable effect, grant native per-RPC abort, or permit server-side replay. This is an explicit Nakama lifetime-policy difference.",
+    "Lifetime maintenance uses the dedicated runtime supervisor and a 10ms polling interval. The connection admission slot remains occupied after socket shutdown until actual OwnedSocket cleanup; no early reuse is allowed for detached tasks."
+  ],
+  "integration_requirements": [
+    "Independent review of compiled integration delta, generated output isolation, metadata boundary, exact source bindings and local evidence.",
+    "Publish only after review and applicable exact-head/prospective-merge checks; no merge or deployment authority is granted.",
+    "Actual native PostgreSQL and CockroachDB Device/Custom/Refresh/Logout gRPC plus immutable Nakama oracle pairing remains required; HTTP auth15 provides no gRPC credit.",
+    "Runtime hooks, all remaining 80 RPC obligations, malformed-protobuf/auth precedence residual and explicit 30-second connection lifetime remain unqualified.",
+    "Full make check and target-native CI are not replaced by scoped two-crate local checks. All production/public AccountsV5 and repository-wide compatibility gates remain false."
+  ],
+  "remaining_non_healthcheck_rpc_obligations": 80,
+  "candidate_source_sha256": {
+    "crates/trnm-server/build.rs": "50499a795b3ea32daf6401792359c2614d7501033b13408384acafe7de8447d9",
+    "crates/trnm-persistence-pg/build.rs": "e7a25e6fb79c1696f8b3343d38766eb9e7ed3939a1efb531e7f1f3e2f54cc3a4",
+    "crates/trnm-server/proto/nakama-healthcheck.proto": "29491ae128c76936a24d00f7636a8e0f89af8aca87fbab80100721779d38d7ab",
+    "crates/trnm-server/src/runtime/server.rs": "a66fd7295e3721d57ee0cfd240c4ba0ffe061120cddfc69cc9621daeabecd55f",
+    "crates/trnm-server/src/runtime/grpc.rs": "913d472b63e4e9f6c978faa49c906ead7bf38ed1e0f775d4a6f3be645a7f1aad",
+    "crates/trnm-server/src/runtime/grpc_auth.rs": "1ab43c8e4a417e11823ad532f7347bee18ba7134fc85faef889214cf4667c146",
+    "crates/trnm-server/src/runtime/grpc_auth_tests.rs": "47c096be63e440e37f8bd450f082a274c3845c33cedc8625e8e3e9283655d5a0",
+    "crates/trnm-server/src/runtime/grpc_transport.rs": "30bac44cfc17695c05d44f12ecbf1b60e8be7230ae9da8853e386ea9d5861ebf",
+    "crates/trnm-server/src/runtime/grpc_transport_tests.rs": "e22173a69c7c467392876a8cea6f8f8e01abd97c31590f22c0319b95d668d489"
+  },
+  "review_checklist": [
+    "Confirm AuthBoundary response body and Service bounds match generated tonic/prost 0.14.5 APIs, plus BoolValue and BTreeMap code generation.",
+    "Verify early URI-aware metadata checks preserve Healthcheck and unknown-method routing without accepting prefix/suffix method confusion.",
+    "Verify fixed total job permits survive timeout/abort, drain skips queued work, and runtime shutdown joins all started blocking jobs.",
+    "Verify mutex-protected repository cloning cannot create new authority or bypass admission; no native retry wrapper is added.",
+    "Verify error messages/codes are exact fixed native mapping and metadata fallback/repetition semantics.",
+    "Verify all codec/ownership tests compile and run; these tests alone have no native/oracle gRPC credit.",
+    "Re-review FailureFence catching repository cloning/task preparation and native panics inside the blocking closure; same worker_failed and SharedDrain are independent of RPC awaiter lifetime.",
+    "Re-review SocketRegistry custody, max32 global incoming admission, sealing/actual socket shutdown before server abort, and dedicated runtime drop joining native jobs.",
+    "Review accepted-at monotonic lifetime enforcement during normal supervision, preface-independent actual shutdown, and no capacity reuse before OwnedSocket destructor.",
+    "Review compiled integration delta and separate canonical/diagnostic generated-output contexts; inspect exact local logs and rerun prospective exact-head CI."
+  ],
+  "revision": "compiled-integration-review"
+}

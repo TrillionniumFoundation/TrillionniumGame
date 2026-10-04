@@ -118,3 +118,11 @@ vendored Gorilla implementation; existing Gorilla attribution remains above.
 Source identities and the bounded header/route profile are registered in
 contracts/http/nakama-root-probe-v1.json. Raw Date evidence is retained, and no
 Go implementation is introduced into the target process.
+
+The bounded native Rust gRPC auth proposal derives the Device, Custom,
+SessionRefresh and SessionLogout message fields and method signatures from
+Nakama OSS v3.40.0 and nakama-common v1.47.0, Copyright The Nakama Authors &
+Contributors, Apache-2.0. The modified protobuf subset retains attribution.
+Exact source blobs and unqualified residuals are registered in
+contracts/grpc/nakama-native-auth-source.json. No upstream Go implementation
+is compiled, and neither source presence nor HTTP evidence grants gRPC parity.
