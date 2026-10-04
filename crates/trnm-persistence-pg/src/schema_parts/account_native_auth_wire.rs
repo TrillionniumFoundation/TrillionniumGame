@@ -6,6 +6,7 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::fmt;
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -28,13 +29,19 @@ pub(super) fn epoch() -> Result<u64> {
         .as_secs())
 }
 pub(super) fn digest(bytes: &[u8]) -> String {
-    format!(
-        "sha256:{}",
-        openssl::sha::sha256(bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    )
+    let mut output = String::with_capacity(71);
+    output.push_str("sha256:");
+    for byte in openssl::sha::sha256(bytes) {
+        write!(&mut output, "{byte:02x}").expect("writing to String is infallible");
+    }
+    output
+}
+#[test]
+fn native_auth_digest_retains_exact_prefixed_lowercase_hex() {
+    assert_eq!(
+        digest(b"abc"),
+        "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
 }
 pub(super) fn encode(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)

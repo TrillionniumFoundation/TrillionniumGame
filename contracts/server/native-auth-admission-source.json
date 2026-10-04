@@ -74,7 +74,7 @@
     "crates/trnm-persistence-pg/src/schema_parts/account_catalog.rs": "b020b404a676cfc8b118c7e342c90e40a2cccc5e9bf2c9b5f938f08d5e0522dc",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_attributes.rs": "48d4098a40fb77bd0ce97a6c0ebc7d4aa467ae45d2581bed0d13f3c628eb23e9",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_auth.rs": "d4864f9a5dd60b9393d208e042f51066f845c98db1a09291cacb6bef7bf3011b",
-    "crates/trnm-persistence-pg/src/schema_parts/account_native_auth_wire.rs": "1b24adb826052a67f838d0c7d0df3c5d277d923160e01154aec84be1356e84b7",
+    "crates/trnm-persistence-pg/src/schema_parts/account_native_auth_wire.rs": "c536b0a328d53c27260bf0115d9bab0ca909b3771464ab3914cfe593dc4942b5",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_columns.rs": "e3af7a7333ba69586cff50437ec48bb49482b1e03afb8fc4b0c9bbec51a4d8e4",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_objects.rs": "c17d10528e64917a2dbf30b8175950dd9ef8b75181acdacfc4b7c7d345b6318c",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_triggers.rs": "3a7df5674ae6928c3970030b82f16326ccbf3f1443709acb210896229cba102f",
