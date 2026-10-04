@@ -9,7 +9,8 @@
     "server/api_authenticate.go": "1f938603160ef1dc7f6546926de5481622139dd2",
     "server/core_authenticate.go": "5ec2f5c00ef875d11fc79865a30059d1147ac7e1",
     "server/api_session.go": "1cef7b9d967e93745b19bdd048ff203fc212acea",
-    "server/core_session.go": "beee140dd6d402434811721f858e64c1c3c79e09"
+    "server/core_session.go": "beee140dd6d402434811721f858e64c1c3c79e09",
+    "apigrpc/apigrpc.pb.gw.go": "0e741e8ef596cb7c3ca2a636e3b3403a22105a39"
   },
   "cases": [
     {
@@ -130,7 +131,7 @@
     },
     {
       "id": "refresh-empty",
-      "path": "/v2/session/refresh",
+      "path": "/v2/account/session/refresh",
       "body": {},
       "auth": "server",
       "status": 400,
@@ -140,7 +141,7 @@
     },
     {
       "id": "refresh-invalid",
-      "path": "/v2/session/refresh",
+      "path": "/v2/account/session/refresh",
       "body": {
         "token": "invalid"
       },
@@ -152,7 +153,7 @@
     },
     {
       "id": "refresh-valid",
-      "path": "/v2/session/refresh",
+      "path": "/v2/account/session/refresh",
       "body": {
         "token": "$custom-existing.refresh_token"
       },
@@ -177,7 +178,7 @@
     },
     {
       "id": "refresh-revoked",
-      "path": "/v2/session/refresh",
+      "path": "/v2/account/session/refresh",
       "body": {
         "token": "$refresh-valid.refresh_token"
       },

@@ -71,6 +71,17 @@ class AuthReferenceTests(unittest.TestCase):
     def setUp(self):
         self.fixture, self.records = records_fixture()
 
+    def test_session_paths_match_pinned_generated_gateway(self):
+        # Nakama d4d92f93 has deliberately asymmetric generated gateway paths:
+        # Refresh includes account; Logout does not. Preserve both exact paths.
+        self.assertEqual(self.fixture['source_blobs']['apigrpc/apigrpc.pb.gw.go'],
+                         '0e741e8ef596cb7c3ca2a636e3b3403a22105a39')
+        sessions = [case for case in self.fixture['cases'] if case['id'].startswith(('refresh-', 'logout-'))]
+        self.assertEqual(len(sessions), 5)
+        for case in sessions:
+            expected = '/v2/session/logout' if case['id'].startswith('logout-') else '/v2/account/session/refresh'
+            self.assertEqual(case['path'], expected)
+
     def test_real_validator_accepts_bounded_synthetic_profile(self):
         mod.validate(self.records, self.fixture)
 
