@@ -1,7 +1,7 @@
 # Testing and evidence
 
 Status: **authoritative current documentation**  
-Revision: 2026-09-05
+Revision: 2026-10-04
 
 ## 1. Proof rule
 
@@ -538,3 +538,73 @@ rule. Synthetic fixtures do not constitute real gap acceptance.
 `scripts/durability-state-model.py` exhaustively explores a bounded state graph containing command commit/replay/conflict, authority takeover, outbox claim/expiry/publish/ack, stale owner/generation actions, crash ambiguity and the final-attempt reaper. It rejects revision/receipt divergence, lost outbox intents, invalid lease ownership, delivery without a visible effect, stale mutation and duplicate external value. Hostile mutants prove the duplicate-effect and stale-ack boundaries are observable.
 
 This model is a specification and test-vector source. Exact implementation differential, live database packets and independent data-integrity acceptance remain required.
+
+
+## Immutable authentication reference capture
+
+The existing digest-pinned Nakama/PostgreSQL smoke lane now has a separate
+`immutable-auth-reference-15-v1` diagnostic corpus. Its fixture is
+[`oracle/immutable/auth-reference-cases.json`](../oracle/immutable/auth-reference-cases.json).
+Device and Custom each cover missing account with `create=false`, missing ID,
+short ID, explicit creation and existing-account `create=false`. Session cases
+cover empty/invalid/valid Refresh, valid Logout and Refresh after Logout. The
+fixture records the pinned source commit/tree and reviewed source blob identities.
+This is newly collected reference evidence, never a reconstruction or replacement
+of the unavailable historical private 51-pair corpus.
+
+`scripts/oracle/capture-auth-reference.py` runs only against the lane's synthetic
+loopback endpoint, with its fixed disposable server key and initially empty
+non-system users/device projections. It neither contacts providers nor accepts
+production credentials. It retains exact status/header bytes and non-token JSON
+body bytes, wire/body SHA-256 and lengths, case ordering, request time windows,
+and before/after database projections. The SQL projection explicitly selects
+user identity, metadata/wallet/count/timestamps and device association; it omits
+password/provider credentials and does not assert whole-schema effects.
+
+The existing normalizer registry is unchanged. Token-bearing requests and bodies
+exist only in process memory; persisted views contain SHA-256/length commitments,
+exact decoded claims and an explicit unverified-signature flag. These are not raw
+replayable token-wire evidence. No UUID, JWT identity, durable effect or error
+code is rewritten or normalized. Refresh preserves its original issuance and
+session identity while its new expiry is checked against the observed request
+window, following pinned source behavior.
+
+Each HTTP exchange has a ten-second total deadline and a 1 MiB response cap;
+headers have a 32 KiB cap. This bounded subset requires Content-Length and rejects
+chunked, truncated, duplicate-length and credential-bearing-header responses.
+Read-only SQL child processes have a ten-second deadline and 1 MiB output bound.
+The runner bounds image pull, startup and teardown. A missing tool, invalid
+source, startup/collection failure, signal, missing case, failed teardown or
+retained container cannot yield a successful sealed packet. Output directories
+must be fresh. `TRNM_KEEP_ORACLE=1` is diagnostic failure, never successful cleanup.
+The validator reuses the repository’s descriptor-relative no-follow bounded reader,
+rejecting symlinks, FIFOs and changed/oversized files. It requires the exact manifest
+schema and typed successful lifecycle fields. It checks exact pins, digests, case order/count, durable projections,
+identity relationships, negative outcomes and an explicit successful teardown.
+
+The existing immutable workflow executes this lane, revalidates after teardown,
+and retains its synthetic/redacted archive with the unchanged repository-local
+`upload-evidence` action and existing read-only permissions. Upload receipts are
+diagnostic until the exact bytes are downloaded, verified and independently
+accepted. The component boundary is
+[`status/IMMUTABLE_AUTH_REFERENCE_STATUS.json`](status/IMMUTABLE_AUTH_REFERENCE_STATUS.json).
+No unit-test fixture, script presence or old smoke run is actual reference
+execution for this revision.
+
+```bash
+bash scripts/oracle/check-immutable-oracle.sh
+scripts/oracle/run-immutable-smoke.sh run/immutable-oracle
+python3 scripts/oracle/capture-auth-reference.py --verify \
+  --facts run/immutable-oracle/runtime-facts.json \
+  --output run/immutable-oracle/auth-reference
+```
+
+The offline tests execute the real collector parser/validator and shell failure
+paths with explicitly synthetic data and a fake Docker command. They earn no
+image, database, API, parity or lifecycle acceptance credit. Actual hosted
+execution, artifact custody and independent protocol/security/SRE acceptance
+remain required. There is no Rust paired execution, instrumented-oracle proof,
+race/restart matrix, native Rust catalog/migration/restore evidence or permission
+to activate AccountsV5. No historical gap, product gate or compatibility claim is
+closed. Rollback removes this diagnostic collector and its workflow invocation;
+production Rust behavior and authoritative schema chains are unchanged.

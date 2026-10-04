@@ -8,17 +8,31 @@ normalizers="$root/config/oracle-normalizers.json"
 output=${1:-"$root/run/immutable-oracle"}
 mkdir -p "$output"
 
-for command in docker curl python3 sha256sum; do
+# Never reuse a previous packet: failure cannot leave a stale success manifest.
+if [[ -n $(find "$output" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+  echo 'oracle output directory must be empty' >&2
+  exit 64
+fi
+# Early tool/configuration failures are explicit even before containers exist.
+early_failure() {
+  status=$?
+  printf '{"process_status":%s,"cleanup_status":null,"containers_removed":false}\n' "$status" >"$output/lifecycle.json"
+  exit "$status"
+}
+trap early_failure EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+for command in docker curl python3 sha256sum timeout; do
   command -v "$command" >/dev/null || { echo "missing required command: $command" >&2; exit 69; }
 done
-docker compose version >/dev/null
+timeout 10 docker compose version >/dev/null
 
 candidate_commit=${TRNM_CANDIDATE_COMMIT:-$(git -C "$root" rev-parse HEAD 2>/dev/null || true)}
 if [[ ! $candidate_commit =~ ^[0-9a-f]{40}$ || $candidate_commit == 0000000000000000000000000000000000000000 ]]; then
   echo 'TRNM_CANDIDATE_COMMIT (or git HEAD) must be a non-zero lowercase 40-character commit SHA' >&2
   exit 64
 fi
-project=${TRNM_ORACLE_PROJECT:-"tg-oracle-${candidate_commit:0:12}-$$"}
+project="tg-oracle-${candidate_commit:0:12}-$$"
 work=$(mktemp -d)
 env_file="$work/oracle.env"
 chmod 700 "$work"
@@ -43,11 +57,12 @@ redact_compose_log() {
   python3 - "$env_file" "$raw" "$target" <<'PY'
 from __future__ import annotations
 
-import sys
+import sys, re
 from pathlib import Path
 
 env_path, raw_path, target_path = map(Path, sys.argv[1:])
-text = raw_path.read_text(encoding="utf-8", errors="replace")
+with raw_path.open("rb") as stream:
+    text = stream.read(1024 * 1024).decode("utf-8", errors="replace")
 values = []
 for line in env_path.read_text(encoding="utf-8").splitlines():
     if not line or "=" not in line:
@@ -57,50 +72,78 @@ for line in env_path.read_text(encoding="utf-8").splitlines():
         values.append(value.strip("'\""))
 for value in sorted(set(values), key=len, reverse=True):
     text = text.replace(value, "<redacted>")
+text = re.sub(r"[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "<redacted-token>", text)
 target_path.write_text(text, encoding="utf-8")
 PY
 }
 
 cleanup() {
   status=$?
+  trap - EXIT INT TERM
+  cleanup_status=0
+  removed=false
   if [[ $status -ne 0 ]]; then
-    docker compose --env-file "$env_file" -f "$compose" ps -a \
+    timeout 10 docker compose --env-file "$env_file" -f "$compose" ps -a \
       >"$output/compose-ps.txt" 2>&1 || true
-    docker compose --env-file "$env_file" -f "$compose" logs --no-color \
+    (ulimit -f 2048; timeout 10 docker compose --env-file "$env_file" -f "$compose" logs --no-color) \
       >"$output/compose-logs.raw.txt" 2>&1 || true
     redact_compose_log "$output/compose-logs.raw.txt" "$output/compose-logs.txt" || true
     rm -f "$output/compose-logs.raw.txt"
-    printf 'immutable oracle failed; redacted diagnostics follow\n' >&2
-    cat "$output/compose-ps.txt" >&2 || true
-    tail -n 240 "$output/compose-logs.txt" >&2 || true
+    printf 'immutable oracle failed; redacted diagnostics retained\n' >&2
   fi
-  if [[ ${TRNM_KEEP_ORACLE:-0} != 1 ]]; then
-    docker compose --env-file "$env_file" -f "$compose" down -v --remove-orphans >/dev/null 2>&1 || true
+  if [[ ${TRNM_KEEP_ORACLE:-0} == 1 ]]; then
+    cleanup_status=1
+  else
+    timeout 60 docker compose --env-file "$env_file" -f "$compose" down -v --remove-orphans \
+      >/dev/null 2>&1 || cleanup_status=$?
+    if [[ $cleanup_status -eq 0 ]]; then
+      remaining=$(timeout 10 docker compose --env-file "$env_file" -f "$compose" ps -aq) || cleanup_status=$?
+      if [[ $cleanup_status -eq 0 && -z $remaining ]]; then removed=true; else cleanup_status=1; fi
+    fi
+  fi
+  if [[ $status -eq 0 && $cleanup_status -ne 0 ]]; then status=1; fi
+  printf '{"process_status":%s,"cleanup_status":%s,"containers_removed":%s}\n' \
+    "$status" "$cleanup_status" "$removed" >"$output/lifecycle.json"
+  if [[ $status -eq 0 ]]; then
+    python3 "$root/scripts/oracle/capture-auth-reference.py" --verify \
+      --facts "$output/runtime-facts.json" --output "$output/auth-reference" || status=$?
+  fi
+  if [[ $status -eq 0 ]]; then
+    (cd "$output" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >SHA256SUMS) || status=$?
+  fi
+  if [[ $status -eq 0 ]]; then
+    printf 'immutable oracle reference evidence: %s\n' "$output/auth-reference/manifest.json"
+  else
+    rm -f "$output/SHA256SUMS"
+    printf '{"process_status":%s,"cleanup_status":%s,"containers_removed":%s}\n' \
+      "$status" "$cleanup_status" "$removed" >"$output/lifecycle.json"
   fi
   rm -rf "$work"
   exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
 
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-docker compose --env-file "$env_file" -f "$compose" config >"$output/compose.rendered.yml"
-rendered_config_sha256="sha256:$(sha256sum "$output/compose.rendered.yml" | cut -d' ' -f1)"
-rm "$output/compose.rendered.yml"
+timeout 10 docker compose --env-file "$env_file" -f "$compose" config >"$work/compose.rendered.yml"
+rendered_config_sha256="sha256:$(sha256sum "$work/compose.rendered.yml" | cut -d' ' -f1)"
+rm "$work/compose.rendered.yml"
 
-docker compose --env-file "$env_file" -f "$compose" pull
-docker compose --env-file "$env_file" -f "$compose" up -d --wait
+timeout 300 docker compose --env-file "$env_file" -f "$compose" pull
+timeout 180 docker compose --env-file "$env_file" -f "$compose" up -d --wait --wait-timeout 120
 
-port_line=$(docker compose --env-file "$env_file" -f "$compose" port nakama 7350)
+port_line=$(timeout 10 docker compose --env-file "$env_file" -f "$compose" port nakama 7350)
 port=${port_line##*:}
-[[ $port =~ ^[0-9]+$ ]] || { echo "invalid Nakama host port: $port_line" >&2; exit 1; }
+[[ $port =~ ^[0-9]+$ ]] || { echo 'invalid Nakama host port' >&2; exit 1; }
 curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$port/healthcheck" >"$output/health.body"
 
-nakama_container=$(docker compose --env-file "$env_file" -f "$compose" ps -q nakama)
-postgres_container=$(docker compose --env-file "$env_file" -f "$compose" ps -q postgres)
+nakama_container=$(timeout 10 docker compose --env-file "$env_file" -f "$compose" ps -q nakama)
+postgres_container=$(timeout 10 docker compose --env-file "$env_file" -f "$compose" ps -q postgres)
 [[ -n $nakama_container && -n $postgres_container ]] || { echo "oracle containers are missing" >&2; exit 1; }
-nakama_image_id=$(docker inspect --format '{{.Image}}' "$nakama_container")
-postgres_image_id=$(docker inspect --format '{{.Image}}' "$postgres_container")
-table_count=$(docker compose --env-file "$env_file" -f "$compose" exec -T postgres \
+nakama_image_id=$(timeout 10 docker inspect --format '{{.Image}}' "$nakama_container")
+nakama_config_image=$(timeout 10 docker inspect --format '{{.Config.Image}}' "$nakama_container")
+postgres_config_image=$(timeout 10 docker inspect --format '{{.Config.Image}}' "$postgres_container")
+postgres_image_id=$(timeout 10 docker inspect --format '{{.Image}}' "$postgres_container")
+table_count=$(timeout 10 docker compose --env-file "$env_file" -f "$compose" exec -T postgres \
   psql -X -U postgres -d nakama -Atc "select count(*) from information_schema.tables where table_schema='public';")
 [[ $table_count =~ ^[0-9]+$ ]] || { echo "invalid public table count: $table_count" >&2; exit 1; }
 completed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -116,7 +159,9 @@ facts = {
   "rendered_config_sha256": ${rendered_config_sha256@Q},
   "nakama_image_id": ${nakama_image_id@Q},
   "postgres_image_id": ${postgres_image_id@Q},
-  "container_runtime": subprocess.check_output(["docker", "version", "--format", "{{.Server.Version}}"], text=True).strip(),
+  "nakama_config_image": ${nakama_config_image@Q},
+  "postgres_config_image": ${postgres_config_image@Q},
+  "container_runtime": subprocess.check_output(["docker", "version", "--format", "{{.Server.Version}}"], text=True, timeout=10).strip(),
   "kernel": platform.release(),
   "architecture": platform.machine(),
   "health_status": "healthy",
@@ -134,8 +179,7 @@ python3 "$root/scripts/oracle/render-immutable-evidence.py" \
   --facts "$output/runtime-facts.json" \
   --output "$output/evidence.json"
 
-(
-  cd "$output"
-  sha256sum health.body runtime-facts.json evidence.json >SHA256SUMS
-)
-printf 'immutable oracle smoke evidence: %s\n' "$output/evidence.json"
+python3 "$root/scripts/oracle/capture-auth-reference.py" \
+  --port "$port" --env-file "$env_file" --facts "$output/runtime-facts.json" \
+  --output "$output/auth-reference"
+# EXIT handler must observe successful teardown and revalidate before sealing.

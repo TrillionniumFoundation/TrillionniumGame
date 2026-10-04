@@ -1,0 +1,46 @@
+{
+  "schema": "trillionnium.immutable-auth-reference-status.v1",
+  "status": "source-candidate",
+  "corpus_id": "immutable-auth-reference-15-v1",
+  "fixture": "oracle/immutable/auth-reference-cases.json",
+  "collector": "scripts/oracle/capture-auth-reference.py",
+  "test": "tests/oracle/test_auth_reference.py",
+  "workflow": ".github/workflows/oracle-immutable-smoke.yml",
+  "task_ids": [
+    "TG-V3-010"
+  ],
+  "gap_ids": [
+    "GAP-P0-SERVER-001",
+    "GAP-P0-EVIDENCE-001",
+    "GAP-P1-REVIEW-001"
+  ],
+  "candidate_authority_ref": "docs/status/CURRENT_STATE.json#/authority",
+  "scope": "new bounded immutable reference-only Device/Custom/Refresh/Logout diagnostic corpus",
+  "historical_51_pair_corpus_recovered": false,
+  "actual_reference_execution": "pending-exact-head-hosted-run",
+  "artifact_download_verification": "pending",
+  "independent_review": {
+    "protocol": "pending",
+    "security": "pending",
+    "sre": "pending"
+  },
+  "migration_impact": "none; official disposable oracle migration only; production schema chains unchanged",
+  "rollback": "remove diagnostic collector, fixture and workflow invocation together",
+  "limitations": [
+    "no paired Rust execution or equality normalization",
+    "raw token-bearing wire cannot be retained under existing policy; commitments are not replayable proof",
+    "JWT claims decoded only; signatures not independently verified",
+    "database evidence limited to declared users/user_device projections",
+    "no race, restart, production session middleware, native Rust catalog/migration/restore proof",
+    "no historical evidence replacement; no AccountsV5 activation"
+  ],
+  "claims": {
+    "compatibility_credit": false,
+    "sg2_complete": false,
+    "accounts_v5_enabled": false,
+    "gap_closed": false,
+    "production_ready": false,
+    "public_online": false,
+    "nakama_retired": false
+  }
+}
