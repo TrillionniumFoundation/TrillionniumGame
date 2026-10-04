@@ -713,6 +713,15 @@ printf 'diagnostic_total_refresh_tokens=%s\n' \
   "$(db_scalar 'SELECT count(*) FROM trnm_refresh_tokens')" \
   >> "$evidence/database-assertions.txt"
 
+# Separate disposable raw SQL5 fixture packet; never changes the live trnm DB.
+# Opted in only by the hosted profile workflow; no AccountsV5 runtime gate change.
+if [[ "${TRNM_ACCOUNTS_CAPTURE_DIAGNOSTIC:-0}" == 1 ]]; then
+  begin_stage accounts-capture-diagnostic
+  python3 scripts/accounts-capture-diagnostic.py capture --profile "$profile" \
+    --container "$container" --parent "$evidence_absolute" \
+    --output "$root/run/accounts-capture/$profile"
+fi
+
 begin_stage seal "$evidence/summary.json" "$evidence/database-assertions.txt"
 cat > "$evidence/summary.json" <<EOF
 {"schema":"trillionnium.server-live-evidence.v1","repository":"TrillionniumFoundation/TrillionniumGame","commit":"${candidate_sha}","tree":"${candidate_tree}","profile":"${profile}","check_config":true,"fresh_migration":true,"nakama_client_list_projection":true,"storage_timestamps":true,"storage_occ_precedence":true,"raw_version_conditions":true,"storage_jsonb_v3_projection":true,"storage_native_jsonb":true,"storage_v4_acl":true,"storage_v4_import":true,"storage_homogeneous_batches":true,"storage_homogeneous_app":true,"storage_write_tail_drain":true,"storage_native_jsonb_exact":true,"storage_native_insert_only":true,"storage_native_any":true,"any_native_main_cases":4,"any_known_duplicate_occurrences":3,"any_unknown_duplicate_occurrences":3,"any_aba_occurrences":2,"any_delete_reinsert_cases":1,"insert_only_committed_wait_cases":${storage_insert_only_committed_wait_cases},"insert_only_committed_no_wait_cases":${storage_insert_only_committed_no_wait_cases},"insert_only_uncommitted_delete_wait_cases":1,"late_exact_wait_cases":${storage_late_exact_wait_cases},"late_exact_no_wait_cases":${storage_late_exact_no_wait_cases},"storage_jsonb_native_write_failure":true,"schema_v3_extra_cases":41,"schema_v3_case_families":{"shapes":8,"illegal_legacy":9,"catalog_drift":6,"partial_resume":3,"metadata_validation":9,"opaque_history":6},"storage_jsonb_v3_cases":{"history":6,"opaque_success":4,"no_op":2,"resource":1,"native_input":3},"schema_version":${schema_version},"storage_writer_epoch":${storage_writer_epoch},"authoritative_migrations_count":${authoritative_migrations_count},"schema_upgrade":true,"health_ready":true,"unauthenticated_mutation_rejected":true,"http_bootstrap_commit_duplicate_conflict":true,"websocket_json_commit":true,"response_loss_exact_receipt_replay":true,"refresh_response_loss_exact_successor_replay":true,"refresh_changed_successor_revoked_family":true,"refresh_logout_concurrency_deadlock_free":true,"authenticated_drain":true,"process_restart_exact_receipt_replay":true,"entity_revision":3,"event_sequence":3,"command_receipts":3,"events":3,"outbox_intents":3,"production_pitr":false,"multi_node":false,"wire_compatible":false,"compatibility_credit":false,"accepted":false,"production_ready":false}

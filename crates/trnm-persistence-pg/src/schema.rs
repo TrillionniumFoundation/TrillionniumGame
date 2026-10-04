@@ -444,3 +444,7 @@ mod tests {
         assert!(validate_legacy_role(&"x".repeat(64)).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "schema_parts/account_capture_diagnostic.rs"]
+mod account_capture_diagnostic;

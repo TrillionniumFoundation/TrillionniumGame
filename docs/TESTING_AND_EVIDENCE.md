@@ -608,3 +608,9 @@ race/restart matrix, native Rust catalog/migration/restore evidence or permissio
 to activate AccountsV5. No historical gap, product gate or compatibility claim is
 closed. Rollback removes this diagnostic collector and its workflow invocation;
 production Rust behavior and authoritative schema chains are unchanged.
+
+### AccountsV5 disposable catalog diagnostics
+
+The hosted `trnm-server-live` PostgreSQL and CockroachDB jobs additionally run the explicitly ignored `schema::account_capture_diagnostic::accounts_capture_disposable_fixture` library test in newly created `trnm_accounts_capture_*` databases inside the same verified disposable container. The helper accepts no database URL and creates no credentials or roles. Ordinary StorageV4 migration publishes the actual candidate identity first; the byte-locked fifth SQL file is then applied solely as raw fixture DDL. This is not typed 4-to-5 migration execution. Metadata remains schema 4, the prior publisher is unchanged, default StorageV4 readiness rejects the extra account catalog, and the public AccountsV5 gate still rejects before catalog access.
+
+The separate `accounts-capture` artifact retains the complete source annex, per-profile raw native column/type/collation/relation/constraint/index/FK-trigger observations, baseline and altered catalog records, type/default/check/key/predicate/FK drift rejection, PostgreSQL trigger drift rejection, exact producer identity, pinned image identity, and a verified parent-container disposal receipt. A failed reader binding fails the lane even when raw observations were written. The source annex's StorageV4 token authorizes no AccountsV5 execution. The packet grants no schema-5 activation, typed migration, account parity, backup/restore, storage transfer/import or independent acceptance credit. Hosted execution and conflict-free review remain required; source tests alone establish none of these.

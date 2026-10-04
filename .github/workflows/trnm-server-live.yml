@@ -22,6 +22,8 @@ on:
       - 'scripts/check-trnm-server.py'
       - 'scripts/materialize-pinned-storage-upstream.py'
       - 'scripts/ci-trnm-server-live.sh'
+      - 'scripts/accounts-capture-diagnostic.py'
+      - 'tests/control_plane/test_accounts_capture_diagnostic.py'
       - 'scripts/print-server-live-failure.py'
       - 'scripts/trnm-server-live-client.py'
       - 'scripts/wait-postgres-final-ready.py'
@@ -80,7 +82,8 @@ jobs:
             scripts/wait-postgres-final-ready.py
           python3 -m unittest \
             tests.control_plane.test_postgres_final_ready \
-            tests.control_plane.test_storage_list_live_contract -v
+            tests.control_plane.test_storage_list_live_contract \
+            tests.control_plane.test_accounts_capture_diagnostic -v
           bash -n scripts/ci-trnm-server-live.sh
 
   live-profile:
@@ -116,7 +119,29 @@ jobs:
         env:
           TRNM_EVIDENCE_ROOT: run/server-live
           TRNM_RUN_ID: ${{ github.run_id }}-${{ matrix.profile }}
+          TRNM_ACCOUNTS_CAPTURE_DIAGNOSTIC: "1"
         run: bash scripts/ci-trnm-server-live.sh '${{ matrix.profile }}'
+      - name: Verify disposable Accounts catalog packet and container removal
+        if: always()
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 scripts/accounts-capture-diagnostic.py seal --profile "$PROFILE" \
+            --output "run/accounts-capture/$PROFILE" || status=$?
+          (cd "run/accounts-capture/$PROFILE" && sha256sum -c SHA256SUMS)
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "run/accounts-capture-$PROFILE.tar.gz" -C "run/accounts-capture/$PROFILE" .
+          sha256sum "run/accounts-capture-$PROFILE.tar.gz"
+          exit "$status"
+      - name: Retain separate raw Accounts catalog diagnostic
+        if: always()
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: accounts-capture-${{ matrix.profile }}-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/accounts-capture-${{ matrix.profile }}.tar.gz
+          mime_type: application/gzip
       - name: Seal exact-head evidence packet
         if: always()
         env:
