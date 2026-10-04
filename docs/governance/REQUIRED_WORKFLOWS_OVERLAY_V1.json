@@ -35,7 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "67b8140cf49ae8752477df42e3db4991e2f76532636aeb8c472bc11bf9750f78",
+  "overlay_sha256": "d0ab2bbbd2bb13d61109e354a36f62d441bc8d54607cd4577ba0d42e0231ee56",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -62,7 +62,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "7ea593921fd1b78e808cfc062ae04ae0066cea7a",
+      "git_blob_sha1": "852b9423830ed8a9cd19ba9294f968bfa84e70cb",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-immutable-oracle",
       "path": ".github/workflows/oracle-immutable-smoke.yml",

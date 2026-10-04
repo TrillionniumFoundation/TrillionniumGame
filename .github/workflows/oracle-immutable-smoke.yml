@@ -11,6 +11,8 @@ on:
       - 'tools/oracle/**'
       - 'scripts/oracle/**'
       - 'tests/oracle/**'
+      - 'scripts/upload-actions-artifact.py'
+      - '.github/actions/upload-evidence/**'
       - 'docs/COMPATIBILITY.md'
       - 'docs/TESTING_AND_EVIDENCE.md'
       - 'docs/DOCUMENTATION_AUTHORITY.json'
@@ -68,6 +70,9 @@ jobs:
             --facts run/immutable-oracle/runtime-facts.json \
             --output run/immutable-oracle/evidence.revalidated.json
           cmp run/immutable-oracle/evidence.json run/immutable-oracle/evidence.revalidated.json
+          python3 scripts/oracle/capture-auth-reference.py --verify \
+            --facts run/immutable-oracle/runtime-facts.json \
+            --output run/immutable-oracle/auth-reference
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \
             -czf run/immutable-oracle-${CANDIDATE_SHA}.tar.gz \
@@ -76,3 +81,28 @@ jobs:
             "$GITHUB_REPOSITORY" "$CANDIDATE_SHA" "$GITHUB_RUN_ID"
           sha256sum run/immutable-oracle-${CANDIDATE_SHA}.tar.gz
           find run/immutable-oracle -type f -print0 | sort -z | xargs -0 sha256sum
+      - name: Retain synthetic reference diagnostic packet
+        id: retain-reference
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: immutable-auth-reference-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/immutable-oracle-${{ env.CANDIDATE_SHA }}.tar.gz
+      - name: Record reference retention receipt
+        env:
+          ARTIFACT_ID: ${{ steps.retain-reference.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ steps.retain-reference.outputs.sha256 }}
+          ARTIFACT_BYTES: ${{ steps.retain-reference.outputs.size_bytes }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_RECEIPT'
+          import hashlib, os
+          from pathlib import Path
+          path = Path('run/immutable-oracle-' + os.environ['CANDIDATE_SHA'] + '.tar.gz')
+          assert os.environ['ARTIFACT_ID'].isascii() and os.environ['ARTIFACT_ID'].isdigit()
+          assert int(os.environ['ARTIFACT_ID']) > 0
+          assert os.environ['ARTIFACT_SHA256'] == hashlib.sha256(path.read_bytes()).hexdigest()
+          assert int(os.environ['ARTIFACT_BYTES']) == path.stat().st_size
+          print('diagnostic artifact_id=' + os.environ['ARTIFACT_ID'])
+          print('diagnostic sha256=' + os.environ['ARTIFACT_SHA256'])
+          print('compatibility_credit=false; download verification and independent acceptance pending')
+          PY_RECEIPT

@@ -1,0 +1,191 @@
+{
+  "schema": "trillionnium.immutable-auth-reference-fixture.v1",
+  "corpus_id": "immutable-auth-reference-15-v1",
+  "historical_51_pair_corpus": false,
+  "oracle_commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+  "oracle_tree": "f3c9cfc2726d5543da1564629170f35b98e3797d",
+  "source_blobs": {
+    "server/api.go": "61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb",
+    "server/api_authenticate.go": "1f938603160ef1dc7f6546926de5481622139dd2",
+    "server/core_authenticate.go": "5ec2f5c00ef875d11fc79865a30059d1147ac7e1",
+    "server/api_session.go": "1cef7b9d967e93745b19bdd048ff203fc212acea",
+    "server/core_session.go": "beee140dd6d402434811721f858e64c1c3c79e09"
+  },
+  "cases": [
+    {
+      "id": "device-missing",
+      "path": "/v2/account/authenticate/device?create=false",
+      "body": {
+        "id": "trnm-reference-device"
+      },
+      "auth": "server",
+      "status": 404,
+      "code": 5,
+      "message": "User account not found.",
+      "created": null
+    },
+    {
+      "id": "device-empty",
+      "path": "/v2/account/authenticate/device?create=false",
+      "body": {},
+      "auth": "server",
+      "status": 400,
+      "code": 3,
+      "message": "Device ID is required.",
+      "created": null
+    },
+    {
+      "id": "device-short",
+      "path": "/v2/account/authenticate/device?create=false",
+      "body": {
+        "id": "short"
+      },
+      "auth": "server",
+      "status": 400,
+      "code": 3,
+      "message": "Device ID invalid, must be 10-128 bytes.",
+      "created": null
+    },
+    {
+      "id": "device-create",
+      "path": "/v2/account/authenticate/device?create=true&username=trnm_reference_device",
+      "body": {
+        "id": "trnm-reference-device"
+      },
+      "auth": "server",
+      "status": 200,
+      "code": null,
+      "message": null,
+      "created": true
+    },
+    {
+      "id": "device-existing",
+      "path": "/v2/account/authenticate/device?create=false&username=ignored_reference_name",
+      "body": {
+        "id": "trnm-reference-device"
+      },
+      "auth": "server",
+      "status": 200,
+      "code": null,
+      "message": null,
+      "created": false
+    },
+    {
+      "id": "custom-missing",
+      "path": "/v2/account/authenticate/custom?create=false",
+      "body": {
+        "id": "trnm-reference-custom"
+      },
+      "auth": "server",
+      "status": 404,
+      "code": 5,
+      "message": "User account not found.",
+      "created": null
+    },
+    {
+      "id": "custom-empty",
+      "path": "/v2/account/authenticate/custom?create=false",
+      "body": {},
+      "auth": "server",
+      "status": 400,
+      "code": 3,
+      "message": "Custom ID is required.",
+      "created": null
+    },
+    {
+      "id": "custom-short",
+      "path": "/v2/account/authenticate/custom?create=false",
+      "body": {
+        "id": "short"
+      },
+      "auth": "server",
+      "status": 400,
+      "code": 3,
+      "message": "Custom ID invalid, must be 6-128 bytes.",
+      "created": null
+    },
+    {
+      "id": "custom-create",
+      "path": "/v2/account/authenticate/custom?create=true&username=trnm_reference_custom",
+      "body": {
+        "id": "trnm-reference-custom"
+      },
+      "auth": "server",
+      "status": 200,
+      "code": null,
+      "message": null,
+      "created": true
+    },
+    {
+      "id": "custom-existing",
+      "path": "/v2/account/authenticate/custom?create=false&username=ignored_reference_name",
+      "body": {
+        "id": "trnm-reference-custom"
+      },
+      "auth": "server",
+      "status": 200,
+      "code": null,
+      "message": null,
+      "created": false
+    },
+    {
+      "id": "refresh-empty",
+      "path": "/v2/session/refresh",
+      "body": {},
+      "auth": "server",
+      "status": 400,
+      "code": 3,
+      "message": "Refresh token is required.",
+      "created": null
+    },
+    {
+      "id": "refresh-invalid",
+      "path": "/v2/session/refresh",
+      "body": {
+        "token": "invalid"
+      },
+      "auth": "server",
+      "status": 401,
+      "code": 16,
+      "message": "Refresh token invalid or expired.",
+      "created": null
+    },
+    {
+      "id": "refresh-valid",
+      "path": "/v2/session/refresh",
+      "body": {
+        "token": "$custom-existing.refresh_token"
+      },
+      "auth": "server",
+      "status": 200,
+      "code": null,
+      "message": null,
+      "created": false
+    },
+    {
+      "id": "logout-valid",
+      "path": "/v2/session/logout",
+      "body": {
+        "token": "$refresh-valid.token",
+        "refresh_token": "$refresh-valid.refresh_token"
+      },
+      "auth": "$refresh-valid.token",
+      "status": 200,
+      "code": null,
+      "message": null,
+      "created": null
+    },
+    {
+      "id": "refresh-revoked",
+      "path": "/v2/session/refresh",
+      "body": {
+        "token": "$refresh-valid.refresh_token"
+      },
+      "auth": "server",
+      "status": 401,
+      "code": 16,
+      "message": "Refresh token invalid or expired.",
+      "created": null
+    }
+  ]
+}
