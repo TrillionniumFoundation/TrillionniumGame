@@ -99,3 +99,13 @@ a temporary main package, retaining its license header and marking that
 modification, and invokes the original generated gateway and vendored runtime.
 Source identities and the restricted method-error cases are recorded in
 contracts/http/nakama-routing-v1.json. No Go code is added to the Rust service.
+
+Nakama healthcheck form fallback study
+The independent Rust adapter studies the pinned grpc-gateway mux, Nakama health
+handler and Go 1.26.5 net/http, net/url and strconv behavior. The bounded
+nonprinting-rune ranges derive from Go strconv.IsPrint. Copyright The Go
+Authors; the BSD-style license is retained in third_party/go-sort/LICENSE.
+Nakama callback extraction retains the Apache-2.0 header and marks the receiver
+change in the diagnostic package. Exact source identities and byte-corpus
+checksums are registered in contracts/http/nakama-healthcheck-form-v1.json.
+No Go runtime or plugin loader is introduced into the target service.

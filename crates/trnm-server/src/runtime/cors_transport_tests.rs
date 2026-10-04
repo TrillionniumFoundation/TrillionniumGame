@@ -24,6 +24,16 @@ impl Repository for NoBusinessRepository {
 }
 
 fn wire(method: &str, target: &str, headers: &[(&str, &str)], draining: bool) -> String {
+    wire_with_body(method, target, headers, draining, &[])
+}
+
+fn wire_with_body(
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    draining: bool,
+    body: &[u8],
+) -> String {
     let values = BTreeMap::from([
         ("TRNM_SERVER_DATABASE_URL", "postgresql://unopened/fixture"),
         ("TRNM_SERVER_DATABASE_PROFILE", "postgresql"),
@@ -64,13 +74,16 @@ fn wire(method: &str, target: &str, headers: &[(&str, &str)], draining: bool) ->
         );
         handle_connection(&mut stream, &mut app, &config, &drain).unwrap();
     });
-    let mut request =
-        format!("{method} {target} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n");
+    let mut request = format!(
+        "{method} {target} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n",
+        body.len()
+    );
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
     }
     request.push_str("\r\n");
     client.write_all(request.as_bytes()).unwrap();
+    client.write_all(body).unwrap();
     let mut response = String::new();
     client.read_to_string(&mut response).unwrap();
     worker.join().unwrap();
@@ -252,4 +265,87 @@ fn installed_nakama_method_errors_match_reference_over_tcp() {
             assert_eq!(decoded["message"], case["message"]);
         }
     }
+}
+
+#[test]
+fn form_healthcheck_is_public_and_keeps_cors_wire_headers() {
+    for draining in [false, true] {
+        let response = wire_with_body(
+            "POST",
+            "/healthcheck?probe=live",
+            &[
+                ("Content-Type", "application/x-www-form-urlencoded"),
+                ("Origin", "https://client.example"),
+                ("Authorization", "Bearer invalid"),
+            ],
+            draining,
+            b"ignored=%FF&ignored=other",
+        );
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        if draining {
+            assert!(head.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+            assert!(head
+                .split("\r\n")
+                .any(|line| line == "Access-Control-Allow-Origin: *"));
+            continue;
+        }
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(head.contains("Content-Length: 2\r\n"));
+        assert!(head.contains("Grpc-Metadata-Content-Type: application/grpc\r\n"));
+        assert!(head
+            .split("\r\n")
+            .any(|line| line == "Access-Control-Allow-Origin: *"));
+        assert_eq!(body, "{}");
+    }
+}
+
+#[test]
+fn form_override_head_suppresses_only_after_valid_parse() {
+    let headers = [
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        ("X-HTTP-Method-Override", "HEAD"),
+    ];
+    let response = wire_with_body("POST", "/healthcheck", &headers, false, b"probe=live");
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 501 Not Implemented\r\n"));
+    assert!(head.contains("Content-Length: 42\r\n"));
+    assert_eq!(body, "");
+    let response = wire_with_body("POST", "/healthcheck", &headers, false, b"probe=%");
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["code"],
+        3
+    );
+}
+
+#[test]
+fn form_adapter_keeps_operator_auth_and_ingress_limits() {
+    let headers = [
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        ("X-HTTP-Method-Override", "GET"),
+    ];
+    for target in [
+        "/-/drain",
+        "/v1/authority/commit",
+        "/v1/authority/bootstrap",
+    ] {
+        let response = wire_with_body("POST", target, &headers, false, b"probe=live");
+        assert!(
+            response.starts_with("HTTP/1.1 401 Unauthorized\r\n"),
+            "{target}"
+        );
+    }
+    for target in ["/v2/storage", "/v2/account/authenticate/device"] {
+        let response = wire_with_body("POST", target, &headers, false, b"probe=live");
+        assert!(
+            response.starts_with("HTTP/1.1 501 Not Implemented\r\n"),
+            "{target}"
+        );
+        assert!(!response.ends_with("\r\n\r\n{}"));
+    }
+    let response = wire_with_body("POST", "/healthcheck/", &headers, false, b"probe=live");
+    assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    let oversized = format!("POST /healthcheck HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 5000\r\n\r\n{}", "x".repeat(5000));
+    assert!(super::super::http::parse_request_bytes(oversized.as_bytes(), 4096).is_err());
 }

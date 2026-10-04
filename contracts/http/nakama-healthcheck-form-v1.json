@@ -1,0 +1,92 @@
+{
+  "schema": "trillionnium.healthcheck-form.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "source": "crates/trnm-server/src/runtime/healthcheck_form.rs",
+  "fixtures": "contracts/http/nakama-healthcheck-form-fixtures-v1.json",
+  "upstream": {
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "go_version": "go1.26.5",
+    "source_sha256": {
+      "server/api.go": "583942e1fa47902a1b6cd231a08af3c938314cbe665e6a9765c3dc1959b6cae9",
+      "apigrpc/apigrpc.pb.gw.go": "590d0d37be149e158fe514e64ecef06955e5baa5b2b64c7cb4d5bb2b0e1c670d",
+      "vendor/github.com/grpc-ecosystem/grpc-gateway/v2/runtime/mux.go": "f970d6e68ec52945a9f106d25a5edbb15e3f39ecbd04e71cc8e4bb667f46912f"
+    },
+    "go_source_sha256": {
+      "src/net/http/request.go": "4a34a9e157a606a046d5b9f8f761c571c4762668fa351d92048515a595939c38",
+      "src/net/url/url.go": "17db8d6dc5764b64716060625495f308fd9179c8ab0310686e9ddfc9c5e7d6fa",
+      "src/strconv/quote.go": "6602960ec8777de9926c1d02fbf5cb0828d4aefa38083865f4af17b6892c09a2",
+      "src/strconv/isprint.go": "24114557c2b3cad7b80c8e71683831bfbe1c72eb99e8fd28a3a48eaf77705fb4",
+      "src/unicode/tables.go": "6a88d48746c4b2c471cc04ae40559694b734770212e6f5ea5f1962adb0c0bdb1"
+    }
+  },
+  "go_quote_corpus": {
+    "format": "lowercase hex of Go strconv.Quote(% plus first and second byte), LF per row; first/second ascending0..255",
+    "cases": 65536,
+    "bytes": 1180960,
+    "sha256": "14cc4644a8c496c98b171b5d7c93493b5bab262834c31e3aafc4ec8b0d3d111b"
+  },
+  "claims": {
+    "accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "full_replacement": false
+  },
+  "nonascii_method_mappings": [
+    {
+      "from": "\u017f",
+      "to": "S"
+    }
+  ],
+  "reference_runner": "scripts/capture-nakama-healthcheck-form-reference.py",
+  "reference_cases": 48,
+  "native_tests": [
+    "healthcheck_form_fallback_matches_pinned_gateway_cases",
+    "all_percent_error_byte_pairs_match_pinned_go_quote_digest",
+    "form_healthcheck_is_public_and_keeps_cors_wire_headers",
+    "form_override_head_suppresses_only_after_valid_parse",
+    "form_adapter_keeps_operator_auth_and_ingress_limits"
+  ],
+  "scope": {
+    "target": "/healthcheck",
+    "method": "POST",
+    "content_type": "application/x-www-form-urlencoded",
+    "media_type_exact_match": true,
+    "body_error_before_query_error": true,
+    "semicolon_overrides_escape_error_within_form": true,
+    "override_after_form_parse": true,
+    "authentication": "public",
+    "database_access": false,
+    "operator_or_storage_overrides_enabled": false,
+    "ingress_limits_unchanged": true,
+    "transport_drain_denial_unchanged": true
+  },
+  "gap_ids": [
+    "GAP-P0-SERVER-001"
+  ],
+  "task_ids": [
+    "TG-V3-023"
+  ],
+  "migration": "No DDL, schema selection, writer epoch, authentication authority, dependency or persistent settings changes.",
+  "rollback": "Revert the form adapter and bindings together; ordinary form POST health probes return their prior501 error.",
+  "limitations": [
+    "Source-derived generated gateway/handler execution is not the immutable image, interceptor or full wire qualification.",
+    "Only healthcheck receives form fallback and method override; storage, Legacy, operator and unknown routes remain unchanged.",
+    "Existing parser request/header byte limits, UTF-8/framing policy, read deadline and transport drain denial remain in force.",
+    "POST overridden to HEAD retains error Content-Length and suppresses wire body. Real source loopback with keepalive made a POST client wait until its1s read deadline; candidate retains Connection:close, so the read-error/lifecycle difference is explicit and unnormalized.",
+    "Configured response headers, compression, Date, neighboring paths and complete lifecycle behavior remain unaccepted.",
+    "The original private51-pair authentication corpus remains unresolved and is not replaced by these diagnostics."
+  ],
+  "fixtures_sha256": "e39153210d7b2b0db0d36c6b78b2f45e1f76d9d5d756f7d3b98af8c1465c3dfd",
+  "source_sha256": {
+    "crates/trnm-server/src/runtime/app.rs": "959b971dad77929b911526864c4a980ad10a48bca453fb8bb3c1af9d4d6260a1",
+    "crates/trnm-server/src/runtime/mod.rs": "57fd8e18930ef6477a3e4c8332dadf823917c056c8e22846ce52064ab7353c93",
+    "crates/trnm-server/src/runtime/cors_transport_tests.rs": "60b008deb708aa2e47edaa4aec1e53b3756be35a135bf8e397086b061a1dcdd1",
+    "crates/trnm-server/src/runtime/healthcheck_form.rs": "29c52a482381b3bf19d297111270bf55945ded99d2f0f4dacf4b464bab1f10f6"
+  },
+  "reference_source_sha256": {
+    "scripts/capture-nakama-healthcheck-form-reference.py": "f165ab27d0b7e9bc90c15767316363ac3babb7ac02f21ccf7245d7b6a904049e",
+    "tests/reference/nakama_healthcheck_form/main.go": "06e0f6da19e826d13a5220733af10eaee91e8e823ac945cc29bab411529ca791"
+  }
+}
