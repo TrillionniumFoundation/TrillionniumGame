@@ -3,6 +3,7 @@ pub(crate) mod auth;
 mod auth_runtime;
 pub(crate) mod codec;
 pub(crate) mod config;
+mod cors;
 pub(crate) mod error;
 pub(crate) mod grpc;
 pub(crate) mod http;

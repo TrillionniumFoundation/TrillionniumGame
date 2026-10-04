@@ -82,3 +82,11 @@ definitions from nakama-common api/api.proto. The Nakama Authors & Contributors
 retain their Apache-2.0 copyright. No upstream Go implementation or bcrypt
 primitive is compiled into this Custom adapter. Its source status grants no
 native, HTTP, cryptographic, compatibility or production acceptance.
+
+Nakama client CORS behavior study
+
+The bounded Rust CORS adapter studies Nakama v3.40.0 server/api.go and its
+vendored github.com/gorilla/handlers/cors.go. Gorilla handlers is Copyright
+(c) 2023 The Gorilla Authors under the BSD 3-Clause license retained in
+third_party/gorilla-handlers/LICENSE. Source identities and the restricted
+client-route profile are recorded in contracts/http/nakama-cors-v1.json.

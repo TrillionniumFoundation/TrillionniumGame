@@ -51,6 +51,8 @@ pub struct Response {
     www_authenticate: Option<&'static str>,
     nakama_healthcheck_headers: bool,
     suppress_body: bool,
+    cors_preflight: bool,
+    cors_headers: Option<super::cors::CorsHeaders>,
 }
 
 impl Response {
@@ -63,6 +65,8 @@ impl Response {
             www_authenticate: None,
             nakama_healthcheck_headers: false,
             suppress_body: false,
+            cors_preflight: false,
+            cors_headers: None,
         }
     }
 
@@ -75,6 +79,8 @@ impl Response {
             www_authenticate: None,
             nakama_healthcheck_headers: false,
             suppress_body: false,
+            cors_preflight: false,
+            cors_headers: None,
         }
     }
 
@@ -91,8 +97,25 @@ impl Response {
             .filter(|v| v.len() <= 256 && v.is_ascii() && !v.bytes().any(|b| b < 32 || b == 127));
         self
     }
+
+    pub(super) fn cors_preflight(status: u16, headers: Option<super::cors::CorsHeaders>) -> Self {
+        let mut response = Self::json(status, Vec::new());
+        response.cors_preflight = true;
+        response.suppress_body = true;
+        response.cors_headers = headers;
+        response
+    }
+
+    pub(super) fn with_cors(mut self, headers: Option<super::cors::CorsHeaders>) -> Self {
+        self.cors_headers = headers;
+        self
+    }
+
     pub fn write_to(&self, output: &mut impl Write) -> Result<(), ServerError> {
-        write!(
+        if self.cors_preflight {
+            write!(output, "HTTP/1.1 {} {}\r\nContent-Length: 0\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n", self.status, reason_phrase(self.status))?;
+        } else {
+            write!(
             output,
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: {}\r\nX-Content-Type-Options: nosniff\r\n",
             self.status,
@@ -105,6 +128,7 @@ impl Response {
                 "no-store"
             }
         )?;
+        }
         if self.nakama_healthcheck_headers {
             output.write_all(b"Vary: Accept-Encoding\r\n")?;
             if self.status == 200 {
@@ -113,6 +137,19 @@ impl Response {
         }
         if let Some(challenge) = self.www_authenticate {
             write!(output, "WWW-Authenticate: {challenge}\r\n")?;
+        }
+        if let Some(headers) = &self.cors_headers {
+            output.write_all(b"Access-Control-Allow-Origin: *\r\n")?;
+            if !headers.allowed_headers().is_empty() {
+                write!(
+                    output,
+                    "Access-Control-Allow-Headers: {}\r\n",
+                    headers.allowed_headers()
+                )?;
+            }
+            if let Some(method) = headers.allowed_method() {
+                write!(output, "Access-Control-Allow-Methods: {method}\r\n")?;
+            }
         }
         output.write_all(b"\r\n")?;
         if !self.suppress_body {

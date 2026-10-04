@@ -1,0 +1,383 @@
+{
+  "schema": "trillionnium.nakama-cors-fixtures.v1",
+  "upstream_commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+  "source_sha256": "0e40c03e8dd6acae5db5bacda60240bb4ae7683e1366a0fb7b4ba0c9a6c7e8ec",
+  "profile": "pinned-vendored-gorilla-CORS-with-Nakama-default-options",
+  "full_immutable_oracle": false,
+  "compatibility_credit": false,
+  "fixtures": [
+    {
+      "body": "",
+      "handler_calls": 1,
+      "headers": {},
+      "input": {
+        "name": "get-without-origin",
+        "method": "GET",
+        "headers": {}
+      },
+      "status": 202
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {},
+      "input": {
+        "name": "options-without-origin",
+        "method": "OPTIONS",
+        "headers": {}
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {},
+      "input": {
+        "name": "options-empty-origin",
+        "method": "OPTIONS",
+        "headers": {
+          "Origin": ""
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 1,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "get-origin",
+        "method": "GET",
+        "headers": {
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 202
+    },
+    {
+      "body": "",
+      "handler_calls": 1,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "post-origin",
+        "method": "POST",
+        "headers": {
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 202
+    },
+    {
+      "body": "",
+      "handler_calls": 1,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "origin-null",
+        "method": "GET",
+        "headers": {
+          "Origin": "null"
+        }
+      },
+      "status": 202
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {},
+      "input": {
+        "name": "options-missing-method",
+        "method": "OPTIONS",
+        "headers": {
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 400
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {},
+      "input": {
+        "name": "preflight-method-empty",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Method": "",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 405
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-method-GET",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Method": "GET",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-method-HEAD",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Method": "HEAD",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-method-POST",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Method": "POST",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Methods": [
+          "PUT"
+        ],
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-method-PUT",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Method": "PUT",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Methods": [
+          "DELETE"
+        ],
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-method-DELETE",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Method": "DELETE",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {},
+      "input": {
+        "name": "preflight-method-PATCH",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Method": "PATCH",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 405
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {},
+      "input": {
+        "name": "preflight-method-get",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Method": "get",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 405
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Headers": [
+          "Authorization,Content-Type,User-Agent"
+        ],
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-headers-allowed",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Headers": "authorization, content-type, User-Agent",
+          "Access-Control-Request-Method": "GET",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-headers-defaults",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Headers": "Accept,Accept-Language,Content-Language,Origin",
+          "Access-Control-Request-Method": "GET",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Headers": [
+          "Authorization,Authorization"
+        ],
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-headers-duplicates",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Headers": "authorization,Accept,authorization",
+          "Access-Control-Request-Method": "GET",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {},
+      "input": {
+        "name": "preflight-headers-unknown",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Headers": "X-Client-Example",
+          "Access-Control-Request-Method": "GET",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 403
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-headers-empty-list",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Headers": " , , ",
+          "Access-Control-Request-Method": "GET",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 0,
+      "headers": {
+        "Access-Control-Allow-Headers": [
+          "Content-Type,Authorization"
+        ],
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "preflight-headers-mixed",
+        "method": "OPTIONS",
+        "headers": {
+          "Access-Control-Request-Headers": "content-type, Accept-Language,authorization",
+          "Access-Control-Request-Method": "GET",
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 200
+    },
+    {
+      "body": "",
+      "handler_calls": 1,
+      "headers": {
+        "Access-Control-Allow-Origin": [
+          "*"
+        ]
+      },
+      "input": {
+        "name": "ordinary-unsupported-method",
+        "method": "PATCH",
+        "headers": {
+          "Origin": "https://client.example"
+        }
+      },
+      "status": 202
+    }
+  ]
+}

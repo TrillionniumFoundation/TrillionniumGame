@@ -1,0 +1,109 @@
+{
+  "schema": "trillionnium.nakama-client-cors.v1",
+  "project_id": "trillionnium-game",
+  "status": "source-candidate",
+  "upstream": {
+    "repository": "heroiclabs/nakama",
+    "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+    "server_path": "server/api.go",
+    "server_sha256": "583942e1fa47902a1b6cd231a08af3c938314cbe665e6a9765c3dc1959b6cae9",
+    "middleware_path": "vendor/github.com/gorilla/handlers/cors.go",
+    "middleware_sha256": "0e40c03e8dd6acae5db5bacda60240bb4ae7683e1366a0fb7b4ba0c9a6c7e8ec",
+    "license": "third_party/gorilla-handlers/LICENSE"
+  },
+  "source": "crates/trnm-server/src/runtime/cors.rs",
+  "transport_tests": "crates/trnm-server/src/runtime/cors_transport_tests.rs",
+  "fixtures": "contracts/http/nakama-cors-fixtures-v1.json",
+  "policy": {
+    "origins": [
+      "*"
+    ],
+    "credentials": false,
+    "allowed_methods": [
+      "GET",
+      "HEAD",
+      "POST",
+      "PUT",
+      "DELETE"
+    ],
+    "allowed_headers": [
+      "Accept",
+      "Accept-Language",
+      "Content-Language",
+      "Origin",
+      "Authorization",
+      "Content-Type",
+      "User-Agent"
+    ],
+    "reflected_nondefault_headers": [
+      "Authorization",
+      "Content-Type",
+      "User-Agent"
+    ],
+    "max_request_headers_bytes": 32768,
+    "ordinary_method_or_auth_dispatch_changed": false,
+    "operator_routes_included": false,
+    "unknown_routes_included": false,
+    "request_parser_bypassed": false,
+    "preflight_invokes_application_or_repository": false
+  },
+  "client_targets": [
+    "/healthcheck",
+    "/v2/storage",
+    "/v2/storage/delete",
+    "/v2/storage/{collection}",
+    "/v2/storage/{collection}/{user_id}",
+    "/v2/account/authenticate/device",
+    "/v2/account/authenticate/custom",
+    "/v2/account/session/refresh",
+    "/v2/session/logout"
+  ],
+  "excluded_targets": [
+    "/",
+    "/healthz",
+    "/readyz",
+    "/metrics",
+    "/-/drain",
+    "/v1/**",
+    "/ws",
+    "unimplemented /v2 routes"
+  ],
+  "native_tests": [
+    "pinned_cors_reference_fixtures_match_all_twenty_two_cases",
+    "client_route_allowlist_excludes_every_operator_and_unimplemented_route",
+    "nakama_client_preflight_is_public_and_has_no_response_body",
+    "preflight_covers_only_installed_nakama_client_routes_and_queries",
+    "cors_does_not_change_operator_control_or_unimplemented_route_responses",
+    "cors_preserves_actual_authentication_and_method_rejection",
+    "cors_preflight_does_not_admit_mutations_during_drain"
+  ],
+  "source_reference_cases": 22,
+  "source_reference_results_sha256": "51f64af41e14eb042412d2c734366a3c87ba95b4a6a2237d0bf3c9660f14c1b9",
+  "gap_ids": [
+    "GAP-P0-SERVER-001"
+  ],
+  "task_ids": [
+    "TG-V3-023"
+  ],
+  "migration": "No DDL, schema/default/writer, auth authority, credentials, dependency or persistent settings changes.",
+  "rollback": "Revert the bounded adapter and matching source bindings; browser preflight returns its earlier method error while underlying auth and operator routes remain unchanged.",
+  "limitations": [
+    "Source-derived middleware execution is not a full immutable Nakama process or accepted differential.",
+    "Only currently installed Nakama client targets receive CORS; operator and unimplemented routes intentionally retain their prior behavior.",
+    "HTTP parse/framing failures occur before this adapter; whole upstream routing, encoded paths and lifecycle equivalence remain open.",
+    "Connection: close, X-Content-Type-Options: nosniff and absent Date remain transport residuals.",
+    "No credentials, exposed headers, custom origin configuration or future route authority is enabled."
+  ],
+  "claims": {
+    "accepted": false,
+    "gap_closed": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "full_replacement": false
+  },
+  "source_sha256": {
+    "crates/trnm-server/src/runtime/cors.rs": "c4f821aec5a0c69b3abc3af8244f7346bbf9ec0dfb9689f3c64f198c0d3d6898",
+    "crates/trnm-server/src/runtime/cors_transport_tests.rs": "07f6a2ab3b6bc4542f4afc20662263489d96ce0e79271b307f705b7bc8a2a873"
+  },
+  "fixtures_sha256": "007398ac3df52313b4809deca0d6b6d41764c5be7659895e89d61a6621210b49"
+}

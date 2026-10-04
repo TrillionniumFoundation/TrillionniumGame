@@ -18,6 +18,8 @@ EXPECTED_RUNTIME_FILES = {
     "auth_runtime.rs",
     "codec.rs",
     "config.rs",
+    "cors.rs",
+    "cors_transport_tests.rs",
     "error.rs",
     "grpc.rs",
     "http.rs",
