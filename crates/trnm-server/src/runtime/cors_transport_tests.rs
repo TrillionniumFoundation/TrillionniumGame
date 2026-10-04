@@ -349,3 +349,78 @@ fn form_adapter_keeps_operator_auth_and_ingress_limits() {
     let oversized = format!("POST /healthcheck HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 5000\r\n\r\n{}", "x".repeat(5000));
     assert!(super::super::http::parse_request_bytes(oversized.as_bytes(), 4096).is_err());
 }
+
+#[test]
+fn public_root_probe_matches_nine_original_router_cases() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../contracts/http/nakama-root-probe-fixtures-v1.json"
+    ))
+    .unwrap();
+    let rows = fixture["fixtures"].as_array().unwrap();
+    assert_eq!(rows.len(), 9);
+    for row in rows {
+        let headers = row["headers"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str().unwrap()))
+            .collect::<Vec<_>>();
+        let response = wire(
+            row["method"].as_str().unwrap(),
+            row["target"].as_str().unwrap(),
+            &headers,
+            false,
+        );
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        let status = head
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        assert_eq!(
+            status,
+            row["status"].as_u64().unwrap() as u16,
+            "{}",
+            row["id"]
+        );
+        assert_eq!(body, row["body"].as_str().unwrap());
+        for (name, values) in row["asserted_headers"].as_object().unwrap() {
+            assert!(
+                head.split("\r\n")
+                    .any(|line| line == format!("{name}: {}", values[0].as_str().unwrap())),
+                "{}: {name}",
+                row["id"]
+            );
+        }
+        for name in row["absent_headers"].as_array().unwrap() {
+            assert!(!head
+                .split("\r\n")
+                .any(|line| line.starts_with(&format!("{}:", name.as_str().unwrap()))));
+        }
+    }
+}
+
+#[test]
+fn root_probe_does_not_enable_mutations_or_bypass_ingress_limits() {
+    let headers = [("Origin", "https://client.example")];
+    let response = wire("GET", "/?probe=draining", &headers, true);
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    assert_eq!(response.split_once("\r\n\r\n").unwrap().1, "");
+    let response = wire("POST", "/", &headers, true);
+    assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+    for (method, target) in [
+        ("POST", "/-/drain"),
+        ("POST", "/v1/authority/commit"),
+        ("POST", "/v1/authority/bootstrap"),
+    ] {
+        let response = wire(method, target, &headers, false);
+        assert!(response.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(!response.contains("Access-Control-Allow-Origin"));
+    }
+    let oversized = format!(
+        "GET /?{} HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        "x".repeat(5000)
+    );
+    assert!(super::super::http::parse_request_bytes(oversized.as_bytes(), 4096).is_err());
+}

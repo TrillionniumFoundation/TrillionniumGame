@@ -109,3 +109,12 @@ Nakama callback extraction retains the Apache-2.0 header and marks the receiver
 change in the diagnostic package. Exact source identities and byte-corpus
 checksums are registered in contracts/http/nakama-healthcheck-form-v1.json.
 No Go runtime or plugin loader is introduced into the target service.
+
+Nakama public root probe study
+The independent Rust empty-root adapter studies the pinned Nakama server/api.go
+special GET registration and its original Gorilla CORS wrapper. The loopback
+reference runner retains Nakama's Apache-2.0 source header and uses the original
+vendored Gorilla implementation; existing Gorilla attribution remains above.
+Source identities and the bounded header/route profile are registered in
+contracts/http/nakama-root-probe-v1.json. Raw Date evidence is retained, and no
+Go implementation is introduced into the target process.

@@ -31,8 +31,10 @@ pub(super) enum Decision {
 
 fn client_target(target: &str) -> bool {
     let path = target.split_once('?').map_or(target, |(path, _)| path);
-    matches!(path, "/healthcheck" | "/v2/storage" | "/v2/storage/delete")
-        || legacy_auth_http_route("POST", target).is_some()
+    matches!(
+        path,
+        "/" | "/healthcheck" | "/v2/storage" | "/v2/storage/delete"
+    ) || legacy_auth_http_route("POST", target).is_some()
         || storage_list_api::is_list_target(target)
 }
 
@@ -182,6 +184,7 @@ mod tests {
     #[test]
     fn client_route_allowlist_excludes_every_operator_and_unimplemented_route() {
         for target in [
+            "/",
             "/healthcheck",
             "/v2/storage",
             "/v2/storage/delete",
@@ -199,7 +202,6 @@ mod tests {
             );
         }
         for target in [
-            "/",
             "/healthcheck/",
             "/healthz",
             "/readyz",

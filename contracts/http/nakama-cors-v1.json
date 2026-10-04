@@ -48,6 +48,7 @@
     "preflight_invokes_application_or_repository": false
   },
   "client_targets": [
+    "/",
     "/healthcheck",
     "/v2/storage",
     "/v2/storage/delete",
@@ -59,7 +60,6 @@
     "/v2/session/logout"
   ],
   "excluded_targets": [
-    "/",
     "/healthz",
     "/readyz",
     "/metrics",
@@ -102,8 +102,8 @@
     "full_replacement": false
   },
   "source_sha256": {
-    "crates/trnm-server/src/runtime/cors.rs": "c4f821aec5a0c69b3abc3af8244f7346bbf9ec0dfb9689f3c64f198c0d3d6898",
-    "crates/trnm-server/src/runtime/cors_transport_tests.rs": "60b008deb708aa2e47edaa4aec1e53b3756be35a135bf8e397086b061a1dcdd1"
+    "crates/trnm-server/src/runtime/cors.rs": "21ccba309b9268a298315ac8be66861436cbb415ca4bcab2f84c078f767d73f8",
+    "crates/trnm-server/src/runtime/cors_transport_tests.rs": "40398b88bdcabaaa9f9aaa2e18ab34d6297f0a406cbbed2da4c8ab3cb3e0b003"
   },
   "fixtures_sha256": "007398ac3df52313b4809deca0d6b6d41764c5be7659895e89d61a6621210b49"
 }

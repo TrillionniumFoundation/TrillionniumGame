@@ -370,8 +370,22 @@ class SelectedLegacyInterfaceTest(unittest.TestCase):
         wire = (ROOT / 'crates/trnm-server/src/runtime/legacy_http_api.rs').read_text()
         interface = MODULE.source_interface(config, app, list_integrated=True, legacy_http_source=wire)
         MODULE.check_documented_interface(interface, (ROOT / 'docs/DEVELOPMENT.md').read_text())
-        self.assertEqual(len(interface['routes']), 19)
+        self.assertEqual(len(interface['routes']), 20)
+        self.assertIn(('GET', '/'), interface['routes'])
         self.assertIn(('GET', '/healthcheck'), interface['routes'])
+
+    def test_root_document_row_is_required_and_empty_route_is_rejected(self):
+        interface = MODULE.source_interface(
+            (ROOT / 'crates/trnm-server/src/runtime/config.rs').read_text(),
+            (ROOT / 'crates/trnm-server/src/runtime/app.rs').read_text(), list_integrated=True,
+            legacy_http_source=(ROOT / 'crates/trnm-server/src/runtime/legacy_http_api.rs').read_text())
+        document = (ROOT / 'docs/DEVELOPMENT.md').read_text()
+        row = next(line for line in document.splitlines() if line.startswith('| `GET` | `/` |'))
+        MODULE.check_documented_interface(interface, document)
+        for changed in (document.replace(row, ''), document.replace(row, row.replace('`/`', '``')),
+                        document.replace(row, row + '\n' + row)):
+            with self.assertRaises(MODULE.ValidationError):
+                MODULE.check_documented_interface(interface, changed)
 
     def test_legacy_unused_recognizer_wrong_method_query_unknown_or_duplicate_path_rejects(self):
         config = (ROOT / 'crates/trnm-server/src/runtime/config.rs').read_text()

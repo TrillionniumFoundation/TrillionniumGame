@@ -98,6 +98,12 @@ impl Response {
         self
     }
 
+    pub(super) fn public_root_probe() -> Self {
+        // Root and preflight share empty-body framing without Content-Type,
+        // Cache-Control or Vary. CORS is still applied only by the middleware.
+        Self::cors_preflight(200, None)
+    }
+
     pub(super) fn cors_preflight(status: u16, headers: Option<super::cors::CorsHeaders>) -> Self {
         let mut response = Self::json(status, Vec::new());
         response.cors_preflight = true;
