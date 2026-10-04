@@ -48,7 +48,7 @@ env:
   CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   COCKROACH_IMAGE: cockroachdb/cockroach@sha256:c0838fd4db940b7dedb590211ee3cd229b75d3b49ce466760454a282b98641ae
-  RUST_TOOLCHAIN: 1.85.1
+  RUST_TOOLCHAIN: 1.99.0
 
 jobs:
   source-and-unit:

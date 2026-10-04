@@ -33,7 +33,7 @@
     "tonic_prost_build": "0.14.5",
     "prost": "0.14.3",
     "protoc_bin_vendored": "3.2.0",
-    "rust": "1.85.1"
+    "rust": "1.99.0"
   },
   "assertions": [
     "generated Rust client and server bindings compile from the checked-in proto subset",

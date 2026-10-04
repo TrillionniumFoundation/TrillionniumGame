@@ -50,8 +50,8 @@ jobs:
       - name: Install exact Rust
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal
-          rustup override set 1.85.1
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup override set 1.99.0
       - name: Inject client reset and recover by exact receipt
         env:
           TRNM_PG_RESPONSE_LOSS_ROOT: run/pg-server-response-loss

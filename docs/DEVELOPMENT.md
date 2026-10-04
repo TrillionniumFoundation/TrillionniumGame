@@ -35,7 +35,7 @@ The only default server binary is `crates/trnm-server`::`trnm-server`. The datab
 
 ## 3. Toolchains
 
-The repository pins Rust through `rust-toolchain.toml` and Cargo lockfiles. CI currently uses Rust `1.85.1`. Go toolchain behavior is governed by `runtime/go.mod`; Python control scripts target the runner Python available on Ubuntu 24.04 and use the standard library unless a reviewed dependency is explicitly introduced.
+The repository pins Rust through `rust-toolchain.toml` and Cargo lockfiles. CI builds with Rust `1.99.0`; the root MSRV remains `1.85.1`, and the two isolated JWT gate MSRVs remain `1.85`. Previous compiler results remain historical; this compiler change requires fresh exact-head and prospective-merge execution, including both standalone JWT gates. Go toolchain behavior is governed by `runtime/go.mod`; Python control scripts target the runner Python available on Ubuntu 24.04 and use the standard library unless a reviewed dependency is explicitly introduced.
 
 Containerized database evidence uses immutable image digests from `config/database-test-images.json`. Tags alone are not evidence identities.
 
@@ -52,6 +52,12 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 `engineering_readiness.py` is a read-only inventory and documentation regression. Exit zero means that its narrow source/document shape agrees. It does not validate gap closure, grant design approval or replace retained-evidence admission. Its output deliberately separates recorded gap statuses, document presence, proposed depth and unassessed independent acceptance. It reads no live credentials and performs no network calls or status writes.
+
+Rust 1.99 deprecates `Atomic::fetch_update`, but its `try_update` replacement
+requires Rust 1.95. The three bounded atomic allocation sites retain the
+MSRV-compatible API with local deprecation annotations; their orderings, limits,
+exhaustion checks and existing concurrency tests are unchanged. Strict Clippy
+remains enabled everywhere else.
 
 Run the root Rust workspace:
 

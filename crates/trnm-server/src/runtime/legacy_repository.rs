@@ -89,6 +89,13 @@ impl LegacyDeviceRepository for PgLegacyAuthRepository<'_> {
 }
 /// Bounded native diagnostic observation on the same request's actual adapter.
 /// It is not a second lookup, retry or a claim that an unobserved call had no effect.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Diagnostic observation is exercised by the test-only native seam"
+    )
+)]
 pub trait LegacyNativeFailureObservation {
     fn last_legacy_native_failure(&self) -> Option<NakamaAccountError>;
 }

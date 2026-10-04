@@ -43,6 +43,8 @@ struct ConnectionRegistry {
 
 impl ConnectionRegistry {
     fn register(&self, stream: &TcpStream) -> Result<u64, ServerError> {
+        // `try_update` requires Rust 1.95; preserve the declared Rust 1.85 MSRV.
+        #[allow(deprecated, reason = "fetch_update is the MSRV-compatible atomic API")]
         let previous = self
             .next_id
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {

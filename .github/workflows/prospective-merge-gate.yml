@@ -118,9 +118,9 @@ jobs:
       - name: Install exact Rust
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal \
+          rustup toolchain install 1.99.0 --profile minimal \
             --component rustfmt --component clippy
-          rustup override set 1.85.1
+          rustup override set 1.99.0
           rustc --version --verbose
           cargo --version --verbose
       - name: Validate package coverage
@@ -185,9 +185,9 @@ jobs:
       - name: Install exact Rust
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal \
+          rustup toolchain install 1.99.0 --profile minimal \
             --component rustfmt --component clippy
-          rustup override set 1.85.1
+          rustup override set 1.99.0
       - name: Format
         run: cargo fmt --manifest-path '${{ matrix.manifest }}' -- --check
       - name: Test
@@ -284,8 +284,8 @@ jobs:
       - name: Install exact Rust
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal
-          rustup override set 1.85.1
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup override set 1.99.0
           rustc --version --verbose
           cargo --version --verbose
           docker version

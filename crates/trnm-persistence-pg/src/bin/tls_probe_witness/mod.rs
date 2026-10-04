@@ -107,7 +107,7 @@ fn observe_until(address: SocketAddr, pem: &[u8], deadline: Instant) -> Observat
     if stream.read_exact(&mut reply).is_err() {
         return Observation::TransportFailure;
     }
-    if reply != [b'S'] {
+    if reply != *b"S" {
         return Observation::NegotiationFailure;
     }
     let configured = match connector.configure() {

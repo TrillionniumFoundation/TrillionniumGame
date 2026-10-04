@@ -80,8 +80,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustup override set 1.85.1
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.99.0
       - name: Format standalone codec
         run: cargo fmt --manifest-path crates/trnm-realtime-wire/Cargo.toml -- --check
       - name: Test standalone codec

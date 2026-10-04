@@ -28,7 +28,7 @@ env:
   CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   POSTGRES_IMAGE: postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
-  RUST_TOOLCHAIN: 1.85.1
+  RUST_TOOLCHAIN: 1.99.0
 
 jobs:
   source-and-unit:

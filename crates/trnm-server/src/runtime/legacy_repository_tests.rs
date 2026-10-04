@@ -16,6 +16,39 @@ fn failure() -> AccountFailure {
         unknown_commit: true,
     }
 }
+
+#[test]
+fn retry_wrapper_observes_native_failure_once_without_retry_or_reinterpretation() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct Observation {
+        calls: Rc<Cell<usize>>,
+        outcome: Option<NakamaAccountError>,
+    }
+    impl LegacyNativeFailureObservation for Observation {
+        fn last_legacy_native_failure(&self) -> Option<NakamaAccountError> {
+            self.calls.set(self.calls.get() + 1);
+            self.outcome
+        }
+    }
+
+    for outcome in [None, Some(NakamaAccountError::Internal(failure()))] {
+        let calls = Rc::new(Cell::new(0));
+        let repository = super::super::retry::RetryingRepository::new(
+            Observation {
+                calls: Rc::clone(&calls),
+                outcome,
+            },
+            super::super::retry::RetryPolicy::candidate_default(),
+        )
+        .unwrap();
+        let observer: &dyn LegacyNativeFailureObservation = &repository;
+        assert_eq!(observer.last_legacy_native_failure(), outcome);
+        assert_eq!(calls.get(), 1);
+    }
+}
+
 #[test]
 fn native_repository_errors_preserve_unavailable_5_7_6_and_internal_13() {
     for (native, expected) in [

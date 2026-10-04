@@ -149,6 +149,8 @@ impl Drop for PendingConnectSlot {
     }
 }
 
+// `try_update` requires Rust 1.95; preserve the declared Rust 1.85 MSRV.
+#[allow(deprecated, reason = "fetch_update is the MSRV-compatible atomic API")]
 fn reserve_connect_slot() -> Result<PendingConnectSlot, RemoteMacError> {
     PENDING_CONNECTS
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {

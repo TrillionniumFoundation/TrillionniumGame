@@ -28,7 +28,7 @@ concurrency:
 env:
   CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  RUST_TOOLCHAIN: 1.85.1
+  RUST_TOOLCHAIN: 1.99.0
 
 jobs:
   source-and-unit:
