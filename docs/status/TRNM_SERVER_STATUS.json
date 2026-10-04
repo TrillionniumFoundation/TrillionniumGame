@@ -775,7 +775,7 @@
       "crates/trnm-server/src/runtime/legacy_config.rs": "6f219b7fc1f336dd8ecd1a4491d92b59c2dd1dcb9a6d0db653429255a906f77a",
       "crates/trnm-server/src/runtime/mod.rs": "57fd8e18930ef6477a3e4c8332dadf823917c056c8e22846ce52064ab7353c93",
       "crates/trnm-server/src/runtime/schema.rs": "4bde20f0c86c27b78089126a4794edbbf1b258335f5a31fe56eeb8f1a740b347",
-      "crates/trnm-server/src/runtime/server.rs": "36e7e7b67cf6bd2574b99f880dd8e7cfacbeddeb495c98a1b25d5711f95d0f45",
+      "crates/trnm-server/src/runtime/server.rs": "21f8ebe33bb8c7204068f03d43d157169b2956d302082ec331aa6353e8532e85",
       "crates/trnm-server/src/runtime/app.rs": "09db9b09bb379909b654a730174e68fd118e45da6067b0be80c40afba766e41b",
       "crates/trnm-server/src/runtime/http.rs": "72e90693b9a672fd77209c80e46625312fef75b086db8ec5638c8f7785468645",
       "crates/trnm-server/src/runtime/pool.rs": "c7058fe9c77228bc2551fd6c02c2f2bd5132f9706d45fbdf40d5b3969be67ba0",

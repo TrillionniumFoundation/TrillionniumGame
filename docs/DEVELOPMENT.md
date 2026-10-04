@@ -53,6 +53,12 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 `engineering_readiness.py` is a read-only inventory and documentation regression. Exit zero means that its narrow source/document shape agrees. It does not validate gap closure, grant design approval or replace retained-evidence admission. Its output deliberately separates recorded gap statuses, document presence, proposed depth and unassessed independent acceptance. It reads no live credentials and performs no network calls or status writes.
 
+Rust 1.99 deprecates `Atomic::fetch_update`, but its `try_update` replacement
+requires Rust 1.95. The three bounded atomic allocation sites retain the
+MSRV-compatible API with local deprecation annotations; their orderings, limits,
+exhaustion checks and existing concurrency tests are unchanged. Strict Clippy
+remains enabled everywhere else.
+
 Run the root Rust workspace:
 
 ```bash
