@@ -40,6 +40,26 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_admission_is_explicit_and_does_not_open_public_constructors() {
+        let admission = crate::SchemaAdmission::diagnostic(None);
+        let target = crate::AuthoritativeSchemaTarget::NakamaAccountsV5;
+        assert_eq!(admission.target(), target);
+        let invalid_policy = PgPoolConfig { max_size: 0, ..PgPoolConfig::default() };
+        for profile in [DatabaseProfile::PostgreSql, DatabaseProfile::CockroachDb] {
+            assert_eq!(PgPool::connect_plain_admitted("", profile, invalid_policy, admission)
+                .err().unwrap().reason(), "database_pool_policy_invalid");
+            assert_eq!(PgPool::connect_tls_admitted("", profile, invalid_policy,
+                &PgTlsConfig::default(), admission).err().unwrap().reason(),
+                "database_pool_policy_invalid");
+            assert_eq!(crate::PgRepository::connect_for_target("", profile, target)
+                .err().unwrap().reason(), "schema5_native_catalog_capture_pending");
+            assert_eq!(crate::SchemaAdmission::production(target).unwrap_err().reason(),
+                "schema5_native_catalog_capture_pending");
+        }
+        selected_accounts_pool_gate_precedes_configuration_and_connectors();
+    }
+
+    #[test]
     fn default_pool_policy_is_bounded_and_valid() {
         let policy = PgPoolConfig::default().validate().unwrap();
         assert_eq!(policy.max_size, 8);

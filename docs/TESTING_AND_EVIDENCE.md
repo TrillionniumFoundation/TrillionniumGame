@@ -650,3 +650,32 @@ pinned image identity, complete case inventory and parent-container disposal.
 The ordinary source annex still issues only StorageV4 authority. Internal typed
 execution grants no public migration, startup, restore, account parity, activation
 or independent acceptance credit; those flags remain false.
+
+
+The AccountsV5 native-auth diagnostic seam is a locally checked source candidate.
+The persistence lib-test composes the actual canonical server runtime files in
+this repository, with already locked base64/prost-types and explicit
+serde_json/raw_value dev dependencies;
+it does not copy a server, create a Cargo activation feature or install a new
+production binary. An opaque admission has private fields and a production
+issuer that retains the closed catalog gate. Only cfg(test) can mint the
+crate-private diagnostic admission. The shared pool, lease acquisition,
+canonical startup/import verification and native Device/Custom readiness
+bodies carry that immutable admission. Public wrappers remain closed even
+inside the diagnostic test binary, and mismatched selected targets fail before
+TLS material, database access or listener binding. Normal storage business
+operations retain their existing production gates; this seam does not qualify
+schema5 storage transfer or expand the diagnostic scope to storage parity.
+
+Pinned Rust 1.85.1 local two-crate check, strict Clippy and lib tests passed:
+persistence reported 480 passed/2 ignored and server 308 passed. Three
+compile-fail admission doctests passed. These finite counts include the
+canonical runtime tests composed in the persistence harness; environment-gated
+tests without a live fixture grant no database credit. Full workspace/remote
+qualification is not implied. The finite
+source contract binds the complete local Cargo dependency source closure,
+compile-time fixtures, generated-schema inputs and locked dependencies.
+Source mutation checks are not a Rust compiler, a cryptographic review or
+live execution. Actual auth15 TCP/native pairing, signature verification,
+independent review, startup, restore, production and compatibility qualification
+remain pending; no public activation or oracle-parity claim is granted.

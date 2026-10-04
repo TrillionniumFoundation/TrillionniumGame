@@ -77,11 +77,32 @@ impl ConnectionRegistry {
     }
 }
 
-pub fn serve<R>(config: &ServerConfig, mut repository: R) -> Result<(), ServerError>
+pub fn serve<R>(config: &ServerConfig, repository: R) -> Result<(), ServerError>
 where
     R: Repository + BudgetedRepository + InflightCancellation + Clone + Send + 'static,
 {
     require_installed_http_authority(&config.auth_authority)?;
+    config.schema_target.require_capture_ready()?;
+    serve_admitted(
+        config,
+        repository,
+        trnm_persistence_pg::SchemaAdmission::production(config.schema_target)?,
+    )
+}
+
+pub(crate) fn serve_admitted<R>(
+    config: &ServerConfig,
+    mut repository: R,
+    admission: trnm_persistence_pg::SchemaAdmission,
+) -> Result<(), ServerError>
+where
+    R: Repository + BudgetedRepository + InflightCancellation + Clone + Send + 'static,
+{
+    if admission.target() != config.schema_target {
+        return Err(ServerError::Configuration(
+            "schema_admission_target_mismatch",
+        ));
+    }
     if matches!(
         config.auth_authority,
         super::config::AuthAuthorityConfig::NakamaLegacy(_)
@@ -91,7 +112,6 @@ where
             "legacy_auth_requires_accounts_v5_target",
         ));
     }
-    config.schema_target.require_capture_ready()?;
     repository.verify_storage_import_serving()?;
     let authority = AuthAuthorityRuntime::install(&config.auth_authority)?;
     let listener = TcpListener::bind(config.bind)?;
@@ -507,6 +527,21 @@ mod tests {
                 values.get(name).cloned()
             })
             .unwrap();
+        let mut accounts_config = config.clone();
+        accounts_config.schema_target =
+            trnm_persistence_pg::AuthoritativeSchemaTarget::NakamaAccountsV5;
+        assert!(matches!(serve(&accounts_config, UnavailableRepository),
+            Err(ServerError::Domain(error)) if error.reason() == "schema5_native_catalog_capture_pending"));
+        let storage_admission = trnm_persistence_pg::SchemaAdmission::production(
+            trnm_persistence_pg::AuthoritativeSchemaTarget::StorageV4,
+        )
+        .unwrap();
+        assert!(matches!(
+            serve_admitted(&accounts_config, UnavailableRepository, storage_admission),
+            Err(ServerError::Configuration(
+                "schema_admission_target_mismatch"
+            ))
+        ));
         assert!(matches!(
             serve(&config, UnavailableRepository),
             Err(ServerError::Domain(error)) if error.code() == StableCode::FailedPrecondition && error.reason() == "storage_import_admission_unavailable"

@@ -42,11 +42,23 @@ impl crate::PgRepository {
             .read_only(true)
             .start()
             .map_err(map_postgres_error)?;
-        crate::storage::verify_storage_writer_epoch_target(
-            &mut transaction,
-            self.profile,
-            self.serving_schema_target,
-        )?;
+        match self.schema_admission.target() {
+            crate::AuthoritativeSchemaTarget::StorageV4 => {
+                crate::storage::verify_storage_writer_epoch_target(
+                    &mut transaction,
+                    self.profile,
+                    self.serving_schema_target,
+                )?;
+            }
+            crate::AuthoritativeSchemaTarget::NakamaAccountsV5 => {
+                crate::schema::verify_serving_schema_admitted(
+                    &mut transaction,
+                    self.profile,
+                    self.schema_admission,
+                )?;
+                verify_storage_import_serving(&mut transaction)?;
+            }
+        }
         transaction.commit().map_err(map_postgres_error)
     }
 }

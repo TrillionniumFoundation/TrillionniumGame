@@ -486,3 +486,32 @@ The explicit AccountsV5 target expects 14 tables and retains storage writer epoc
 The transport drain precheck and App drain admission both use the existing numeric gateway envelope for the four Legacy POST paths and their query variants: HTTP 503, code 14, "Service is draining.", without a retry field. This source repair preserves generic control-route drain behavior and still requires actual HTTP and independent review.
 
 AuthenticateCustom is now an isolated source candidate behind the same false AccountsV5 capture gate. It validates the pinned Custom ID byte predicates (6–128 bytes) and existing username policy, then uses one deadline-bound native lease: a stored-user lookup or one plain autocommit `users` INSERT. Existing users return the stored username and `created=false`; banned users reject before issuance; missing `create=false` skips UUID and writes. A username unique violation returns AlreadyExists, while a concurrent Custom-ID violation returns Internal with no winner lookup, retry, upsert or Device-table effect. The exact SQLSTATE and bounded native failure remain distinct. An observed retired lease cannot begin the Custom write, while cancellation/dispatch races, unknown completion and late confirmed commits remain explicit lease facts and permit no token success or caller replay. The private existing account/session issuer remains shared; its Device name is retained temporarily to keep the original Device body unchanged. Native PostgreSQL/CockroachDB, canonical HTTP, paired upstream and independent acceptance are pending. Default schema 4, writer epoch 4, all ten SQL files and the migration lock remain unchanged.
+
+
+The AccountsV5 native-auth diagnostic seam is a locally checked source candidate.
+The persistence lib-test composes the actual canonical server runtime files in
+this repository, with already locked base64/prost-types and explicit
+serde_json/raw_value dev dependencies;
+it does not copy a server, create a Cargo activation feature or install a new
+production binary. An opaque admission has private fields and a production
+issuer that retains the closed catalog gate. Only cfg(test) can mint the
+crate-private diagnostic admission. The shared pool, lease acquisition,
+canonical startup/import verification and native Device/Custom readiness
+bodies carry that immutable admission. Public wrappers remain closed even
+inside the diagnostic test binary, and mismatched selected targets fail before
+TLS material, database access or listener binding. Normal storage business
+operations retain their existing production gates; this seam does not qualify
+schema5 storage transfer or expand the diagnostic scope to storage parity.
+
+Pinned Rust 1.85.1 local two-crate check, strict Clippy and lib tests passed:
+persistence reported 480 passed/2 ignored and server 308 passed. Three
+compile-fail admission doctests passed. These finite counts include the
+canonical runtime tests composed in the persistence harness; environment-gated
+tests without a live fixture grant no database credit. Full workspace/remote
+qualification is not implied. The finite
+source contract binds the complete local Cargo dependency source closure,
+compile-time fixtures, generated-schema inputs and locked dependencies.
+Source mutation checks are not a Rust compiler, a cryptographic review or
+live execution. Actual auth15 TCP/native pairing, signature verification,
+independent review, startup, restore, production and compatibility qualification
+remain pending; no public activation or oracle-parity claim is granted.

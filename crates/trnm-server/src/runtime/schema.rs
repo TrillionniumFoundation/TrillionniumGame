@@ -62,10 +62,21 @@ pub fn migrate(config: &ServerConfig) -> Result<MigrationReport, ServerError> {
 }
 
 pub fn open_verified_repository(config: &ServerConfig) -> Result<PooledRepository, ServerError> {
-    let pool = build_pool(config)?;
+    config.schema_target.require_capture_ready()?;
+    open_verified_repository_admitted(
+        config,
+        trnm_persistence_pg::SchemaAdmission::production(config.schema_target)?,
+    )
+}
+
+pub(crate) fn open_verified_repository_admitted(
+    config: &ServerConfig,
+    admission: trnm_persistence_pg::SchemaAdmission,
+) -> Result<PooledRepository, ServerError> {
+    let pool = build_pool_admitted(config, admission)?;
     {
         let mut repository = pool.acquire()?;
-        repository.verify_authoritative_schema_target(config.schema_target)?;
+        repository.verify_authoritative_schema_admitted(admission)?;
         repository.verify_storage_import_serving()?;
     }
     Ok(PooledRepository::new(pool))
@@ -74,24 +85,39 @@ pub fn open_verified_repository(config: &ServerConfig) -> Result<PooledRepositor
 fn build_pool(config: &ServerConfig) -> Result<PgPool, ServerError> {
     // A closed AccountsV5 frontier fails before TLS material reads or sockets.
     config.schema_target.require_capture_ready()?;
+    build_pool_admitted(
+        config,
+        trnm_persistence_pg::SchemaAdmission::production(config.schema_target)?,
+    )
+}
+
+fn build_pool_admitted(
+    config: &ServerConfig,
+    admission: trnm_persistence_pg::SchemaAdmission,
+) -> Result<PgPool, ServerError> {
+    if admission.target() != config.schema_target {
+        return Err(ServerError::Configuration(
+            "schema_admission_target_mismatch",
+        ));
+    }
     match config.database_tls_mode {
-        DatabaseTlsMode::PlaintextCandidate => Ok(PgPool::connect_plain_for_target(
+        DatabaseTlsMode::PlaintextCandidate => Ok(PgPool::connect_plain_admitted(
             &config.database_url,
             config.database_profile,
             config.database_pool,
-            config.schema_target,
+            admission,
         )?),
         DatabaseTlsMode::VerifyFull => {
             let root_certificate = read_optional(config.database_tls_root_cert.as_deref())?;
             let identity_certificate = read_optional(config.database_tls_identity_cert.as_deref())?;
             let identity_key = read_optional(config.database_tls_identity_key.as_deref())?;
             let tls = PgTlsConfig::new(root_certificate, identity_certificate, identity_key)?;
-            Ok(PgPool::connect_tls_for_target(
+            Ok(PgPool::connect_tls_admitted(
                 &config.database_url,
                 config.database_profile,
                 config.database_pool,
                 &tls,
-                config.schema_target,
+                admission,
             )?)
         }
     }
@@ -143,6 +169,18 @@ mod tests {
                     read_timeout: std::time::Duration::from_secs(5),
                     write_timeout: std::time::Duration::from_secs(10),
                 };
+                let storage_admission = trnm_persistence_pg::SchemaAdmission::production(
+                    AuthoritativeSchemaTarget::StorageV4,
+                )
+                .unwrap();
+                assert!(matches!(
+                    build_pool_admitted(&config, storage_admission),
+                    Err(ServerError::Configuration(
+                        "schema_admission_target_mismatch"
+                    ))
+                ));
+                assert!(matches!(open_verified_repository(&config),
+                    Err(ServerError::Domain(error)) if error.reason() == "schema5_native_catalog_capture_pending"));
                 assert!(matches!(
                     build_pool(&config),
                     Err(ServerError::Domain(error)) if error.reason() == "schema5_native_catalog_capture_pending"

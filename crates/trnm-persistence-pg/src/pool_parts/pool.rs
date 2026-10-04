@@ -73,6 +73,7 @@ fn account_lease_outcome<T>(
 pub struct PgPool {
     profile: DatabaseProfile,
     serving_schema_target: crate::AuthoritativeSchemaTarget,
+    schema_admission: crate::SchemaAdmission,
     policy: PgPoolConfig,
     inner: PoolInner,
     metrics: Arc<PgPoolMetrics>,
@@ -100,6 +101,16 @@ impl PgPool {
         target: crate::AuthoritativeSchemaTarget,
     ) -> Result<Self, DomainError> {
         target.require_capture_ready()?;
+        Self::connect_plain_admitted(database_url, profile, policy, crate::SchemaAdmission::production(target)?)
+    }
+
+    pub fn connect_plain_admitted(
+        database_url: &str,
+        profile: DatabaseProfile,
+        policy: PgPoolConfig,
+        admission: crate::SchemaAdmission,
+    ) -> Result<Self, DomainError> {
+        let target = admission.target();
         let policy = policy.validate()?;
         let mut database = Config::from_str(database_url).map_err(super::map_postgres_error)?;
         database.ssl_mode(SslMode::Disable);
@@ -113,6 +124,7 @@ impl PgPool {
         Ok(Self {
             profile,
             serving_schema_target: target,
+            schema_admission: admission,
             policy,
             inner: PoolInner::Plain(pool),
             metrics,
@@ -143,6 +155,17 @@ impl PgPool {
         target: crate::AuthoritativeSchemaTarget,
     ) -> Result<Self, DomainError> {
         target.require_capture_ready()?;
+        Self::connect_tls_admitted(database_url, profile, policy, tls, crate::SchemaAdmission::production(target)?)
+    }
+
+    pub fn connect_tls_admitted(
+        database_url: &str,
+        profile: DatabaseProfile,
+        policy: PgPoolConfig,
+        tls: &PgTlsConfig,
+        admission: crate::SchemaAdmission,
+    ) -> Result<Self, DomainError> {
+        let target = admission.target();
         let policy = policy.validate()?;
         let mut database = Config::from_str(database_url).map_err(super::map_postgres_error)?;
         database.ssl_mode(SslMode::Require);
@@ -158,6 +181,7 @@ impl PgPool {
         Ok(Self {
             profile,
             serving_schema_target: target,
+            schema_admission: admission,
             policy,
             inner: PoolInner::Tls {
                 pool,
@@ -365,6 +389,7 @@ impl PgPool {
         Ok(PgRepository {
             profile: self.profile,
             serving_schema_target: self.serving_schema_target,
+            schema_admission: self.schema_admission,
             client: handle,
         })
     }

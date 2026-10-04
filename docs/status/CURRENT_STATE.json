@@ -255,9 +255,9 @@
     "caller_compensation": false,
     "Email_implemented": false,
     "source_sha256": {
-      "crates/trnm-persistence-pg/src/lib.rs": "d604caf57010b71d6d3cebb58455f6a616519412dca2997807bfbc9bea851e96",
+      "crates/trnm-persistence-pg/src/lib.rs": "2afab65c676a13e541a8cd0fbe8795ab40b43869fe3169810f11529c51c2fd01",
       "crates/trnm-persistence-pg/src/nakama_account.rs": "7e045e8b45e3aa35009be6b47f04e4962ba10c4f8ef4b85f7a5c82337e48b430",
-      "crates/trnm-persistence-pg/src/nakama_account/native.rs": "9d1f794d3960963e457f936dac1d03bdbab5428a4fe892e68d4e5d4ce5016cf3",
+      "crates/trnm-persistence-pg/src/nakama_account/native.rs": "8cf441c137ba9bf8ac12d7e718c78dbc13c2ca3037085acfde926ed30bc58d20",
       "crates/trnm-persistence-pg/src/nakama_account/tests.rs": "1277429231aa78c0418a2e793c1edc11dae0a18c0257d08ce9f2132c29a2744a",
       "crates/trnm-persistence-pg/src/pool_parts/base.rs": "1bc565243740e4b639cd69ea49f4ee8974299b2cc101bd6d3054eeae7783ec6c",
       "crates/trnm-server/src/runtime/app.rs": "09db9b09bb379909b654a730174e68fd118e45da6067b0be80c40afba766e41b",
@@ -326,5 +326,11 @@
     "compatibility_credit": false,
     "production_ready": false,
     "full_replacement": false
+  },
+  "native_auth_diagnostic_admission_source": {
+    "contract": "contracts/server/native-auth-admission-source.json",
+    "status": "locally-checked-source-candidate",
+    "production_gate": false,
+    "qualification": "Finite local Cargo checks/tests passed; native auth15 pairing and independent review pending; no startup, restore or compatibility credit"
   }
 }
