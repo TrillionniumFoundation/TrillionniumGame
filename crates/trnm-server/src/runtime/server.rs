@@ -126,10 +126,12 @@ where
     let mut grpc_worker = None;
     let mut workers = Vec::with_capacity(worker_count);
     let accept_result = (|| {
-        grpc_worker = grpc::spawn(
+        grpc_worker = grpc::spawn_authenticated(
             config.grpc_bind,
             draining.clone(),
             Arc::clone(&worker_failed),
+            &repository,
+            &authority,
         )?;
 
         for worker_index in 0..worker_count {

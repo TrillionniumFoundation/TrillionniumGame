@@ -5,7 +5,13 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use super::app::SharedDrain;
+use super::app::{Repository, SharedDrain};
+use super::auth_runtime::AuthAuthorityRuntime;
+
+#[path = "grpc_auth.rs"]
+mod auth;
+#[path = "grpc_transport.rs"]
+mod transport;
 use super::error::ServerError;
 
 pub const HEALTHCHECK_METHOD_PATH: &str = "/nakama.api.Nakama/Healthcheck";
@@ -14,13 +20,16 @@ const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub mod generated {
     pub mod google {
         pub mod protobuf {
-            tonic::include_proto!("google.protobuf");
+            include!(concat!(
+                env!("OUT_DIR"),
+                "/canonical-grpc/google.protobuf.rs"
+            ));
         }
     }
 
     pub mod nakama {
         pub mod api {
-            tonic::include_proto!("nakama.api");
+            include!(concat!(env!("OUT_DIR"), "/canonical-grpc/nakama.api.rs"));
         }
     }
 }
@@ -48,10 +57,55 @@ pub struct GrpcWorker {
     worker_failed: Arc<AtomicBool>,
 }
 
+#[cfg(test)]
 pub fn spawn(
     bind: Option<SocketAddr>,
     draining: SharedDrain,
     worker_failed: Arc<AtomicBool>,
+) -> Result<Option<GrpcWorker>, ServerError> {
+    spawn_service(
+        bind,
+        draining,
+        worker_failed,
+        HealthcheckService,
+        AuthAuthorityRuntime::Disabled,
+    )
+}
+
+pub(super) fn spawn_authenticated<R: Repository + Clone + Send + 'static>(
+    bind: Option<SocketAddr>,
+    draining: SharedDrain,
+    worker_failed: Arc<AtomicBool>,
+    repository: &R,
+    authority: &AuthAuthorityRuntime,
+) -> Result<Option<GrpcWorker>, ServerError> {
+    if bind.is_none() {
+        return Ok(None);
+    }
+    let (service, authority) = match catch_unwind(AssertUnwindSafe(|| {
+        let service = auth::NativeGrpcService::new(
+            repository.clone(),
+            authority.clone(),
+            draining.clone(),
+            Arc::clone(&worker_failed),
+        );
+        (service, authority.clone())
+    })) {
+        Ok(prepared) => prepared,
+        Err(_) => {
+            signal_failure(&draining, worker_failed.as_ref());
+            return Err(ServerError::Configuration("grpc_worker_panicked"));
+        }
+    };
+    spawn_service(bind, draining, worker_failed, service, authority)
+}
+
+fn spawn_service<S: Nakama>(
+    bind: Option<SocketAddr>,
+    draining: SharedDrain,
+    worker_failed: Arc<AtomicBool>,
+    service: S,
+    authority: AuthAuthorityRuntime,
 ) -> Result<Option<GrpcWorker>, ServerError> {
     let Some(bind) = bind else {
         return Ok(None);
@@ -59,7 +113,7 @@ pub fn spawn(
     let worker_draining = draining.clone();
     let worker_failed_for_thread = Arc::clone(&worker_failed);
     let worker = thread::Builder::new()
-        .name("trnm-grpc-healthcheck".to_owned())
+        .name("trnm-grpc".to_owned())
         .spawn(move || {
             eprintln!(
                 "trnm-server gRPC source candidate listening on {bind} method={HEALTHCHECK_METHOD_PATH}"
@@ -67,7 +121,7 @@ pub fn spawn(
             run_guarded(
                 &worker_draining,
                 worker_failed_for_thread.as_ref(),
-                || serve(bind, worker_draining.clone()),
+                || serve(bind, worker_draining.clone(), service, authority),
             )
         })?;
     Ok(Some(GrpcWorker {
@@ -125,21 +179,45 @@ fn signal_failure(draining: &SharedDrain, worker_failed: &AtomicBool) {
     draining.begin();
 }
 
-fn serve(bind: SocketAddr, draining: SharedDrain) -> Result<(), ServerError> {
+fn serve<S: Nakama>(
+    bind: SocketAddr,
+    draining: SharedDrain,
+    service: S,
+    authority: AuthAuthorityRuntime,
+) -> Result<(), ServerError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(auth::MAX_AUTH_JOBS)
         .enable_all()
         .build()?;
-    runtime.block_on(async move {
-        tonic::transport::Server::builder()
-            .add_service(NakamaServer::new(HealthcheckService))
-            .serve_with_shutdown(bind, async move {
-                while !draining.is_draining() {
-                    tokio::time::sleep(SHUTDOWN_POLL_INTERVAL).await;
-                }
-            })
-            .await
-            .map_err(|_| ServerError::Configuration("grpc_server_failed"))
-    })
+    let result = runtime.block_on(async move {
+        let incoming = transport::OwnedIncoming::bind(bind, draining.clone()).await?;
+        let registry = incoming.registry();
+        let shutdown = draining.clone();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .concurrency_limit_per_connection(32)
+                .max_concurrent_streams(32)
+                .http2_max_header_list_size(64 * 1024)
+                .timeout(Duration::from_secs(5))
+                .add_service(auth::AuthBoundary::new(
+                    NakamaServer::new(service)
+                        .max_decoding_message_size(auth::MAX_REQUEST_BYTES)
+                        .max_encoding_message_size(auth::MAX_RESPONSE_BYTES),
+                    authority,
+                ))
+                .serve_with_incoming_shutdown(incoming, async move {
+                    while !shutdown.is_draining() {
+                        tokio::time::sleep(SHUTDOWN_POLL_INTERVAL).await;
+                    }
+                })
+                .await
+        });
+        transport::supervise(server, registry, draining).await
+    });
+    // Tokio runtime drop cancels owned async tasks, then waits for blocking
+    // operations. Never use shutdown_timeout/background, which can detach them.
+    drop(runtime);
+    result
 }
 
 #[cfg(test)]

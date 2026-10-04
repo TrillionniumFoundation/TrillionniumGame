@@ -21,7 +21,7 @@ client/operator
 
 The Go runtime is a migration input and behavior oracle, not target-production evidence. Rust contains substantial source candidates but is not a complete Nakama replacement.
 
-`crates/trnm-server` is now the only default `trnm-server` composition root and assembles the database-backed HTTP, generated gRPC Healthcheck, WebSocket and session slice. It is not the earlier standalone in-memory foundation executable. `crates/trnm-persistence-pg/src/bin/trnm-server.rs` remains only as the feature-gated `trnm-pg-compat-server` diagnostic and compatibility harness.
+`crates/trnm-server` is now the only default `trnm-server` composition root and assembles the database-backed HTTP, generated gRPC Healthcheck/auth source, WebSocket and session slice. It is not the earlier standalone in-memory foundation executable. `crates/trnm-persistence-pg/src/bin/trnm-server.rs` remains only as the feature-gated `trnm-pg-compat-server` diagnostic and compatibility harness.
 
 Package-level authority has converged; layer-level separation is not finished. `crates/trnm-server/src/runtime/app.rs` still defines its repository trait using concrete adapter types imported from `trnm-persistence-pg` and also consumes HTTP request/response types. `runtime/auth.rs` re-exports authentication types from that adapter. The next architecture step is to extract transport-independent service and persistence contracts, not merely move another binary. No third production composition root is permitted.
 
@@ -282,7 +282,7 @@ Adapters own:
 - size, rate, heartbeat, idle and queue limits;
 - public error text and internal redaction.
 
-The current gRPC implementation represents only the pinned Nakama `Healthcheck(google.protobuf.Empty) -> google.protobuf.Empty` source slice. The current WebSocket candidate supports a bounded persistent JSON and narrow protobuf-envelope path, not the full official RTAPI denominator.
+The current gRPC source represents pinned Healthcheck plus four bounded auth/session methods; native auth RPC database/oracle qualification remains open. The current WebSocket candidate supports a bounded persistent JSON and narrow protobuf-envelope path, not the full official RTAPI denominator.
 
 ## 10. Realtime ownership
 
@@ -427,3 +427,32 @@ Source mutation checks are not a Rust compiler, a cryptographic review or
 live execution. Actual auth15 TCP/native pairing, signature verification,
 independent review, startup, restore, production and compatibility qualification
 remain pending; no public activation or oracle-parity claim is granted.
+
+## Bounded native gRPC authentication source
+
+The canonical process now has a locally checked tonic/prost source adapter for
+AuthenticateDevice, AuthenticateCustom, SessionRefresh and SessionLogout, sharing
+the installed legacy keys/blacklist and the existing admitted native repository.
+Healthcheck remains unauthenticated; the 85-RPC denominator still leaves 80 other
+non-Healthcheck obligations. The persistence lib-test generates the same canonical
+proto into a separate output directory; its diagnostic Healthcheck-only service
+is unchanged. No parallel account store, auth15 import, schema activation or
+compiler upgrade is included.
+
+A URI-aware boundary verifies metadata before protobuf decoding, intentionally
+differing from the upstream malformed-body/authentication error precedence.
+Sixteen total blocking jobs retain admission through cancellation and cleanup;
+panics set the shared process failure/drain fence even after response abandonment.
+There are at most 32 accepted transport connections. Each has an explicit local
+30-second lifetime from TCP acceptance, including silent or healthy connections.
+Expiry closes the owned socket; its slot is released only on actual cleanup.
+Process drain allows one second before closing all owned sockets, then cancels
+asynchronous transport tasks and joins started native jobs. A transport timeout
+or connection expiry does not prove that an account mutation did not commit.
+The native per-lease budget remains; individual running native calls cannot be
+aborted by this adapter, retried, or compensated.
+
+`contracts/grpc/nakama-native-auth-source.json` binds source identities, local
+checks and residuals. Native auth RPC database/oracle pairing, runtime hooks,
+long-lived-connection equivalence, exact-head CI and independent acceptance remain
+open. HTTP auth15 results confer no gRPC credit; public AccountsV5 remains closed.

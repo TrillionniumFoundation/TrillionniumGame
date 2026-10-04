@@ -679,3 +679,21 @@ Source mutation checks are not a Rust compiler, a cryptographic review or
 live execution. Actual auth15 TCP/native pairing, signature verification,
 independent review, startup, restore, production and compatibility qualification
 remain pending; no public activation or oracle-parity claim is granted.
+
+## Native gRPC source and transport evidence
+
+The bounded four-auth-RPC source adapter has local Rust 1.85.1 compilation and
+strict Clippy checks. Its 23 focused tests cover protobuf presence/field numbers,
+metadata precedence/repetition, native job ownership, cancelled/abandoned panic
+fencing, deterministic runtime joining, and actual tonic HTTP/2 transport. Real
+HTTP/2 regressions cover a zero response window blocking graceful flushing and
+32 silent connections expiring before a generated Healthcheck client is admitted
+without process drain. Source mutation tests reject denominator/qualification
+promotion, global per-request cancellation and lost ownership fences.
+
+These are codec, lifecycle and transport observations, not native Device/Custom/
+Refresh/Logout database execution. Environment-gated database tests that return
+without configuration and explicitly ignored tests provide no live evidence.
+HTTP auth15 provides no gRPC evidence. The malformed-protobuf authentication
+precedence difference and fixed 30-second connection lifetime remain explicit.
+The public AccountsV5 gate, production and full-replacement claims remain false.

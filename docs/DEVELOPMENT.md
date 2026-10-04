@@ -515,3 +515,23 @@ Source mutation checks are not a Rust compiler, a cryptographic review or
 live execution. Actual auth15 TCP/native pairing, signature verification,
 independent review, startup, restore, production and compatibility qualification
 remain pending; no public activation or oracle-parity claim is granted.
+
+## Native gRPC source validation
+
+The bounded auth adapter uses the existing pinned Rust 1.85.1, tonic/prost and
+Cargo.lock. Canonical bindings are generated under `OUT_DIR/canonical-grpc` in
+both server and persistence-test build contexts, preventing the latter from
+accidentally using its diagnostic Healthcheck-only definitions. No new dependency
+is introduced. Use offline locked scoped checks before any network resolution:
+
+```bash
+cargo check --offline --locked -p trnm-server -p trnm-persistence-pg --all-targets
+cargo clippy --offline --locked -p trnm-server -p trnm-persistence-pg --all-targets -- -D warnings
+cargo test --offline --locked -p trnm-server -p trnm-persistence-pg --all-targets -- --test-threads=1
+python3 scripts/check-trnm-server.py
+python3 -m unittest discover -s tests/control_plane -p 'test_native_grpc_auth_source.py'
+```
+
+The gRPC source contract and transitive native-admission source inventory must
+be rebound together after reviewed source edits. This does not qualify native
+authentication over gRPC or replace exact PostgreSQL/CockroachDB oracle execution.

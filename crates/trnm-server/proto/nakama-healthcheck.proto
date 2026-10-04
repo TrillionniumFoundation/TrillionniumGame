@@ -5,15 +5,55 @@
 // heroiclabs/nakama@d4d92f93f78bbbe62c7fc50a3f85c772ec121a09
 // apigrpc/apigrpc.proto blob 1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c
 //
-// This file intentionally contains only the Healthcheck method. It is not the
+// Auth messages derive from nakama-common v1.47.0 / 449b77ecc8789aa466c36b67f6e498033dfcd9c5,
+// api/api.proto, vendored blob ddd2744739a252c268b2be004ff0e45c498adb35.
+// Modified by Trillionnium Foundation: bounded five-method Rust service subset.
+// This file intentionally contains Healthcheck and four auth methods. It is not the
 // complete Nakama service denominator and grants no broad gRPC compatibility.
 syntax = "proto3";
 
 package nakama.api;
 
 import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+
+message AccountDevice {
+  string id = 1;
+  map<string, string> vars = 2;
+}
+message AccountCustom {
+  string id = 1;
+  map<string, string> vars = 2;
+}
+message AuthenticateDeviceRequest {
+  AccountDevice account = 1;
+  google.protobuf.BoolValue create = 2;
+  string username = 3;
+}
+message AuthenticateCustomRequest {
+  AccountCustom account = 1;
+  google.protobuf.BoolValue create = 2;
+  string username = 3;
+}
+message SessionRefreshRequest {
+  string token = 1;
+  map<string, string> vars = 2;
+}
+message SessionLogoutRequest {
+  string token = 1;
+  string refresh_token = 2;
+}
+message Session {
+  bool created = 1;
+  string token = 2;
+  string refresh_token = 3;
+}
 
 service Nakama {
   // A healthcheck which load balancers can use to check the service.
   rpc Healthcheck (google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc AuthenticateDevice (AuthenticateDeviceRequest) returns (Session);
+  rpc AuthenticateCustom (AuthenticateCustomRequest) returns (Session);
+  rpc SessionRefresh (SessionRefreshRequest) returns (Session);
+  rpc SessionLogout (SessionLogoutRequest) returns (google.protobuf.Empty);
 }
