@@ -13,8 +13,11 @@
     "full_workspace_cargo_verified": false
   },
   "source_sha256": {
+    ".github/workflows/trnm-server-live.yml": "55cd7710b6c48128f441057f3b35288e2c5138fb40b3b9acbbcd1d1c720619e6",
     "Cargo.lock": "e2f49cf20e949a0c7e087bcb46ab36e24da91b5937abf6c458835b9d9acc548a",
     "Cargo.toml": "49b5aeb1df33e644fd67424f9c2d8d16c22284379c9c9ad5f7e51c9be65a60d3",
+    "config/database-test-images.json": "c08175105eed367c0e60bd1cc4c876a02249fbaa2d7355fa8acba34757b7f520",
+    "config/oracle-normalizers.json": "60e0c3a4f803a3bbe46c176287d992d7bb87fd3b02745584b697f1004a6e68c8",
     "contracts/http/nakama-cors-fixtures-v1.json": "007398ac3df52313b4809deca0d6b6d41764c5be7659895e89d61a6621210b49",
     "contracts/http/nakama-healthcheck-form-fixtures-v1.json": "e39153210d7b2b0db0d36c6b78b2f45e1f76d9d5d756f7d3b98af8c1465c3dfd",
     "contracts/http/nakama-healthcheck-form-v1.json": "43a33a8ebd34bc1b5a03df5aa309aa6b1ea56173a5c53757c6b001f4901a2d5b",
@@ -66,10 +69,12 @@
     "crates/trnm-persistence-pg/src/pool_parts/cancellation.rs": "59aa52af39e16d62e66ee5f8501a9a0d78ea6c444705fab94795be05cd5f9669",
     "crates/trnm-persistence-pg/src/pool_parts/pool.rs": "790bb7b217e0872d4bb1eb7d8eed6a8e9c78b77f941a2f1770972a43b8cb5214",
     "crates/trnm-persistence-pg/src/pool_parts/tests.rs": "72b339710c80e5ad90044203e7253d54820bc94e245a74ba1a10e491bcddc7e5",
-    "crates/trnm-persistence-pg/src/schema.rs": "4c1f42f2eda306c3b92718ff0b67d2d5292994d1b1a9bcb0e48c453a042b4e45",
+    "crates/trnm-persistence-pg/src/schema.rs": "b5e17d27624d1c81d335466fca5e5050b49e5bc726166d233f697f10d417aef3",
     "crates/trnm-persistence-pg/src/schema_parts/account_capture_diagnostic.rs": "af677041ee5291997e564f110bc34744894ef2d8d20c8d46f52a3dd66b47e7e7",
     "crates/trnm-persistence-pg/src/schema_parts/account_catalog.rs": "b020b404a676cfc8b118c7e342c90e40a2cccc5e9bf2c9b5f938f08d5e0522dc",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_attributes.rs": "48d4098a40fb77bd0ce97a6c0ebc7d4aa467ae45d2581bed0d13f3c628eb23e9",
+    "crates/trnm-persistence-pg/src/schema_parts/account_native_auth.rs": "d4864f9a5dd60b9393d208e042f51066f845c98db1a09291cacb6bef7bf3011b",
+    "crates/trnm-persistence-pg/src/schema_parts/account_native_auth_wire.rs": "c536b0a328d53c27260bf0115d9bab0ca909b3771464ab3914cfe593dc4942b5",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_columns.rs": "e3af7a7333ba69586cff50437ec48bb49482b1e03afb8fc4b0c9bbec51a4d8e4",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_objects.rs": "c17d10528e64917a2dbf30b8175950dd9ef8b75181acdacfc4b7c7d345b6318c",
     "crates/trnm-persistence-pg/src/schema_parts/account_native_triggers.rs": "3a7df5674ae6928c3970030b82f16326ccbf3f1443709acb210896229cba102f",
@@ -222,7 +227,17 @@
     "migrations/postgresql/0003_storage_jsonb_up.sql": "f602c34a24f4e0de7415cd781e8f87ef66dbb463739a92a224a9002bfc83d97c",
     "migrations/postgresql/0004_storage_source_import_up.sql": "824e26ea543d263f3f64406633841636f911e597bb622d2d7336d5bdc2b6c298",
     "migrations/postgresql/0005_nakama_accounts_up.sql": "0e02855c7e048ffd92cc46ddd0029ce617b02dd4cff7cb4b79932ed7a8e08fd0",
-    "rust-toolchain.toml": "b09a8e67e82daeb310aa23f07fcd1e6ddab784e5dff26a9cc66aec8fb3d9360c"
+    "oracle/immutable/auth-reference-cases.json": "fcde649cdcca60c4c2a09971f9c3b89d160bdc0662edcde14e80c5dedf0eca63",
+    "oracle/immutable/oracle-lock.json": "e54579172ccf9fd54714809176b5a37f6062a45b431692f2adbd9e77a35ccaed",
+    "rust-toolchain.toml": "b09a8e67e82daeb310aa23f07fcd1e6ddab784e5dff26a9cc66aec8fb3d9360c",
+    "scripts/accounts-capture-diagnostic.py": "a43a49cc51337b82df658990c91d19e7bf77199d490b45c6cff04da0117e2ec2",
+    "scripts/ci-trnm-server-live.sh": "25aed453b31f6bcfc5b3b12bac6eed107473f1b425534d2e4ccefcd0f3092cf4",
+    "scripts/evidence_admission.py": "1e7d98a0ca5c675f54bd741ec7cbcc1fdad6f34e190a477421b45ac7ff044b26",
+    "scripts/native-auth-diagnostic.py": "739820b6395828ca81fb58b7029366f83efae1779cdf10e8757efc0e89e8c6df",
+    "scripts/oracle/capture-auth-reference.py": "3458f58f61ab2a0efe360d88760c209bc7092211003a4ae2c5f7f70a4bd65580",
+    "scripts/schema_evidence_binding.py": "822bb214422884ae656c1412b51ec25b8b32d158b097a38dad3808a800e5bd58",
+    "scripts/schema_source_selection.py": "a07a437696351ad9aaef1a4e0941c999bfa58c1f4b6498e8bb290fa06c51e2aa",
+    "tests/control_plane/test_native_auth_diagnostic.py": "5ff3c0f6946a68d9d3ebfce53b1e77d7abd055fa44676b1a38fe3d2ed7f706db"
   },
   "local_validation": {
     "rust_version": "1.85.1",
@@ -237,6 +252,37 @@
       "server": 0
     },
     "persistence_compile_fail_doctests_passed": 3,
-    "live_database_credit": false
+    "live_database_credit": false,
+    "applies_to_commit": "1db02c4f1178bfe1a58a1de29ddf95c4cc96d4f2",
+    "applies_to": "previous reviewed admission seam only; new auth15 Rust source not compiled"
+  },
+  "native_auth15_source": {
+    "status": "uncompiled-source-candidate",
+    "fixture": "oracle/immutable/auth-reference-cases.json",
+    "fixture_sha256": "fcde649cdcca60c4c2a09971f9c3b89d160bdc0662edcde14e80c5dedf0eca63",
+    "case_count": 15,
+    "reference_commit": "cf6541c1b6b999efca7895e7028f96b79ab2951c",
+    "reference_tree": "3c852c9d7977b7c70fbb3ff137593e125a783b7c",
+    "reference_database_profile": "postgresql",
+    "candidate_profiles": [
+      "postgresql",
+      "cockroachdb"
+    ],
+    "test": "schema::account_native_auth::accounts_native_auth_disposable_listener",
+    "driver": "scripts/native-auth-diagnostic.py",
+    "real_TCP_and_native_engines_source": true,
+    "known_key_signature_verifier": "existing-OpenSSL-HMAC-SHA256",
+    "historical_reference_signature_verified": false,
+    "raw_tokens_or_keys_retained": false,
+    "normalization_applied": false,
+    "all_fifteen_exact_pairs": false,
+    "current_source_cargo_verified": false,
+    "native_listener_executed": false,
+    "paired_oracle_qualified": false,
+    "public_accounts_v5_activation": false,
+    "startup_qualified": false,
+    "restore_qualified": false,
+    "compatibility_credit": false,
+    "accepted": false
   }
 }

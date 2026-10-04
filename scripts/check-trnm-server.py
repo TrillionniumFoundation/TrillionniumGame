@@ -2361,6 +2361,12 @@ def native_admission_source_paths() -> set[str]:
                 if path.suffix == ".rs":
                     for literal in re.findall(r'include_(?:str|bytes)!\(\s*"([^"]+)"', path.read_text()):
                         paths.add(str((path.parent / literal).resolve().relative_to(ROOT)))
+    paths.update(("scripts/native-auth-diagnostic.py", ".github/workflows/trnm-server-live.yml",
+                  "scripts/ci-trnm-server-live.sh", "scripts/accounts-capture-diagnostic.py",
+                  "scripts/schema_evidence_binding.py", "scripts/schema_source_selection.py",
+                  "scripts/evidence_admission.py", "scripts/oracle/capture-auth-reference.py",
+                  "oracle/immutable/oracle-lock.json", "config/oracle-normalizers.json",
+                  "config/database-test-images.json", "tests/control_plane/test_native_auth_diagnostic.py"))
     paths.update(str(path.relative_to(ROOT)) for path in (ROOT / "migrations").rglob("*.sql"))
     return paths
 

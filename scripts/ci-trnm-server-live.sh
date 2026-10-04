@@ -724,6 +724,10 @@ if [[ "${TRNM_ACCOUNTS_CAPTURE_DIAGNOSTIC:-0}" == 1 ]]; then
   python3 scripts/accounts-typed-diagnostic.py capture --profile "$profile" \
     --container "$container" --parent "$evidence_absolute" \
     --output "$root/run/accounts-typed/$profile"
+  begin_stage native-auth-diagnostic
+  python3 scripts/native-auth-diagnostic.py capture --profile "$profile" \
+    --container "$container" --parent "$evidence_absolute" \
+    --output "$root/run/native-auth/$profile"
 fi
 
 begin_stage seal "$evidence/summary.json" "$evidence/database-assertions.txt"

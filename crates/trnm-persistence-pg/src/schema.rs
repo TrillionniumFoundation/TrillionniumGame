@@ -452,3 +452,7 @@ mod account_capture_diagnostic;
 #[cfg(test)]
 #[path = "schema_parts/account_typed_diagnostic.rs"]
 mod account_typed_diagnostic;
+
+#[cfg(test)]
+#[path = "schema_parts/account_native_auth.rs"]
+mod account_native_auth;

@@ -515,3 +515,52 @@ Source mutation checks are not a Rust compiler, a cryptographic review or
 live execution. Actual auth15 TCP/native pairing, signature verification,
 independent review, startup, restore, production and compatibility qualification
 remain pending; no public activation or oracle-parity claim is granted.
+
+
+The next native auth15 fixture is a source-only extension of the reviewed
+admission seam. Its new Rust has not been compiled and no admitted listener has
+run. The ignored persistence lib-test uses the same typed migration, catalog
+proof, NOLOGIN writer barrier, canonical server TCP parser/authority, native
+pool/lease/account bodies and authenticated drain. Only the already-owned
+hosted disposable container and a new custody-marked database are allowed.
+The original fifteen fixture paths/order remain byte-identical. Keys and JWTs
+stay in memory; candidate signature observations require an independent
+known-key OpenSSL HMAC check, while the retained #196 reference remains
+signature-unverified. No historical signature claim is upgraded.
+
+The diagnostic client is bounded and is not an alternative product transport.
+Within-run account linkage, no-effect snapshots, refresh identity, TTL windows
+and same-process logout/revocation are separate from literal cross-run fields.
+The comparator never remaps UUIDs, sorts observed arrays, strips headers or
+normalizes times/tokens. Raw header/body commitments and durable projection
+field differences remain in an unresolved path ledger. Fifteen executed cases
+must not be called fifteen exact pairs. The reference database is PostgreSQL;
+a CockroachDB candidate run does not establish a CockroachDB oracle origin.
+Current Cargo, actual hosted execution, retained comparison and independent
+review are still required. All public activation, startup, restore, parity and
+acceptance flags stay false. Reverting the fixture requires no production DDL
+rollback; owned test databases are disposed by the existing harness trap.
+
+The native auth15 review repair uses one remaining-time budget across TCP connect,
+partial writes and response reads. Drain notification and thread completion share
+one bounded join budget. The hosted runner owns a Linux process group and reaps
+its descendants on timeout; it bounds captured log bytes without constraining
+compiler output file sizes. An interrupted attempt can have effects and is never
+replayed. Comparison requires externally supplied candidate commit, tree and
+profile, exact Git source blobs, complete SHA256SUMS and successful container
+removal/capture lifecycle. Raw non-token response commitments are recomputed;
+redacted token response commitments cannot be reconstructed from retained bytes.
+Behavioral Python negatives pass locally; the newly added Rust deadline and join
+negatives remain uncompiled and unexecuted under the resource hold.
+
+The executor retains its own exit status, complete-log and descendant-cleanup
+outcome. Sealing and comparison require that outcome to be successful: a test
+success line or valid native result cannot override timeout, nonzero exit, log
+overflow, missing outcome or incomplete cleanup. Failure-after-success-log Python
+regressions exercise these cases; synthetic native rows grant no live auth credit.
+
+Executor outcomes bind repository, candidate commit/tree, profile, hosted run,
+attempt and job, actual command, collected log byte length/SHA256 and native-result
+byte length/SHA256. Comparison takes external run identity as well as candidate
+identity. Copied outcomes and replaced logs/results are rejected. This detects
+packet mixups; it is not protection against a malicious trusted runner.

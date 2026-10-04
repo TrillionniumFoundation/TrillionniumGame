@@ -938,5 +938,34 @@
     "contract": "contracts/server/native-auth-admission-source.json",
     "status": "locally-checked-source-candidate",
     "production_gate": false
+  },
+  "native_auth15_diagnostic_source": {
+    "status": "uncompiled-source-candidate",
+    "fixture": "oracle/immutable/auth-reference-cases.json",
+    "fixture_sha256": "fcde649cdcca60c4c2a09971f9c3b89d160bdc0662edcde14e80c5dedf0eca63",
+    "case_count": 15,
+    "reference_commit": "cf6541c1b6b999efca7895e7028f96b79ab2951c",
+    "reference_tree": "3c852c9d7977b7c70fbb3ff137593e125a783b7c",
+    "reference_database_profile": "postgresql",
+    "candidate_profiles": [
+      "postgresql",
+      "cockroachdb"
+    ],
+    "test": "schema::account_native_auth::accounts_native_auth_disposable_listener",
+    "driver": "scripts/native-auth-diagnostic.py",
+    "real_TCP_and_native_engines_source": true,
+    "known_key_signature_verifier": "existing-OpenSSL-HMAC-SHA256",
+    "historical_reference_signature_verified": false,
+    "raw_tokens_or_keys_retained": false,
+    "normalization_applied": false,
+    "all_fifteen_exact_pairs": false,
+    "current_source_cargo_verified": false,
+    "native_listener_executed": false,
+    "paired_oracle_qualified": false,
+    "public_accounts_v5_activation": false,
+    "startup_qualified": false,
+    "restore_qualified": false,
+    "compatibility_credit": false,
+    "accepted": false
   }
 }
