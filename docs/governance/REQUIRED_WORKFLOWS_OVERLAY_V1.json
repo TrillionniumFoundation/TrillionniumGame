@@ -4,7 +4,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "53e2ceca3e617ec21f587aa0ed9966a2ee5144ce",
+      "git_blob_sha1": "cc0386d5eca11eda4d51ec78c76e13d82c937f41",
       "minimum_successful_execution_jobs": 1,
       "name": "pg-operation-deadline",
       "path": ".github/workflows/pg-operation-deadline.yml",
@@ -14,7 +14,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "fa0f45bde06729d2471f53182c7b47844a89d891",
+      "git_blob_sha1": "c3c140914983b9d0b8fab84f181621d6651a8649",
       "minimum_successful_execution_jobs": 2,
       "name": "pg-tls-rotation",
       "path": ".github/workflows/pg-tls-rotation.yml",
@@ -24,7 +24,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "90fe7c996f901317670585433836c0d723f4fc47",
+      "git_blob_sha1": "2c6ed05bc13b6424ccae4b1c15e33ef56f5454e7",
       "minimum_successful_execution_jobs": 2,
       "name": "cockroach-serialization-retry",
       "path": ".github/workflows/cockroach-serialization-retry.yml",
@@ -35,7 +35,6 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "fffe7408c4b262499556fa427c2e65b756d4f59c3cdebcf907d332be1128ef36",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -162,7 +161,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "f62599ea6f3b619ae757024e543d70b8d44db371",
+      "git_blob_sha1": "83c70567358b77011eedb53e93379f1a9c6fc2c0",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-query-core",
       "path": ".github/workflows/sg3-query-core.yml",
@@ -202,7 +201,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "8237bc8f86f689a43bf155b4231a3e19c4e267c6",
+      "git_blob_sha1": "91c2ae7b0cd220460709bb2fed4bcf3b6999d5ac",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-persistence-outbox-core",
       "path": ".github/workflows/w1-persistence-outbox-core.yml",
@@ -212,7 +211,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "c53001093c3d35cbd8f43b75578df1654847a196",
+      "git_blob_sha1": "f63acd2a6f1f50103dd904559ca7cbcd8c0838df",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-rust-foundation",
       "path": ".github/workflows/w1-rust-foundation.yml",
@@ -222,7 +221,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "e9b6dfc06f8b423a55dc548d208740d03ee013d0",
+      "git_blob_sha1": "04dfd4cd331b8a01fdba4ffa2b4acef7a93ea41b",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-canonical-framing-core",
       "path": ".github/workflows/w2-canonical-framing-core.yml",
@@ -232,7 +231,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "8280ccc6d945eaaaf16c574e59ee7d99ea2bdf78",
+      "git_blob_sha1": "2a40fe01105794f28999b9e2105224eee0eee23a",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-transport-error-core",
       "path": ".github/workflows/w2-transport-error-core.yml",
@@ -242,7 +241,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "9dca0287c84ee5567513ccbeec2bdba2dff5b962",
+      "git_blob_sha1": "1ca2efd247667783f971e9134503f8f9fe6ccc68",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-token-policy-core",
       "path": ".github/workflows/w3-token-policy-core.yml",
@@ -252,7 +251,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "c9cf6e900d8598fa9988e598f6c4e9b9b561fd6c",
+      "git_blob_sha1": "5c1649ce82661de50e66f4e497672bc73963bf13",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-storage-core",
       "path": ".github/workflows/w4-storage-core.yml",
@@ -262,7 +261,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "1aff48220f35a5dd492f5b0cf9473967588fdabe",
+      "git_blob_sha1": "4cc4f4ccda7a9b819a16994f4be8ce942b8c13df",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-presence-router-core",
       "path": ".github/workflows/w6-presence-router-core.yml",
@@ -312,7 +311,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "a9c2bc0cb651d2267ed50bc255ccf9455db4f8b1",
+      "git_blob_sha1": "6e8846fc7801403e91f9135f4c73d5ba00ee0773",
       "minimum_successful_execution_jobs": 1,
       "name": "database-backup-restore",
       "path": ".github/workflows/database-backup-restore.yml",
@@ -322,7 +321,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "00ce4505befa614715ae6676de151119ff7373be",
+      "git_blob_sha1": "3c7a29c38019928a1ebddc5967c7523e5464aed1",
       "minimum_successful_execution_jobs": 1,
       "name": "trnm-server-live",
       "path": ".github/workflows/trnm-server-live.yml",
@@ -332,7 +331,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "a44248e80e6e934b0662163ddd36bd52ca1ff5aa",
+      "git_blob_sha1": "60da9b3891ae217f52c4d52b07d35116b03633ee",
       "minimum_successful_execution_jobs": 1,
       "name": "trillionnium-game-rust-server-vertical-slice",
       "path": ".github/workflows/w1-rust-server-vertical-slice.yml",
@@ -342,7 +341,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "fd2167f5b0ddfef62ec005f44c801c53d9b5c782",
+      "git_blob_sha1": "96a8a6fceb6627374e522b8abec5b62629f4f7de",
       "minimum_successful_execution_jobs": 1,
       "name": "storage-version-source-candidate",
       "path": ".github/workflows/storage-version-source-candidate.yml",
@@ -362,7 +361,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "3a737294007972b74f2d44aa8daf26a6da344d9e",
+      "git_blob_sha1": "1d57382c3973a0c390fa6ea4dca82be124f243dd",
       "minimum_successful_execution_jobs": 1,
       "name": "rust-server-process-smoke",
       "path": ".github/workflows/rust-server-process-smoke.yml",
@@ -372,7 +371,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "08f57ea8d3d0f58ae2e83632d60605f1e8be765d",
+      "git_blob_sha1": "a657bf6e6a8edc14776100f92736d99f85048bff",
       "minimum_successful_execution_jobs": 1,
       "name": "jwt-crypto-provider-source",
       "path": ".github/workflows/jwt-crypto-provider-source.yml",
@@ -392,7 +391,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "cc43ab3f03a526d843202d3ebbef866d8b3ef4dc",
+      "git_blob_sha1": "c4e19f298f73398fbd109776303a9230ca397aba",
       "minimum_successful_execution_jobs": 1,
       "name": "pg-server-vertical-slice",
       "path": ".github/workflows/pg-server-vertical-slice.yml",
@@ -412,7 +411,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "82c1a66f859b7b313efd50bf4dd6c986860204b9",
+      "git_blob_sha1": "e0d4ef90f1b555e30e42d4fa68af2ea79801ce30",
       "minimum_successful_execution_jobs": 1,
       "name": "jwt-provider-adapter-source",
       "path": ".github/workflows/jwt-provider-adapter-source.yml",
@@ -422,7 +421,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "b77fde8b018ac1d7508b81c8cd29f6e7312287a2",
+      "git_blob_sha1": "ace3c7620a575168d2512415688aa372dfa6e5a7",
       "minimum_successful_execution_jobs": 1,
       "name": "database-runtime-policy-source",
       "path": ".github/workflows/database-runtime-policy-source.yml",
@@ -432,7 +431,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "1a8cb0c90fd5aaba6a66a91b4f59235f0d20deea",
+      "git_blob_sha1": "84bab1ac18b76148731c22d0243d914122f9ebfd",
       "minimum_successful_execution_jobs": 1,
       "name": "pg-server-response-loss",
       "path": ".github/workflows/pg-server-response-loss.yml",
@@ -442,7 +441,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "eb49e2d384c76bca49f3c89b79c89b029a6de2af",
+      "git_blob_sha1": "5e34c89b3fcdd4c81d14c4b4c2c1e4889686b467",
       "minimum_successful_execution_jobs": 1,
       "name": "websocket-wire-source",
       "path": ".github/workflows/websocket-wire-source.yml",
@@ -452,7 +451,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "2e632881e11cec84c7d6cdb90174ed428ba611da",
+      "git_blob_sha1": "9edad68e0bf1fa212bc7691cc6600cf832738546",
       "minimum_successful_execution_jobs": 1,
       "name": "pgwire-vertical-slice",
       "path": ".github/workflows/pgwire-vertical-slice.yml",
@@ -472,7 +471,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "382ec6ee9e00ebf2138962b430109b2e40fa910b",
+      "git_blob_sha1": "5f65832807be606756232044d48f5fc18d0cc89a",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-spool-worker",
       "path": ".github/workflows/outbox-spool-worker.yml",
@@ -482,7 +481,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "a25e3731188c4f17459317a756877682843bd99f",
+      "git_blob_sha1": "4675feb008a8950bbbfb9a29f259f53ea8e323f3",
       "minimum_successful_execution_jobs": 1,
       "name": "outbox-final-attempt-reaper",
       "path": ".github/workflows/outbox-final-attempt-reaper.yml",
@@ -492,7 +491,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "6998e894864f31ca0709ae339b06e56558db2467",
+      "git_blob_sha1": "ab6fee4baa277eaa49d732ddb4fd24d2fcaf1a2a",
       "minimum_successful_execution_jobs": 1,
       "name": "grpc-health-source",
       "path": ".github/workflows/grpc-health-source.yml",
@@ -502,13 +501,24 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "0023ac6fb948fc999cabde7aceee0fc5cc4aa21d",
+      "git_blob_sha1": "3d35664c42755f06fc14a81e0dfcf214ce92dcd1",
       "minimum_successful_execution_jobs": 1,
       "name": "prospective-merge-gate",
       "path": ".github/workflows/prospective-merge-gate.yml",
       "workflow_id": 347178559
+    },
+    {
+      "allowed_events": [
+        "pull_request"
+      ],
+      "git_blob_sha1": "9d173d11905d4f9d6ed28f9d3f87dfc1ca59939a",
+      "minimum_successful_execution_jobs": 1,
+      "name": "v3-source-and-scope-gate",
+      "path": ".github/workflows/v3-source-and-scope-gate.yml",
+      "workflow_id": 345517737
     }
   ],
   "repository": "TrillionniumFoundation/TrillionniumGame",
-  "schema": "trnm_required_workflow_overlay_v1"
+  "schema": "trnm_required_workflow_overlay_v1",
+  "overlay_sha256": "7bfb449c4d1f6a9164b61b7edcf73f0c8165f1e0f83b052e204e23e4f28f77a7"
 }

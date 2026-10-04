@@ -98,8 +98,8 @@ class ProcessDocumentationContractTests(unittest.TestCase):
         for required in (
             "permissions:\n  contents: read\n",
             "    timeout-minutes: 20\n",
-            "          rustup toolchain install 1.85.1 --profile minimal\n",
-            "          rustup override set 1.85.1\n",
+            "          rustup toolchain install 1.99.0 --profile minimal\n",
+            "          rustup override set 1.99.0\n",
             "        run: bash scripts/check-rust-server-process.sh\n",
             "          test -e \"$target\"\n",
         ):

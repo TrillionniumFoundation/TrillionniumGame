@@ -115,10 +115,10 @@ class RequiredWorkflowRepositoryIntegrationTests(unittest.TestCase):
         clause = "    branches: [main, fix/http-healthcheck-parity-20261004]"
         self.assertEqual(text.count(clause), 1)
         original = text.replace(clause, "    branches: [main]").encode()
-        # This immutable base blob includes every permission, command, path,
+        # This Rust 1.99.0 base blob includes every permission, command, path,
         # PR/dispatch trigger and exact-SHA check, not just selected markers.
         blob = hashlib.sha1(b"blob " + str(len(original)).encode() + b"\0" + original).hexdigest()
-        self.assertEqual(blob, "2f8a01521940bba530a39a5982bbad0510b41bdc")
+        self.assertEqual(blob, "c42fb174f5345c23ecf37d2a9e72be37f6010142")
         _, manifest = self.manifest()
         requirement = next(entry for entry in manifest.workflows if entry.path == path)
         self.assertEqual(requirement.allowed_events, ("pull_request",))

@@ -59,8 +59,8 @@ jobs:
       - name: Install exact Rust
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal
-          rustup override set 1.85.1
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup override set 1.99.0
       - name: Execute bounded configuration and failed-startup smoke
         env:
           TRNM_SERVER_SMOKE_ROOT: run/server-process-smoke

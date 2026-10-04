@@ -121,7 +121,7 @@ a successful local fixture.
 The source exposes liveness, readiness, redacted metrics, bounded listener workers, shared drain state, and cancellation accounting.
 Non-loopback listeners require explicit opt-in.
 Database transport, pool size, acquisition, statement, lock, retry, and cancellation policies are explicit and bounded.
-The package must be tested with Rust 1.85.1 using:
+The package must be tested with Rust 1.99.0 using:
 
 ```bash
 cargo fmt --manifest-path crates/trnm-server/Cargo.toml -- --check
@@ -148,7 +148,7 @@ No production credential, deployment, traffic shift, canary, cutover, rollback-b
 
 ## Build and test
 
-- Use Rust 1.85.1 with the root workspace `Cargo.lock`.
+- Use Rust 1.99.0 with the root workspace `Cargo.lock`.
 - Required source checks are `cargo fmt --check`, all-target tests and strict Clippy.
 - The bounded process smoke verifies configuration parsing, redaction and fail-closed startup without claiming live database ingress.
 - PostgreSQL and CockroachDB live lanes, protocol differentials and prospective-merge execution remain separate required evidence.

@@ -134,8 +134,8 @@ jobs:
       - name: Install exact Rust
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal
-          rustup override set 1.85.1
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup override set 1.99.0
       - name: Verify pinned database binary version
         env:
           PROFILE: ${{ matrix.profile }}

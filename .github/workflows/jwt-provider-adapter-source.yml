@@ -62,8 +62,8 @@ jobs:
       - name: Install exact Rust
         run: |
           set -euo pipefail
-          rustup toolchain install 1.85.1 --profile minimal --component rustfmt --component clippy
-          rustup override set 1.85.1
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.99.0
       - name: Format
         run: cargo fmt --manifest-path crates/trnm-token-jwt-provider-adapter/Cargo.toml -- --check
       - name: Test

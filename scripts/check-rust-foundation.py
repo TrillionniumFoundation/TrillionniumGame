@@ -203,7 +203,7 @@ def main() -> int:
         fail("workspace packages must remain non-publishable")
 
     toolchain = load_toml(ROOT / "rust-toolchain.toml")
-    if toolchain.get("toolchain", {}).get("channel") != "1.85.1":
+    if toolchain.get("toolchain", {}).get("channel") != "1.99.0":
         fail("rust-toolchain.toml is not exact")
 
     all_sources: list[Path] = []

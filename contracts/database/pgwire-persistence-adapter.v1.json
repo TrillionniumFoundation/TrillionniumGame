@@ -2,7 +2,7 @@
   "schema": "trillionnium.pgwire-persistence-adapter-contract.v1",
   "project_id": "trillionnium-game",
   "crate": "trnm-persistence-pg",
-  "rust_version": "1.85.1",
+  "rust_version": "1.99.0",
   "driver": {
     "crate": "postgres",
     "version": "0.19.14",

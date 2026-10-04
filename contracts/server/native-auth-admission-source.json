@@ -222,7 +222,7 @@
     "migrations/postgresql/0003_storage_jsonb_up.sql": "f602c34a24f4e0de7415cd781e8f87ef66dbb463739a92a224a9002bfc83d97c",
     "migrations/postgresql/0004_storage_source_import_up.sql": "824e26ea543d263f3f64406633841636f911e597bb622d2d7336d5bdc2b6c298",
     "migrations/postgresql/0005_nakama_accounts_up.sql": "0e02855c7e048ffd92cc46ddd0029ce617b02dd4cff7cb4b79932ed7a8e08fd0",
-    "rust-toolchain.toml": "b09a8e67e82daeb310aa23f07fcd1e6ddab784e5dff26a9cc66aec8fb3d9360c"
+    "rust-toolchain.toml": "b2c19d86958ed6810741488db5cd352856f303c53bcf0ea774e72f94ee4d201e"
   },
   "local_validation": {
     "rust_version": "1.85.1",
@@ -237,6 +237,17 @@
       "server": 0
     },
     "persistence_compile_fail_doctests_passed": 3,
+    "live_database_credit": false,
+    "source_commit": "1db02c4f1178bfe1a58a1de29ddf95c4cc96d4f2"
+  },
+  "build_toolchain_validation": {
+    "rust_version": "1.99.0",
+    "status": "not-executed",
+    "check_tests": false,
+    "clippy_tests_deny_warnings": false,
+    "lib_tests": false,
+    "compile_fail_doctests": false,
+    "full_workspace_and_standalone_gates": false,
     "live_database_credit": false
   }
 }
