@@ -24,6 +24,8 @@ on:
       - 'scripts/ci-trnm-server-live.sh'
       - 'scripts/accounts-capture-diagnostic.py'
       - 'scripts/accounts-typed-diagnostic.py'
+      - 'scripts/native-auth-diagnostic.py'
+      - 'tests/control_plane/test_native_auth_diagnostic.py'
       - 'tests/control_plane/test_accounts_typed_diagnostic.py'
       - 'tests/control_plane/test_accounts_capture_diagnostic.py'
       - 'scripts/print-server-live-failure.py'
@@ -87,6 +89,7 @@ jobs:
             tests.control_plane.test_storage_list_live_contract \
             tests.control_plane.test_accounts_capture_diagnostic \
             tests.control_plane.test_accounts_typed_diagnostic -v
+          python3 -m unittest tests.control_plane.test_native_auth_diagnostic -v
           bash -n scripts/ci-trnm-server-live.sh
 
   live-profile:
@@ -165,6 +168,27 @@ jobs:
         with:
           name: accounts-typed-${{ matrix.profile }}-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: run/accounts-typed-${{ matrix.profile }}.tar.gz
+          mime_type: application/gzip
+      - name: Verify native auth15 packet and container disposal
+        if: always()
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 scripts/native-auth-diagnostic.py seal --profile "$PROFILE" \
+            --output "run/native-auth/$PROFILE" || status=$?
+          (cd "run/native-auth/$PROFILE" && sha256sum -c SHA256SUMS)
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "run/native-auth-$PROFILE.tar.gz" -C "run/native-auth/$PROFILE" .
+          sha256sum "run/native-auth-$PROFILE.tar.gz"
+          exit "$status"
+      - name: Retain actual native auth15 diagnostic
+        if: always()
+        uses: ./.github/actions/upload-evidence
+        with:
+          name: native-auth-${{ matrix.profile }}-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: run/native-auth-${{ matrix.profile }}.tar.gz
           mime_type: application/gzip
       - name: Seal exact-head evidence packet
         if: always()
