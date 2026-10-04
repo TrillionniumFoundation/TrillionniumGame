@@ -118,7 +118,7 @@
     "crates/trnm-persistence-pg/tests/storage_import_v4_parts/packet.rs": "ff28e4e8e1e59d80831c94bba75827e25531dd54be0f60cbecad728826c52f8b",
     "crates/trnm-persistence-pg/tests/storage_import_v4_parts/security.rs": "8c6b39319d38f9b5cecc7db05a0b507d4a510465435a98609e7ca290618c2f99",
     "crates/trnm-persistence-pg/tests/storage_import_v4_parts/tamper.rs": "95276cea2c9c6c49a035b73803b4325e51eb8010f854150319c755d2e2d40248",
-    "crates/trnm-persistence-pg/tests/storage_jsonb.rs": "d29eb4f8a3ef5c70a4b8f52cce62366021c28f91389a5e094f6e992e2e5896de",
+    "crates/trnm-persistence-pg/tests/storage_jsonb.rs": "dfe9221072821265aba95bd8417685b4fa4953ebc850663a410fec3ac2be0a91",
     "crates/trnm-persistence-pg/tests/storage_permissions_v4.rs": "ebf0135503602ed36eb2c156d8babe5233501c3bfd73ed1d2dded48d582f60bb",
     "crates/trnm-persistence-pg/tests/storage_timestamps.rs": "726429e990f05ce904fd58ce2af8ae62d7832f69644b8dcafcf4e5898304ef05",
     "crates/trnm-realtime-wire/Cargo.toml": "dce418dba1eaf54ba984418a27bb4b37c0f8e35bd37c4561554298d90b5736ff",

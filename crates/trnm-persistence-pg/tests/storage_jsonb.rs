@@ -325,7 +325,7 @@ fn storage_native_jsonb_versions_provenance_and_atomicity() {
         control.execute("UPDATE public.trnm_storage_objects SET read_permission = 0, write_permission = 0 WHERE collection = $1 AND object_key = $2",
             &[&collection, &corrupt.key()]).unwrap();
         assert!(repository
-            .read_storage_objects(StorageActor::User(OTHER), &[corrupt.clone()])
+            .read_storage_objects(StorageActor::User(OTHER), std::slice::from_ref(&corrupt))
             .unwrap()
             .is_empty());
         assert_eq!(
