@@ -1,7 +1,7 @@
 # Development guide
 
 Status: **authoritative current documentation**  
-Revision: 2026-10-04
+Revision: 2026-10-05
 
 
 The canonical App now has one selected `AuthAuthorityRuntime`: disabled, durable-family, or Nakama legacy. Server startup verifies the selected schema/catalog/import state before constructing one Legacy service or owned durable verifier, then shares the selected keys/cache across workers. The four Legacy POST routes and storage Access context are source candidates; Legacy never uses durable session-family verification/rotation/revocation. `check-config` constructs no service, pool or worker, default schema remains StorageV4/epoch4, and the AccountsV5 capture gate remains false before account SQL or listeners. HTTP credential/query/body/response Debug is redacted and unauthenticated Legacy errors install a bounded static WWW-Authenticate header. Partial startup errors use the same drain/cancellation/join cleanup as normal shutdown. Exact native HTTP, paired oracle and production lifecycle qualification remain pending.
@@ -536,10 +536,10 @@ The gRPC source contract and transitive native-admission source inventory must
 be rebound together after reviewed source edits. This does not qualify native
 authentication over gRPC or replace exact PostgreSQL/CockroachDB oracle execution.
 
-The source-validation inventory includes all 46 canonical runtime modules, including
-the native gRPC auth/transport/read-storage modules. `grpc-health-source` retains diagnostic
+The source-validation inventory includes all 48 canonical runtime modules, including
+the native gRPC auth/transport/read-storage/mutation modules. `grpc-health-source` retains diagnostic
 Healthcheck tests/lint and additionally runs canonical native gRPC tests/lint; it
-checks the six-signature source contract without changing the 85-RPC denominator.
+checks the eight-signature source contract without changing the 85-RPC denominator.
 Workflow source bytes must be rebound only in the current overlay, not its immutable
 base manifest. The active-client regression deliberately records that the existing
 absolute 30-second policy also closes healthy clients. Removing that bound requires
@@ -562,3 +562,28 @@ Rollback the RPC/proto/adapter/tests and bindings together; there is no data or
 credential migration. The existing transport lifetime and AccountsV5 gate stay
 unchanged. GetAccount's full-row and online-status authority dependencies remain
 open.
+
+The storage mutation adapter lives in `grpc_storage_mutation.rs` with its separate
+`grpc_storage_mutation_tests.rs`. Run its focused Rust tests with
+`cargo test --offline --locked -p trnm-server --lib runtime::grpc::auth::storage_mutation`.
+Keep synthetic repositories and generated-client loopbacks distinct from actual
+admitted PostgreSQL/CockroachDB execution. The same protobuf reference runner
+now compares all 30 retained vectors: six reads and 24 mutation cases from
+`contracts/grpc/nakama-storage-mutation-protobuf-fixtures.json`, against both the
+complete pinned upstream schema and the candidate subset. Negative permission
+values in those vectors test codec preservation, not API acceptance.
+
+Mutation source controls bind actor/owner, defaults versus explicit-zero wrappers,
+raw JSON bytes, the pinned 10,000-container JSON nesting ceiling, exact
+code/reason semantic-error selection, opaque OCC, whole-batch commit before
+success, precise receipt timestamps and the 100-object/128-character/1 MiB value/512 KiB ingress/2 MiB output
+limits. Unknown timestamps or receipt corruption may fail after commit. Never
+retry or compensate on projection failure, cancellation or response loss; these
+returned receipts are not durable replay records and no storage outbox effect
+integration is introduced. Hooks, storage indexes and durable reconciliation
+remain open. Rollback reverts the adapter/proto/tests/bindings together without
+undoing committed effects. Historical five/six-method observations do not prove
+execution of this eight-method candidate; the mutation contract records scoped
+Rust results and the known Unix-socket aggregate blocker separately. Exact-head
+CI and accepted native qualification remain pending. No gap, milestone, denominator
+or production/compatibility claim is promoted.

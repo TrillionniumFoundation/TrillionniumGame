@@ -952,7 +952,25 @@
     "source": "crates/trnm-server/src/runtime/grpc_storage.rs",
     "tests": "crates/trnm-server/src/runtime/grpc_storage_tests.rs",
     "full_rpc_denominator": 85,
-    "represented_signatures": 6,
+    "represented_signatures": 8,
+    "production_gate": false,
+    "accepted": false,
+    "compatibility_credit": false,
+    "native_database_qualified": false,
+    "oracle_paired": false
+  },
+  "native_grpc_storage_mutation_source_candidate": {
+    "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_mutations",
+    "status": "source-candidate",
+    "methods": [
+      "WriteStorageObjects",
+      "DeleteStorageObjects"
+    ],
+    "source": "crates/trnm-server/src/runtime/grpc_storage_mutation.rs",
+    "tests": "crates/trnm-server/src/runtime/grpc_storage_mutation_tests.rs",
+    "full_rpc_denominator": 85,
+    "represented_signatures": 8,
+    "unrepresented_signatures": 77,
     "production_gate": false,
     "accepted": false,
     "compatibility_credit": false,

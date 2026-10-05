@@ -35,7 +35,6 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "172eb9f771cc03c23920df869bae708a591e66d9befd09ada5bae2af2470015e",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -492,7 +491,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "af0ac10dd656e085856a08cc3ca722168a85be45",
+      "git_blob_sha1": "3df01d2bf68cfa6bfa4bebe2a9672f01fdc74684",
       "minimum_successful_execution_jobs": 1,
       "name": "grpc-health-source",
       "path": ".github/workflows/grpc-health-source.yml",
@@ -510,5 +509,6 @@
     }
   ],
   "repository": "TrillionniumFoundation/TrillionniumGame",
-  "schema": "trnm_required_workflow_overlay_v1"
+  "schema": "trnm_required_workflow_overlay_v1",
+  "overlay_sha256": "ec99e0004422824432ca5ccb3da0f362d6850a4db34e6f79a0a8b35fd73e8b1a"
 }

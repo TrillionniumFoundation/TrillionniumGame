@@ -17,7 +17,8 @@
     "bounded WebSocket JSON and protobuf-envelope source",
     "access-token session refresh and logout source",
     "schema migration and startup validation source",
-    "bounded native gRPC ReadStorageObjects over the existing admitted readonly storage repository; six represented signatures out of the unchanged 85-RPC denominator"
+    "bounded native gRPC ReadStorageObjects over the existing admitted readonly storage repository; active service represents eight signatures out of the unchanged 85-RPC denominator",
+    "bounded native gRPC WriteStorageObjects/DeleteStorageObjects over the existing admitted homogeneous storage transaction; commit precedes bounded ACK, no durable replay receipt or outbox effect integration; eight represented signatures and 77 unrepresented of 85"
   ],
   "not_implemented": [
     "canonical process authority transfer from trnm-persistence-pg",

@@ -1,0 +1,180 @@
+{
+  "schema": "trillionnium.grpc-storage-mutation-codec-fixtures.v1",
+  "upstream_blob": "ddd2744739a252c268b2be004ff0e45c498adb35",
+  "upstream_commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+  "nakama_common_commit": "449b77ecc8789aa466c36b67f6e498033dfcd9c5",
+  "upstream_source": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/heroiclabs/nakama-common/api/api.proto",
+  "protoc": "libprotoc 31.1",
+  "scope": "Complete pinned upstream api.proto codec reference; no Nakama API, process or native DB execution. Invalid API values are retained strictly as codec diagnostics.",
+  "full_rpc_denominator": 85,
+  "cases": [
+    {
+      "id": "empty-write",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "",
+      "hex": "",
+      "purpose": "Empty repeated write field."
+    },
+    {
+      "id": "write-default-permissions",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" }",
+      "hex": "0a100a0770726f66696c6512016b1a027b7d",
+      "purpose": "Both Int32Value wrappers absent; application defaults are not applied by the codec."
+    },
+    {
+      "id": "write-explicit-zero-permissions",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" permission_read { value: 0 } permission_write { value: 0 } }",
+      "hex": "0a140a0770726f66696c6512016b1a027b7d2a003200",
+      "purpose": "Both explicit-zero wrappers remain present as zero-length nested messages."
+    },
+    {
+      "id": "write-zero-read-omitted-write",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" permission_read {} }",
+      "hex": "0a120a0770726f66696c6512016b1a027b7d2a00",
+      "purpose": "Present zero read wrapper differs from omitted write wrapper."
+    },
+    {
+      "id": "write-omitted-read-zero-write",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" permission_write {} }",
+      "hex": "0a120a0770726f66696c6512016b1a027b7d3200",
+      "purpose": "Omitted read wrapper differs from present zero write wrapper."
+    },
+    {
+      "id": "write-explicit-owner-permissions",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" permission_read { value: 1 } permission_write { value: 1 } }",
+      "hex": "0a180a0770726f66696c6512016b1a027b7d2a02080132020801",
+      "purpose": "Explicit 1/1 wrappers have nonempty nested payloads."
+    },
+    {
+      "id": "write-public-read-owner-write",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" permission_read { value: 2 } permission_write { value: 1 } }",
+      "hex": "0a180a0770726f66696c6512016b1a027b7d2a02080232020801",
+      "purpose": "Maximum public API read/write permission values."
+    },
+    {
+      "id": "write-negative-permissions",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" permission_read { value: -1 } permission_write { value: -2147483648 } }",
+      "hex": "0a2a0a0770726f66696c6512016b1a027b7d2a0b08ffffffffffffffffff01320b0880808080f8ffffffff01",
+      "purpose": "Negative int32 and minimum int32 values encode unchanged; API rejection is not executed."
+    },
+    {
+      "id": "write-out-of-api-range-permissions",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" permission_read { value: 3 } permission_write { value: 2 } }",
+      "hex": "0a180a0770726f66696c6512016b1a027b7d2a02080332020802",
+      "purpose": "Values outside API ACL ranges remain legal protobuf int32 values; API rejection is not executed."
+    },
+    {
+      "id": "write-max-int32-permissions",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" permission_read { value: 2147483647 } permission_write { value: 2147483647 } }",
+      "hex": "0a200a0770726f66696c6512016b1a027b7d2a0608ffffffff07320608ffffffff07",
+      "purpose": "Maximum signed int32 values are preserved without narrowing; API rejection is not executed."
+    },
+    {
+      "id": "write-create-only-version",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" version: \"*\" }",
+      "hex": "0a130a0770726f66696c6512016b1a027b7d22012a",
+      "purpose": "Write create-only version marker is carried as an ordinary exact string."
+    },
+    {
+      "id": "write-exact-strings-json",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile/雪\" key: \" k\\t\\\"\\\\\" value: \" {\\\"amount\\\": 9007199254740993, \\\"tiny\\\": 0.0000000000000000001, \\\"dup\\\":1,\\\"dup\\\":2,\\\"escaped\\\":\\\"\\\\u0061\\\",\\\"unicode\\\":\\\"雪\\\"} \\n\" version: \" OpaqueABC*/雪\\n\" }",
+      "hex": "0a9a010a0b70726f66696c652fe99baa1205206b09225c1a72207b22616d6f756e74223a20393030373139393235343734303939332c202274696e79223a20302e303030303030303030303030303030303030312c2022647570223a312c22647570223a322c2265736361706564223a225c7530303631222c22756e69636f6465223a22e99baa227d200a2210204f70617175654142432a2fe99baa0a",
+      "purpose": "UTF-8, whitespace, escapes, duplicate JSON members, precision-sensitive number spellings and opaque version bytes are not parsed or normalized by the codec."
+    },
+    {
+      "id": "write-repeated-inputs",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects { collection: \"profile\" key: \"k\" value: \"{}\" version: \"*\" }\nobjects { collection: \"profile\" key: \"k\" value: \" { } \" version: \"OpaqueABC\" permission_read {} permission_write { value: 1 } }",
+      "hex": "0a130a0770726f66696c6512016b1a027b7d22012a0a240a0770726f66696c6512016b1a05207b207d2022094f70617175654142432a0032020801",
+      "purpose": "Repeated same-key inputs retain order, values, versions and distinct wrapper presence."
+    },
+    {
+      "id": "write-empty-object",
+      "message": "WriteStorageObjectsRequest",
+      "textproto": "objects {  }",
+      "hex": "0a00",
+      "purpose": "A present empty input message differs from an absent repeated input; API rejection is not executed."
+    },
+    {
+      "id": "empty-delete",
+      "message": "DeleteStorageObjectsRequest",
+      "textproto": "",
+      "hex": "",
+      "purpose": "Empty repeated delete field."
+    },
+    {
+      "id": "delete-without-version",
+      "message": "DeleteStorageObjectsRequest",
+      "textproto": "object_ids { collection: \"profile\" key: \"k\" }",
+      "hex": "0a0c0a0770726f66696c6512016b",
+      "purpose": "Absent scalar version decodes as the empty string."
+    },
+    {
+      "id": "delete-literal-star-version",
+      "message": "DeleteStorageObjectsRequest",
+      "textproto": "object_ids { collection: \"profile\" key: \"k\" version: \"*\" }",
+      "hex": "0a0f0a0770726f66696c6512016b1a012a",
+      "purpose": "Literal star version bytes are preserved; no delete wildcard semantics are inferred by this codec check."
+    },
+    {
+      "id": "delete-exact-version",
+      "message": "DeleteStorageObjectsRequest",
+      "textproto": "object_ids { collection: \"profile\" key: \"k\" version: \" OpaqueABC*/雪\\n\" }",
+      "hex": "0a1e0a0770726f66696c6512016b1a10204f70617175654142432a2fe99baa0a",
+      "purpose": "Opaque version whitespace, punctuation and UTF-8 remain exact."
+    },
+    {
+      "id": "delete-repeated-inputs",
+      "message": "DeleteStorageObjectsRequest",
+      "textproto": "object_ids { collection: \"profile\" key: \"k\" version: \"*\" }\nobject_ids { collection: \"profile\" key: \"k\" version: \"OpaqueABC\" }\nobject_ids { collection: \"profile\" key: \"k\" version: \"*\" }",
+      "hex": "0a0f0a0770726f66696c6512016b1a012a0a170a0770726f66696c6512016b1a094f70617175654142430a0f0a0770726f66696c6512016b1a012a",
+      "purpose": "Repeated duplicate targets and their exact version sequence remain intact."
+    },
+    {
+      "id": "delete-empty-object",
+      "message": "DeleteStorageObjectsRequest",
+      "textproto": "object_ids {}",
+      "hex": "0a00",
+      "purpose": "Present empty delete target differs from an absent repeated input; API rejection is not executed."
+    },
+    {
+      "id": "empty-write-acks",
+      "message": "StorageObjectAcks",
+      "textproto": "",
+      "hex": "",
+      "purpose": "Empty repeated acknowledgements field."
+    },
+    {
+      "id": "write-acks-full",
+      "message": "StorageObjectAcks",
+      "textproto": "acks { collection: \"profile\" key: \"k\" version: \"OpaqueABC\" user_id: \"abcdefab-cdef-abcd-efab-cdefabcdefab\" create_time { seconds: -1 nanos: 999999000 } update_time { seconds: 1700000000 nanos: 123456000 } }",
+      "hex": "0a5d0a0770726f66696c6512016b1a094f7061717565414243222461626364656661622d636465662d616263642d656661622d6364656661626364656661622a1108ffffffffffffffffff0110988cebdc03320b0880e2cfaa06108094ef3a",
+      "purpose": "ACK field numbers, canonical lowercase hyphenated owner, opaque version and nonzero timestamp nanos, including pre-epoch seconds."
+    },
+    {
+      "id": "write-acks-epoch",
+      "message": "StorageObjectAcks",
+      "textproto": "acks { collection: \"profile\" key: \"k\" version: \"\" user_id: \"abcdefab-cdef-abcd-efab-cdefabcdefab\" create_time {} update_time {} }",
+      "hex": "0a360a0770726f66696c6512016b222461626364656661622d636465662d616263642d656661622d6364656661626364656661622a003200",
+      "purpose": "Present zero timestamps are nested empty messages; explicit empty scalar version is omitted on the wire."
+    },
+    {
+      "id": "write-acks-repeated",
+      "message": "StorageObjectAcks",
+      "textproto": "acks { collection: \"profile\" key: \"z\" version: \"FirstABC\" user_id: \"abcdefab-cdef-abcd-efab-cdefabcdefab\" create_time { seconds: 1 nanos: 1 } update_time { seconds: 2 nanos: 999999999 } }\nacks { collection: \"profile\" key: \"a\" version: \"SecondDEF\" user_id: \"abcdefab-cdef-abcd-efab-cdefabcdefab\" create_time { seconds: 3 nanos: 1000 } update_time { seconds: 4 nanos: 1000000 } }",
+      "hex": "0a4c0a0770726f66696c6512017a1a084669727374414243222461626364656661622d636465662d616263642d656661622d6364656661626364656661622a04080110013208080210ff93ebdc030a4c0a0770726f66696c651201611a095365636f6e64444546222461626364656661622d636465662d616263642d656661622d6364656661626364656661622a05080310e8073206080410c0843d",
+      "purpose": "Repeated ACK order is not sorted by the codec; nanos retain full protobuf precision (not a DB precision claim)."
+    }
+  ]
+}
