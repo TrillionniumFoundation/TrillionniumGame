@@ -410,6 +410,18 @@
       ],
       "description": "Native gRPC ReadStorageObjects requires exact PostgreSQL/CockroachDB and immutable Nakama process/SDK pairing, ordering/multiplicity and historical timestamp resolution, hooks, resource-policy review and independent acceptance. Six complete-upstream protobuf vectors and Rust synthetic-repository/loopback tests are diagnostics only. No old HTTP evidence transfers.",
       "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_read"
+    },
+    {
+      "id": "REQ-EV-NATIVE-GRPC-STORAGE-MUTATIONS",
+      "blocking_gap": "GAP-P1-STORAGE-001",
+      "required_for": [
+        "C1",
+        "C2",
+        "C5",
+        "SG5"
+      ],
+      "description": "WriteStorageObjects/DeleteStorageObjects require exact PostgreSQL/CockroachDB and immutable Nakama process/official SDK pairing, OCC/ACL/default-permission/raw-value/timestamp/duplicate/atomicity differentials, hooks and storage-index effects, ambiguous-response reconciliation, resource-policy review and independent acceptance. The 24 mutation plus six read schema-codec vectors are diagnostics only; scoped Rust synthetic/loopback diagnostics do not qualify native execution and no historical read/auth/HTTP evidence transfers. Eight represented signatures leave 77 of the unchanged 85 RPC signatures unrepresented.",
+      "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_mutations"
     }
   ],
   "accepted_entry_count": 0,

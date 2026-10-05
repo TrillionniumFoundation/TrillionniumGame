@@ -307,7 +307,9 @@
         "TG-D1-2940D4CEAACA4051",
         "TG-D1-7A7BFBFD85579A6A",
         "TG-D1-46DC42DFD49DB606"
-      ]
+      ],
+      "native_grpc_mutation_scope": "Native gRPC write acknowledgements retain exact validated receipt seconds/nanoseconds. Unknown or invalid history rejects after a possible commit; no epoch fabrication, automatic retry, compensation or accepted timestamp parity.",
+      "native_grpc_mutation_contract": "contracts/grpc/nakama-native-auth-source.json#/storage_mutations"
     },
     {
       "id": "DIV-STORAGE-HTTP-AUTH-001",
@@ -335,7 +337,9 @@
         "TG-D1-2940D4CEAACA4051",
         "TG-D1-7A7BFBFD85579A6A",
         "TG-D1-46DC42DFD49DB606"
-      ]
+      ],
+      "native_grpc_mutation_scope": "Native gRPC storage mutations use the selected NakamaLegacy access principal and blacklist only; closed AccountsV5 admission, metadata-first precedence and existing lifetime/cancellation differences remain. No gRPC native/oracle/SDK authentication qualification transfers from HTTP.",
+      "native_grpc_mutation_contract": "contracts/grpc/nakama-native-auth-source.json#/storage_mutations"
     },
     {
       "id": "DIV-STORAGE-HTTP-BOUNDS-001",
@@ -363,7 +367,9 @@
         "TG-D1-2940D4CEAACA4051",
         "TG-D1-7A7BFBFD85579A6A",
         "TG-D1-46DC42DFD49DB606"
-      ]
+      ],
+      "native_grpc_mutation_scope": "Native gRPC WriteStorageObjects/DeleteStorageObjects use required nonempty new_nakama Unicode/control keys bounded at 128 characters, opaque OCC, wrapper defaults and original JSON bytes. Local count 100/value 1 MiB/effective transport frame 512 KiB/response 2 MiB differ from upstream; exact native/immutable/SDK pairing remains absent.",
+      "native_grpc_mutation_contract": "contracts/grpc/nakama-native-auth-source.json#/storage_mutations"
     },
     {
       "id": "DIV-STORAGE-HTTP-REPLAY-001",
@@ -391,7 +397,9 @@
         "TG-D1-2940D4CEAACA4051",
         "TG-D1-7A7BFBFD85579A6A",
         "TG-D1-46DC42DFD49DB606"
-      ]
+      ],
+      "native_grpc_mutation_scope": "Native gRPC mutations call the existing whole-batch transaction once. Returned mutation receipts are not durable replay records. Projection/cancellation/response loss may follow commit; no blind retry or compensation is added, and storage has no durable replay receipt or outbox effect integration.",
+      "native_grpc_mutation_contract": "contracts/grpc/nakama-native-auth-source.json#/storage_mutations"
     },
     {
       "id": "DIV-STORAGE-HTTP-READ-001",
@@ -442,9 +450,41 @@
         "Finite exact POST Custom/Device/Refresh/Logout source and native effect captures",
         "Independent security and compatibility review"
       ]
+    },
+    {
+      "id": "DIV-STORAGE-GRPC-MUTATION-EFFECTS-001",
+      "severity": "P1",
+      "category": "storage",
+      "status": "open",
+      "expected": "Native storage mutation behavior includes exact committed effects, runtime before/after hooks and storage-index maintenance under the pinned API.",
+      "observed": "Two protobuf source adapters reuse the existing homogeneous transaction repository, but runtime hooks, storage search indexes and outbox effect integration are not qualified or supplied by this change. Local model/codec tests do not establish native effects.",
+      "owner_role": "storage-data",
+      "gap_id": "GAP-P1-STORAGE-001",
+      "parity_ids": [
+        "TG-PAR-021",
+        "TG-PAR-023"
+      ],
+      "normalization_rule": null,
+      "blocking_claims": [
+        "C1",
+        "C2",
+        "C5"
+      ],
+      "evidence_ids": [],
+      "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_mutations",
+      "verification_required": [
+        "exact native PostgreSQL and CockroachDB gRPC execution",
+        "immutable Nakama process and official SDK differential including hooks and storage indexes",
+        "cancellation and ambiguous-effect reconciliation evidence",
+        "independent acceptance"
+      ],
+      "upstream_leaf_ids": [
+        "TG-D1-A1BA2806FC68DC9C",
+        "TG-D1-0C1CBF066F50728B"
+      ]
     }
   ],
   "open_p0_count": 1,
-  "open_p1_count": 10,
+  "open_p1_count": 11,
   "claim_boundary": "A fixed-source divergence still blocks claims until exact-head tests and required independent review promote it to verified-fixed."
 }

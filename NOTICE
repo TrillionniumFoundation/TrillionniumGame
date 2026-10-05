@@ -136,3 +136,14 @@ The Nakama Authors, Apache-2.0. Exact source blobs and codec-only vectors are
 registered in contracts/grpc/nakama-native-auth-source.json and
 contracts/grpc/nakama-storage-read-protobuf-fixtures.json. No Go runtime or
 upstream service implementation is added to the production process.
+
+Native gRPC WriteStorageObjects/DeleteStorageObjects source subset
+The modified protobuf subset derives WriteStorageObject,
+WriteStorageObjectsRequest, DeleteStorageObjectId, DeleteStorageObjectsRequest,
+StorageObjectAck and StorageObjectAcks from nakama-common v1.47.0, Copyright
+2019 The Nakama Authors, Apache-2.0. The independent Rust mutation adapter
+studies pinned Nakama api_storage.go/core_storage.go, Copyright 2018 The Nakama
+Authors, Apache-2.0. Exact source blobs and codec-only vectors are registered in
+contracts/grpc/nakama-native-auth-source.json and
+contracts/grpc/nakama-storage-mutation-protobuf-fixtures.json. No Go service,
+sidecar or compiled plugin loader is added to the target process.

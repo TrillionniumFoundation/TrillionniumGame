@@ -1,7 +1,7 @@
 # Architecture
 
 Status: **authoritative current documentation**  
-Revision: 2026-10-04
+Revision: 2026-10-05
 
 
 The canonical App now has one selected `AuthAuthorityRuntime`: disabled, durable-family, or Nakama legacy. Server startup verifies the selected schema/catalog/import state before constructing one Legacy service or owned durable verifier, then shares the selected keys/cache across workers. The four Legacy POST routes and storage Access context are source candidates; Legacy never uses durable session-family verification/rotation/revocation. `check-config` constructs no service, pool or worker, default schema remains StorageV4/epoch4, and the AccountsV5 capture gate remains false before account SQL or listeners. HTTP credential/query/body/response Debug is redacted and unauthenticated Legacy errors install a bounded static WWW-Authenticate header. Partial startup errors use the same drain/cancellation/join cleanup as normal shutdown. Exact native HTTP, paired oracle and production lifecycle qualification remain pending.
@@ -433,9 +433,10 @@ remain pending; no public activation or oracle-parity claim is granted.
 The canonical process now has a locally checked tonic/prost source adapter for
 AuthenticateDevice, AuthenticateCustom, SessionRefresh and SessionLogout, sharing
 the installed legacy keys/blacklist and the existing admitted native repository.
-ReadStorageObjects adds a sixth represented signature over the same selected Legacy
-authority and existing storage repository. Healthcheck remains unauthenticated;
-the unchanged 85-RPC denominator leaves 79 unrepresented signatures. The persistence lib-test generates the same canonical
+ReadStorageObjects, WriteStorageObjects and DeleteStorageObjects use the same
+selected Legacy authority and existing storage repository. Healthcheck remains
+unauthenticated; eight represented signatures leave 77 unrepresented signatures
+in the unchanged 85-RPC denominator. The persistence lib-test generates the same canonical
 proto into a separate output directory; its diagnostic Healthcheck-only service
 is unchanged. No parallel account store, auth15 import, schema activation or
 compiler upgrade is included.
@@ -477,3 +478,33 @@ remain unqualified. GetAccount remains unimplemented until the full native accou
 projection and canonical online-status authority exist; false online state is not
 fabricated. `contracts/grpc/nakama-native-auth-source.json#/storage_read` records
 the finite scope, residuals, fixtures and no-data-migration rollback.
+
+The native `WriteStorageObjects` and `DeleteStorageObjects` adapters bind both actor
+and every owner to that access principal, validate the whole request and invoke
+`apply_storage_batch_nakama` once per nonempty batch. Required nonempty collection
+and key use the native `new_nakama` domain, bounded at 128 Unicode characters,
+including dot/control text. Write permission wrappers default to 1 only when
+absent; explicit zero is retained. Empty/star/opaque write OCC and empty/opaque
+delete OCC, including literal star, reach the existing homogeneous transaction
+path unchanged. JSON-object syntax validation retains original value bytes and
+applies the pinned Go limit of 10,000 nested object/array containers with constant-space
+quote/escape-aware preflight. Semantic failures are selected by exact native
+storage code/reason pairs; schema/import/FK/SQL errors remain opaque Internal.
+
+The existing repository owns ACL/OCC and atomic commit for all occurrences before
+any successful acknowledgement is constructed. Write ACKs verify receipt identity,
+public version and OCC evidence and retain exact validated timestamp nanoseconds.
+Missing or invalid historical timestamps and malformed receipts can reject after
+commit. Response loss, cancellation or projection failure therefore never proves
+rollback and never permits retry or compensation. Returned mutation receipts are
+not durable replay records; storage still has no durable replay receipt or outbox
+effect integration. Runtime hooks and storage-index maintenance remain unqualified.
+
+These adapters add no schema, store, HTTP roundtrip, dependency or writer authority.
+Local caps are 100 objects, 1 MiB per value (the existing 512 KiB transport frame
+is the effective ingress limit), and 2 MiB encoded response. The AccountsV5 gate,
+metadata-first precedence and connection lifetime/cancellation residuals stay
+unchanged. `contracts/grpc/nakama-native-auth-source.json#/storage_mutations`
+binds the two methods, 24 additional schema-codec vectors, scoped local Rust
+diagnostics and rollback. Actual PostgreSQL/CockroachDB, immutable process, SDK,
+hook/index-effect and independent qualification remain open.

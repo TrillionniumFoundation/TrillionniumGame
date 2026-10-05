@@ -70,6 +70,15 @@
       "path": "server/core_storage.go",
       "blob": "23cb77e991124629c9c780ac981e6393313f0769",
       "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/core_storage.go"
+    },
+    {
+      "repository": "golang/go",
+      "version": "1.26.5",
+      "commit": "c19862e5f8415b4f24b189d065ed739517c548ba",
+      "path": "src/encoding/json/scanner.go",
+      "blob": "f4086186e29b0bf1825bada8ea111a27f2a1e422",
+      "sha256": "2b16dd215274dfa8e0806b53cca144684d5b9c8a02319cf5ce10120c50e6eef2",
+      "url": "https://github.com/golang/go/blob/c19862e5f8415b4f24b189d065ed739517c548ba/src/encoding/json/scanner.go"
     }
   ],
   "common": {
@@ -83,7 +92,9 @@
     "AuthenticateCustom",
     "SessionRefresh",
     "SessionLogout",
-    "ReadStorageObjects"
+    "ReadStorageObjects",
+    "WriteStorageObjects",
+    "DeleteStorageObjects"
   ],
   "full_rpc_denominator": 85,
   "bounds": {
@@ -149,7 +160,7 @@
       "generated_context_isolation": "separate canonical-grpc output in canonical server and persistence lib-test; diagnostic Healthcheck service unchanged and all-target check/tests/Clippy passed"
     },
     "strict_clippy": "offline locked two-crate all-targets -D warnings passed",
-    "scope": "Historical auth-only source observations retained from PR204/PR205. Current ReadStorageObjects diagnostics are separately recorded below; no prior native execution or independent acceptance transfers."
+    "scope": "Historical auth-only source observations retained from PR204/PR205. The storage_read local observations remain historical to the six-method source; storage_mutations records the new eight-method candidate validation separately. No prior native execution or independent acceptance transfers."
   },
   "claims": {
     "compiled": true,
@@ -165,7 +176,7 @@
     "Started blocking native work is not individually aborted by RPC cancellation; existing per-lease budget remains. Result after response abandonment may be committed or unknown.",
     "Generated Go handler decodes protobuf before security interceptor; candidate intentionally authenticates metadata first, so malformed-body/auth error precedence is not qualified.",
     "Native runtime before/after hooks are absent.",
-    "Only six signatures are represented, without shrinking the 85-method denominator. No grpc-gateway generated annotations, TLS, reflection, HTTP2 attack/load, SDK, multi-node, HA or production qualification.",
+    "Only eight signatures are represented, without shrinking the 85-method denominator. No grpc-gateway generated annotations, TLS, reflection, HTTP2 attack/load, SDK, multi-node, HA or production qualification.",
     "Generic Repository interface does not itself certify finite I/O; production PooledRepository retains configured existing pool timeout/cancellation semantics. Cancellation dispatch race remains upstream native residual.",
     "Native gRPC database/oracle evidence must use actual admitted native engines for PostgreSQL and CockroachDB; HTTP auth15 cannot be credited.",
     "Resource caps are local limits, not a claim of Nakama limit equivalence.",
@@ -177,24 +188,27 @@
     "Independent review of compiled integration delta, generated output isolation, metadata boundary, exact source bindings and local evidence.",
     "Publish only after review and applicable exact-head/prospective-merge checks; no merge or deployment authority is granted.",
     "Actual native PostgreSQL and CockroachDB Device/Custom/Refresh/Logout gRPC plus immutable Nakama oracle pairing remains required; HTTP auth15 provides no gRPC credit.",
-    "Runtime hooks, all remaining 79 RPC obligations, malformed-protobuf/auth precedence residual and explicit 30-second connection lifetime remain unqualified.",
+    "Runtime hooks, all remaining 77 RPC obligations, malformed-protobuf/auth precedence residual and explicit 30-second connection lifetime remain unqualified.",
     "Full make check and target-native CI are not replaced by scoped two-crate local checks. All production/public AccountsV5 and repository-wide compatibility gates remain false."
   ],
-  "remaining_non_healthcheck_rpc_obligations": 79,
+  "remaining_non_healthcheck_rpc_obligations": 77,
   "candidate_source_sha256": {
-    "crates/trnm-server/build.rs": "50499a795b3ea32daf6401792359c2614d7501033b13408384acafe7de8447d9",
+    "contracts/grpc/nakama-storage-mutation-protobuf-fixtures.json": "0db9e199e114d083b2ae2a2baee76cb490ae1dee5dc22cbafb38096a7b7f9755",
+    "contracts/grpc/nakama-storage-read-protobuf-fixtures.json": "c6ed8ab40189667e926ddd91235a5a203acaf539f819df6af281e1b5975e56d6",
     "crates/trnm-persistence-pg/build.rs": "e7a25e6fb79c1696f8b3343d38766eb9e7ed3939a1efb531e7f1f3e2f54cc3a4",
-    "crates/trnm-server/proto/nakama-healthcheck.proto": "e2fe54055da189f05cf277e308776ef9376de2cdac9a0aa6b6820ff940ab326e",
-    "crates/trnm-server/src/runtime/server.rs": "a66fd7295e3721d57ee0cfd240c4ba0ffe061120cddfc69cc9621daeabecd55f",
+    "crates/trnm-server/build.rs": "50499a795b3ea32daf6401792359c2614d7501033b13408384acafe7de8447d9",
+    "crates/trnm-server/proto/nakama-healthcheck.proto": "5a684ffd7a0f76a7d3db11f6cf3263f191f35e88f6cc65cfd754d3bd12ffa785",
     "crates/trnm-server/src/runtime/grpc.rs": "913d472b63e4e9f6c978faa49c906ead7bf38ed1e0f775d4a6f3be645a7f1aad",
-    "crates/trnm-server/src/runtime/grpc_auth.rs": "77fb2bbe9c16bd0a8d20e1edf505723ad8bf6ee6d6b2f656b790c17845a26565",
+    "crates/trnm-server/src/runtime/grpc_auth.rs": "3d680ce839badecb8776a9e68f0c2a4e9155fed39085ca58837a9ef310dc5ddc",
     "crates/trnm-server/src/runtime/grpc_auth_tests.rs": "47c096be63e440e37f8bd450f082a274c3845c33cedc8625e8e3e9283655d5a0",
+    "crates/trnm-server/src/runtime/grpc_storage.rs": "31b8d1c3957f6029888ca1e68c3511a3dad5b3b04175c718e32d5227c4cc5985",
+    "crates/trnm-server/src/runtime/grpc_storage_mutation.rs": "17bd8c81d523c051624aca2dca6d80695d84ba85e820eece51f52ce82a38aaac",
+    "crates/trnm-server/src/runtime/grpc_storage_mutation_tests.rs": "84e05abc7b7841e6ce3f7b8a64569945ab47374a2f7da11085ab0b6af01bbcb1",
+    "crates/trnm-server/src/runtime/grpc_storage_tests.rs": "85df63d48f26071a2fe64ab9596e4cd3d36e75b652b9b3ab92349c25fbdc108f",
     "crates/trnm-server/src/runtime/grpc_transport.rs": "30bac44cfc17695c05d44f12ecbf1b60e8be7230ae9da8853e386ea9d5861ebf",
     "crates/trnm-server/src/runtime/grpc_transport_tests.rs": "980e5ece0884b9aa59d2014e5aa1fb0a7685a230eece4dc06940b9b24b5dcf47",
-    "crates/trnm-server/src/runtime/grpc_storage.rs": "31b8d1c3957f6029888ca1e68c3511a3dad5b3b04175c718e32d5227c4cc5985",
-    "crates/trnm-server/src/runtime/grpc_storage_tests.rs": "85df63d48f26071a2fe64ab9596e4cd3d36e75b652b9b3ab92349c25fbdc108f",
-    "contracts/grpc/nakama-storage-read-protobuf-fixtures.json": "c6ed8ab40189667e926ddd91235a5a203acaf539f819df6af281e1b5975e56d6",
-    "scripts/check-grpc-storage-protobuf-reference.py": "3836e1c8a4493f099566901aa865334e623022cb851f27b9f07a9dbad3456e8e"
+    "crates/trnm-server/src/runtime/server.rs": "a66fd7295e3721d57ee0cfd240c4ba0ffe061120cddfc69cc9621daeabecd55f",
+    "scripts/check-grpc-storage-protobuf-reference.py": "3a3dc8cf2c7aba6f28c6beba2a28b5d66e2353fc2b25a20cff35c775b34dbc54"
   },
   "review_checklist": [
     "Confirm AuthBoundary response body and Service bounds match generated tonic/prost 0.14.5 APIs, plus BoolValue and BTreeMap code generation.",
@@ -255,7 +269,7 @@
       "HTTP_gateway_idle_setting_is_native_grpc_lifetime": false,
       "immutable_process_executed": false
     },
-    "historical_scope": "PR205 source-only CI repair: its five-method/44-module observations remain historical. The storage_read subsection records the new sixth method and 46-module inventory; no old execution transfers."
+    "historical_scope": "PR205 source-only CI repair: its five-method/44-module observations remain historical. The storage_read subsection retains six-method/46-module local observations. The active source inventory is eight methods/48 modules; current mutation validation is recorded separately and no old execution transfers."
   },
   "storage_read": {
     "status": "source-candidate",
@@ -327,7 +341,8 @@
       "source_and_documentation_checks": "passed, including immutable plan/gap/roadmap contracts",
       "make_check": "failed at five pre-existing trnm-token-crypto-provider remote_unix fixture binds: container OS PermissionDenied. Aggregate is not passed; subsequent aggregate stages did not run. Scoped two-crate tests/Clippy and Python ran separately.",
       "remote_exact_head": "not run",
-      "independent_acceptance": "not granted"
+      "independent_acceptance": "not granted",
+      "historical_scope": "Six-method/46-module read candidate observations; not execution evidence for the current eight-method mutation candidate."
     },
     "claims": {
       "accepted": false,
@@ -336,5 +351,105 @@
       "native_database_qualified": false,
       "oracle_paired": false
     }
+  },
+  "active_source_inventory": {
+    "runtime_modules": 48,
+    "represented_signatures": 8,
+    "unrepresented_signatures": 77,
+    "full_rpc_denominator": 85
+  },
+  "storage_mutations": {
+    "status": "source-candidate",
+    "method_paths": [
+      "/nakama.api.Nakama/WriteStorageObjects",
+      "/nakama.api.Nakama/DeleteStorageObjects"
+    ],
+    "task_ids": [
+      "TG-W4-002",
+      "TG-V3-010"
+    ],
+    "gap_ids": [
+      "GAP-P0-SERVER-001",
+      "GAP-P1-STORAGE-001"
+    ],
+    "parity_ids": [
+      "TG-D1-A1BA2806FC68DC9C",
+      "TG-D1-0C1CBF066F50728B"
+    ],
+    "source": "crates/trnm-server/src/runtime/grpc_storage_mutation.rs",
+    "tests": "crates/trnm-server/src/runtime/grpc_storage_mutation_tests.rs",
+    "scope": "Two native protobuf methods call the existing admitted apply_storage_batch_nakama transaction path once per nonempty fully validated batch; no HTTP roundtrip or second store.",
+    "authority": "Same installed NakamaLegacy access verifier and blacklist. Every object owner and StorageActor::User are bound to the verified principal. Basic/server keys, refresh tokens, Disabled and DurableFamily never authorize this profile. Closed AccountsV5 startup admission is unchanged.",
+    "new_store": false,
+    "public_v5_gate_change": false,
+    "http_json_roundtrip": false,
+    "generic_retry_added": false,
+    "durable_replay_receipt": false,
+    "outbox_effect_integration": false,
+    "caller_compensation": false,
+    "max_batch": 100,
+    "max_collection_key_characters": 128,
+    "max_value_bytes": 1048576,
+    "effective_transport_decoded_bytes": 524288,
+    "max_encoded_response_bytes": 2097152,
+    "empty_mutation_calls": 0,
+    "nonempty_repository_calls": 1,
+    "key_domain": "Required nonempty collection/key use new_nakama and the native 128-Unicode-character domain, including dot/control text; no strict internal identifier grammar.",
+    "validation": "Whole batch validation precedes native access. Int32 wrapper absence defaults to owner-only 1; explicit zero is retained. Read accepts 0/1/2, write accepts 0/1. JSON must be an object; RawValue syntax validation preserves original UTF-8 bytes, whitespace, duplicate members and public-version inputs. A constant-space quoted/escaped-delimiter-aware scan enforces the pinned Go JSON depth ceiling of 10000 before RawValue syntax validation.",
+    "occ": "Write empty means Any, star means MustNotExist, every other string is opaque Exact. Delete empty is unconditional and every nonempty value, including star, is opaque exact.",
+    "transaction": "Existing homogeneous Nakama batch repository owns OCC, ACL, duplicate occurrence/order behavior, database admission and atomic whole-batch commit. Mutation receipts are returned values, not durable replay records.",
+    "ack_projection": [
+      "construct success only after repository returns whole-batch commit",
+      "verify receipt count, occurrence identity, versions and OCC evidence",
+      "derive expected public version from original request bytes only",
+      "preserve create/update seconds and nanoseconds after validity checks",
+      "check actual protobuf encoded length before response allocation/delivery"
+    ],
+    "ambiguous_outcome": "Unknown/invalid historical timestamps or malformed receipts may reject after commit. Cancellation, projection failure and response loss never prove rollback and never authorize automatic retry or compensation. Durable reconciliation remains absent.",
+    "fixtures": "contracts/grpc/nakama-storage-mutation-protobuf-fixtures.json",
+    "reference_runner": "scripts/check-grpc-storage-protobuf-reference.py",
+    "reference_scope": "24 mutation plus six retained read vectors compared byte-for-byte against complete pinned upstream api.proto and candidate schema; codec only, no API/process/native database/SDK execution.",
+    "residuals": [
+      "Actual PostgreSQL/CockroachDB, immutable Nakama process, official SDK and independent review are unqualified.",
+      "Runtime before/after hooks and storage search-index maintenance/effect integration remain absent/unqualified.",
+      "Existing metadata-before-protobuf precedence, legacy authority gate, cancellation and absolute thirty-second transport lifetime remain unchanged.",
+      "100 objects, 128 Unicode characters, 1 MiB value with effective 512 KiB transport frame and 2 MiB response are explicit local resource-policy differences.",
+      "Historical missing timestamps, native SQL/NUL/JSONB errors, duplicate ordering and all durable effects need exact paired evidence; no normalizer is accepted."
+    ],
+    "migration_impact": "None. No database schema, migration, store, new writer authority, dependencies, issuer or production gate changes.",
+    "rollback": "Revert both RPCs, protobuf subset, mutation adapter/tests and source/status bindings together. No data or credential migration; already committed effects remain and must not be compensated by rollback.",
+    "local_validation": {
+      "python_source_and_control_tests": "passed: native gRPC/admission/source/plan/runtime inventory/workflow overlay/documentation controls; full Python suite passed 1318 tests",
+      "complete_upstream_schema_codec_cases": 24,
+      "retained_read_codec_cases": 6,
+      "codec_comparison": "30 passed: 24 mutation plus six retained read vectors, complete pinned upstream and candidate schemas; codec diagnostic only",
+      "live_database_executed": false,
+      "immutable_process_executed": false,
+      "official_sdk_executed": false,
+      "independent_review_accepted": false,
+      "toolchain": "Rust 1.85.1",
+      "rust_format": "passed",
+      "focused_mutation_tests": "19 passed, including exact native error-reason classification, 10000/10001 JSON depth, synthetic generated-client loopback and late commit after RPC abandonment; no native database credit",
+      "two_crate_all_target_tests": "passed after both source-review repairs: canonical server358 passed; persistence530 passed/2ignored; auxiliary targets passed. Counts overlap because persistence includes canonical runtime tests. Environment-gated paths confer no live DB execution.",
+      "two_crate_all_target_strict_clippy": "passed with -D warnings after both source-review repairs",
+      "aggregate_make_check": "failed at five pre-existing trnm-token-crypto-provider remote_unix fixture binds: OS PermissionDenied/Operation not permitted. Root server358 and persistence530/2ignored passed before failure. Remaining aggregate stages did not execute; aggregate is not passed.",
+      "full_python_tests": "1318 passed",
+      "remote_exact_head_or_prospective_merge": "not run",
+      "independent_acceptance": "not granted",
+      "review_repairs": [
+        "Preserve opaque Internal status for schema/import/FK errors that share FailedPrecondition with OCC; only exact native storage reasons map to semantic rejection.",
+        "Enforce total object/array nesting <=10000 before RawValue validation, matching pinned Go encoding/json.Valid while preserving raw JSON bytes."
+      ],
+      "source_review_diagnostic": "Two source-review findings corrected and re-read without remaining source blockers. This is not accepted native/oracle/security/database evidence or formal specialist acceptance."
+    },
+    "claims": {
+      "accepted": false,
+      "compatibility_credit": false,
+      "production_ready": false,
+      "native_database_qualified": false,
+      "oracle_paired": false
+    },
+    "max_json_depth": 10000,
+    "error_mapping": "Only exact storage code/reason pairs map OCC/ACL/not-found to InvalidArgument. Unrelated schema/import/FK/unique/admission failures are opaque Internal; native insert-only uniqueness is already classified to storage_object_already_exists by the existing repository."
   }
 }

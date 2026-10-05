@@ -8,9 +8,10 @@
 //
 // Auth and storage messages derive from nakama-common v1.47.0 / 449b77ecc8789aa466c36b67f6e498033dfcd9c5,
 // api/api.proto, vendored blob ddd2744739a252c268b2be004ff0e45c498adb35.
-// Modified by Trillionnium Foundation: bounded six-method Rust service subset.
+// Modified by Trillionnium Foundation: bounded eight-method Rust service subset.
 // This file intentionally contains Healthcheck, four auth methods and
-// ReadStorageObjects. It is not the complete Nakama service denominator and
+// ReadStorageObjects, WriteStorageObjects and DeleteStorageObjects.
+// It is not the complete Nakama service denominator and
 // grants no broad gRPC compatibility.
 syntax = "proto3";
 
@@ -92,6 +93,60 @@ message StorageObjects {
   repeated StorageObject objects = 1;
 }
 
+message DeleteStorageObjectId {
+  // The collection which stores the object.
+  string collection = 1;
+  // The key of the object within the collection.
+  string key = 2;
+  // The version hash of the object.
+  string version = 3;
+}
+
+message DeleteStorageObjectsRequest {
+  // Batch of storage objects.
+  repeated DeleteStorageObjectId object_ids = 1;
+}
+
+message StorageObjectAck {
+  // The collection which stores the object.
+  string collection = 1;
+  // The key of the object within the collection.
+  string key = 2;
+  // The version hash of the object.
+  string version = 3;
+  // The owner of the object.
+  string user_id = 4;
+  // The UNIX time (for gRPC clients) or ISO string (for REST clients) when the object was created.
+  google.protobuf.Timestamp create_time = 5;
+  // The UNIX time (for gRPC clients) or ISO string (for REST clients) when the object was last updated.
+  google.protobuf.Timestamp update_time = 6;
+}
+
+message StorageObjectAcks {
+  // Batch of storage write acknowledgements.
+  repeated StorageObjectAck acks = 1;
+}
+
+message WriteStorageObject {
+  // The collection to store the object.
+  string collection = 1;
+  // The key for the object within the collection.
+  string key = 2;
+  // The value of the object.
+  string value = 3;
+  // The version hash of the object to check. Possible values are: ["", "*", "#hash#"].
+  string version = 4; // if-match and if-none-match
+  // The read access permissions for the object.
+  google.protobuf.Int32Value permission_read = 5;
+  // The write access permissions for the object.
+  google.protobuf.Int32Value permission_write = 6;
+}
+
+message WriteStorageObjectsRequest {
+  // The objects to store on the server.
+  repeated WriteStorageObject objects = 1;
+}
+
 service Nakama {
   // A healthcheck which load balancers can use to check the service.
   rpc Healthcheck (google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -100,4 +155,6 @@ service Nakama {
   rpc SessionRefresh (SessionRefreshRequest) returns (Session);
   rpc SessionLogout (SessionLogoutRequest) returns (google.protobuf.Empty);
   rpc ReadStorageObjects (ReadStorageObjectsRequest) returns (StorageObjects);
+  rpc WriteStorageObjects (WriteStorageObjectsRequest) returns (StorageObjectAcks);
+  rpc DeleteStorageObjects (DeleteStorageObjectsRequest) returns (google.protobuf.Empty);
 }
