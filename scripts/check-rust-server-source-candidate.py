@@ -28,6 +28,8 @@ EXPECTED_RUNTIME_FILES = {
     "grpc_storage_tests.rs",
     "grpc_storage_mutation.rs",
     "grpc_storage_mutation_tests.rs",
+    "grpc_storage_list.rs",
+    "grpc_storage_list_tests.rs",
     "grpc_transport.rs",
     "grpc_transport_tests.rs",
     "healthcheck_form.rs",

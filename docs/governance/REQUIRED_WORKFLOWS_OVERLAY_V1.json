@@ -491,7 +491,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "3df01d2bf68cfa6bfa4bebe2a9672f01fdc74684",
+      "git_blob_sha1": "b5226b62c27c75fd0eedaeb7884a57e08bcea2dd",
       "minimum_successful_execution_jobs": 1,
       "name": "grpc-health-source",
       "path": ".github/workflows/grpc-health-source.yml",
@@ -510,5 +510,5 @@
   ],
   "repository": "TrillionniumFoundation/TrillionniumGame",
   "schema": "trnm_required_workflow_overlay_v1",
-  "overlay_sha256": "ec99e0004422824432ca5ccb3da0f362d6850a4db34e6f79a0a8b35fd73e8b1a"
+  "overlay_sha256": "bbfd17c5799634442a7b5979597cf2920bd059bafb14ab22e28722a0f3b8df64"
 }

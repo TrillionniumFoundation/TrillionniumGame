@@ -420,8 +420,20 @@
         "C5",
         "SG5"
       ],
-      "description": "WriteStorageObjects/DeleteStorageObjects require exact PostgreSQL/CockroachDB and immutable Nakama process/official SDK pairing, OCC/ACL/default-permission/raw-value/timestamp/duplicate/atomicity differentials, hooks and storage-index effects, ambiguous-response reconciliation, resource-policy review and independent acceptance. The 24 mutation plus six read schema-codec vectors are diagnostics only; scoped Rust synthetic/loopback diagnostics do not qualify native execution and no historical read/auth/HTTP evidence transfers. Eight represented signatures leave 77 of the unchanged 85 RPC signatures unrepresented.",
+      "description": "WriteStorageObjects/DeleteStorageObjects require exact PostgreSQL/CockroachDB and immutable Nakama process/official SDK pairing, OCC/ACL/default-permission/raw-value/timestamp/duplicate/atomicity differentials, hooks and storage-index effects, ambiguous-response reconciliation, resource-policy review and independent acceptance. The 24 mutation plus six read schema-codec vectors are diagnostics only; scoped Rust synthetic/loopback diagnostics do not qualify native execution and no historical read/auth/HTTP evidence transfers. The historical mutation slice represented eight signatures; the current nine-signature source leaves 76 of the unchanged 85 unrepresented.",
       "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_mutations"
+    },
+    {
+      "id": "REQ-EV-NATIVE-GRPC-STORAGE-LIST",
+      "blocking_gap": "GAP-P1-STORAGE-001",
+      "required_for": [
+        "C1",
+        "C2",
+        "C5",
+        "SG5"
+      ],
+      "description": "Native ListStorageObjects requires exact admitted PostgreSQL/CockroachDB and immutable Nakama process/official SDK pairing for ACL, SQL text order, limit+1 pagination, literal gob cursor bytes, malformed cursor, timestamp/error/resource behavior, hooks and independent acceptance. Fourteen schema vectors and synthetic tests do not qualify execution. Nine signatures leave 76 of unchanged 85 unrepresented.",
+      "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_list"
     }
   ],
   "accepted_entry_count": 0,

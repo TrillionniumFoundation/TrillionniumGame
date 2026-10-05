@@ -8,9 +8,9 @@
 //
 // Auth and storage messages derive from nakama-common v1.47.0 / 449b77ecc8789aa466c36b67f6e498033dfcd9c5,
 // api/api.proto, vendored blob ddd2744739a252c268b2be004ff0e45c498adb35.
-// Modified by Trillionnium Foundation: bounded eight-method Rust service subset.
+// Modified by Trillionnium Foundation: bounded nine-method Rust service subset.
 // This file intentionally contains Healthcheck, four auth methods and
-// ReadStorageObjects, WriteStorageObjects and DeleteStorageObjects.
+// ReadStorageObjects, WriteStorageObjects, DeleteStorageObjects and ListStorageObjects.
 // It is not the complete Nakama service denominator and
 // grants no broad gRPC compatibility.
 syntax = "proto3";
@@ -147,6 +147,24 @@ message WriteStorageObjectsRequest {
   repeated WriteStorageObject objects = 1;
 }
 
+message ListStorageObjectsRequest {
+  // ID of the user.
+  string user_id = 1;
+  // The collection which stores the object.
+  string collection = 2;
+  // The number of storage objects to list. Between 1 and 100.
+  google.protobuf.Int32Value limit = 3;
+  // The cursor to page through results from.
+  string cursor = 4; // value from StorageObjectList.cursor.
+}
+
+message StorageObjectList {
+  // The list of storage objects.
+  repeated StorageObject objects = 1;
+  // The cursor for the next page of results, if any.
+  string cursor = 2;
+}
+
 service Nakama {
   // A healthcheck which load balancers can use to check the service.
   rpc Healthcheck (google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -157,4 +175,5 @@ service Nakama {
   rpc ReadStorageObjects (ReadStorageObjectsRequest) returns (StorageObjects);
   rpc WriteStorageObjects (WriteStorageObjectsRequest) returns (StorageObjectAcks);
   rpc DeleteStorageObjects (DeleteStorageObjectsRequest) returns (google.protobuf.Empty);
+  rpc ListStorageObjects (ListStorageObjectsRequest) returns (StorageObjectList);
 }

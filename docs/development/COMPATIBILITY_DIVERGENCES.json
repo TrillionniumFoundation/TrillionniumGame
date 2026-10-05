@@ -482,9 +482,39 @@
         "TG-D1-A1BA2806FC68DC9C",
         "TG-D1-0C1CBF066F50728B"
       ]
+    },
+    {
+      "id": "DIV-STORAGE-GRPC-LIST-CURSOR-001",
+      "severity": "P1",
+      "category": "storage",
+      "status": "open",
+      "expected": "Pinned ListStorageObjects uses full Go gob cursor decoding/encoding, native SQL ACL/text order and runtime before/after hooks.",
+      "observed": "The ninth native source signature reuses the bounded gob subset and canonical SQL; Go global type IDs, full cursor grammar, local caps, historical timestamps and hooks remain unqualified. No normalization is accepted.",
+      "owner_role": "storage-data",
+      "gap_id": "GAP-P1-STORAGE-001",
+      "parity_ids": [
+        "TG-PAR-024"
+      ],
+      "upstream_leaf_ids": [
+        "TG-D1-B55FDBA19980E9DD"
+      ],
+      "normalization_rule": null,
+      "blocking_claims": [
+        "C1",
+        "C2",
+        "C5"
+      ],
+      "evidence_ids": [],
+      "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_list",
+      "verification_required": [
+        "Exact native PostgreSQL/CockroachDB SQL ACL and continuation execution",
+        "Immutable Nakama and official SDK raw cursor/negative corpus",
+        "Historical timestamp, hook and resource-policy review",
+        "Independent acceptance"
+      ]
     }
   ],
   "open_p0_count": 1,
-  "open_p1_count": 11,
+  "open_p1_count": 12,
   "claim_boundary": "A fixed-source divergence still blocks claims until exact-head tests and required independent review promote it to verified-fixed."
 }

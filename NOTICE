@@ -147,3 +147,13 @@ Authors, Apache-2.0. Exact source blobs and codec-only vectors are registered in
 contracts/grpc/nakama-native-auth-source.json and
 contracts/grpc/nakama-storage-mutation-protobuf-fixtures.json. No Go service,
 sidecar or compiled plugin loader is added to the target process.
+
+Native gRPC ListStorageObjects source subset
+The modified protobuf subset derives ListStorageObjectsRequest and
+StorageObjectList from nakama-common v1.47.0, Copyright 2019 The Nakama Authors,
+Apache-2.0. The independent Rust list adapter studies pinned Nakama
+api_storage.go/core_storage.go, Copyright 2018 The Nakama Authors, Apache-2.0,
+and reuses the existing bounded gob codec. Exact source identities and codec-only
+vectors are registered in contracts/grpc/nakama-native-auth-source.json and
+contracts/grpc/nakama-storage-list-protobuf-fixtures.json. No Go service or loader
+is introduced.
