@@ -535,3 +535,13 @@ python3 -m unittest discover -s tests/control_plane -p 'test_native_grpc_auth_so
 The gRPC source contract and transitive native-admission source inventory must
 be rebound together after reviewed source edits. This does not qualify native
 authentication over gRPC or replace exact PostgreSQL/CockroachDB oracle execution.
+
+The source-validation inventory includes all 44 canonical runtime modules, including
+the four native gRPC auth/transport modules. `grpc-health-source` retains diagnostic
+Healthcheck tests/lint and additionally runs canonical native gRPC tests/lint; it
+checks the five-signature source contract without changing the 85-RPC denominator.
+Workflow source bytes must be rebound only in the current overlay, not its immutable
+base manifest. The active-client regression deliberately records that the existing
+absolute 30-second policy also closes healthy clients. Removing that bound requires
+a mature transport send-custody deadline, including zero/tiny response windows under
+concurrent traffic. Request-future completion or response Body drop is insufficient.

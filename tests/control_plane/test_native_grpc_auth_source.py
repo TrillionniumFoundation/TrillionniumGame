@@ -15,6 +15,17 @@ SPEC.loader.exec_module(M)
 
 
 class NativeGrpcSourceTests(unittest.TestCase):
+    def test_workflow_preserves_diagnostic_and_canonical_grpc_execution(self):
+        source = (ROOT / ".github/workflows/grpc-health-source.yml").read_text()
+        self.assertNotIn("represents only the pinned Nakama", source)
+        for required in ("contracts/grpc/nakama-healthcheck-v1.json",
+                         "python3 scripts/check-trnm-server.py",
+                         "python3 scripts/check-rust-server-source-candidate.py",
+                         "cargo test --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked",
+                         "cargo test --package trnm-server --lib --locked runtime::grpc",
+                         "cargo clippy --package trnm-server --all-targets --locked -- -D warnings"):
+            self.assertIn(required, source)
+
     def test_actual_bound_source_and_closed_claims(self):
         M.validate_native_grpc_auth_source()
 

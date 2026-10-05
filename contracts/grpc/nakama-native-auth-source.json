@@ -174,7 +174,7 @@
     "crates/trnm-server/src/runtime/grpc_auth.rs": "1ab43c8e4a417e11823ad532f7347bee18ba7134fc85faef889214cf4667c146",
     "crates/trnm-server/src/runtime/grpc_auth_tests.rs": "47c096be63e440e37f8bd450f082a274c3845c33cedc8625e8e3e9283655d5a0",
     "crates/trnm-server/src/runtime/grpc_transport.rs": "30bac44cfc17695c05d44f12ecbf1b60e8be7230ae9da8853e386ea9d5861ebf",
-    "crates/trnm-server/src/runtime/grpc_transport_tests.rs": "e22173a69c7c467392876a8cea6f8f8e01abd97c31590f22c0319b95d668d489"
+    "crates/trnm-server/src/runtime/grpc_transport_tests.rs": "980e5ece0884b9aa59d2014e5aa1fb0a7685a230eece4dc06940b9b24b5dcf47"
   },
   "review_checklist": [
     "Confirm AuthBoundary response body and Service bounds match generated tonic/prost 0.14.5 APIs, plus BoolValue and BTreeMap code generation.",
@@ -188,5 +188,52 @@
     "Review accepted-at monotonic lifetime enforcement during normal supervision, preface-independent actual shutdown, and no capacity reuse before OwnedSocket destructor.",
     "Review compiled integration delta and separate canonical/diagnostic generated-output contexts; inspect exact local logs and rerun prospective exact-head CI."
   ],
-  "revision": "compiled-integration-review"
+  "revision": "compiled-integration-review",
+  "source_validation_repair": {
+    "status": "source-candidate",
+    "base_commit": "4231ea6be9338d301117542f42a454f2cf60586f",
+    "base_pull_request": 204,
+    "runtime_modules": 44,
+    "canonical_methods": 5,
+    "denominator": 85,
+    "diagnostic_healthcheck_retained": true,
+    "canonical_grpc_tests_and_clippy_added": true,
+    "known_lifetime_regression": "absolute_lifetime_also_closes_healthy_clients_without_claiming_idle_parity",
+    "transport_policy_changed": false,
+    "healthy_lifetime_parity": false,
+    "response_send_custody_repair_accepted": false,
+    "migration_impact": "None; runtime transport, protobuf schema, dependencies, database and writer policies are unchanged.",
+    "rollback": "Revert CI/inventory/test source repair and its source/overlay bindings together; no data or credential rollback.",
+    "remaining": "A mature-transport send-custody deadline must cover zero and tiny-positive response windows under concurrent traffic before the absolute lifetime policy can be removed. Body drop is not send completion.",
+    "current_local_validation": {
+      "toolchain": "Rust 1.85.1",
+      "focused_grpc": "24 passed, including production-budget active-client expiry",
+      "two_crate_all_targets": "server lib 327 passed; persistence lib 499 passed/2 ignored; auxiliary target tests passed; no live DB or oracle credit",
+      "strict_two_crate_clippy": "passed with -D warnings",
+      "revised_workflow_source_step": "executed locally and passed",
+      "source_inventory": "44 actual modules; exact equality and negative omission tests pass",
+      "documentation_authority": "passed",
+      "required_workflow_overlay": "16 contract tests passed; immutable base unchanged",
+      "make_check": "failed: five existing crypto-provider UnixListener fixture binds returned OS PermissionDenied; one elevated diagnostic retry confirmed the same container restriction; aggregate is not passed",
+      "remote_exact_head_or_prospective_merge": "not run for this local candidate",
+      "independent_acceptance": "not granted",
+      "python_tests": "1310 tests passed with pinned toolchain on PATH",
+      "canonical_process_smoke": "passed synthetic config/redaction, missing-DB rejection and unavailable-loopback startup refusal; no ingress, graceful shutdown or live database qualification"
+    },
+    "accepted": false,
+    "compatibility_credit": false,
+    "production_ready": false,
+    "pinned_lifetime_source_observation": {
+      "nakama_commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "server_api_blob": "61d1b8763f7b7fcf6ed0bc5cd720ff2314c7dacb",
+      "vendored_grpc_server_blob": "cf0a2067190c47501d848cdab20b8cbc0b992f7d",
+      "vendored_grpc_defaults_blob": "0b2269a503941c5188ed4a27f9a9469cd6e6af58",
+      "default_connection_establishment_seconds": 120,
+      "default_maximum_idle_age_grace": "infinity",
+      "keepalive_seconds": 7200,
+      "keepalive_timeout_seconds": 20,
+      "HTTP_gateway_idle_setting_is_native_grpc_lifetime": false,
+      "immutable_process_executed": false
+    }
+  }
 }

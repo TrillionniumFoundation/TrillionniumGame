@@ -350,3 +350,83 @@ fn silent_tonic_saturation_expires_and_readmits_real_client_without_process_drai
             .unwrap();
     });
 }
+
+#[test]
+fn absolute_lifetime_also_closes_healthy_clients_without_claiming_idle_parity() {
+    use super::super::generated::google::protobuf::Empty;
+    use super::super::generated::nakama::api::{
+        nakama_client::NakamaClient, nakama_server::NakamaServer,
+    };
+    use super::super::HealthcheckService;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let drain = SharedDrain::default();
+        let incoming = OwnedIncoming::bind("127.0.0.1:0".parse().unwrap(), drain.clone())
+            .await
+            .unwrap();
+        let address = incoming.listener.local_addr().unwrap();
+        let registry = incoming.registry();
+        let shutdown = drain.clone();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .timeout(Duration::from_secs(5))
+                .add_service(NakamaServer::new(HealthcheckService))
+                .serve_with_incoming_shutdown(incoming, async move {
+                    while !shutdown.is_draining() {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+        });
+        let supervisor = tokio::spawn(supervise(server, registry.clone(), drain.clone()));
+        let mut client = NakamaClient::connect(format!("http://{address}"))
+            .await
+            .unwrap();
+        client.healthcheck(Empty {}).await.unwrap();
+        let accepted = registry.0.lock().unwrap().sockets[&1].accepted_at;
+        let mut successes = 1;
+        tokio::time::timeout(MAX_CONNECTION_LIFETIME + Duration::from_secs(4), async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let response =
+                    tokio::time::timeout(Duration::from_secs(2), client.healthcheck(Empty {}))
+                        .await
+                        .unwrap();
+                if response.is_ok() {
+                    successes += 1;
+                } else {
+                    assert!(accepted.elapsed() >= MAX_CONNECTION_LIFETIME);
+                }
+                let state = registry.0.lock().unwrap();
+                if state
+                    .sockets
+                    .get(&1)
+                    .is_none_or(|socket| socket.expiry_shutdown_sent)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(accepted.elapsed() >= MAX_CONNECTION_LIFETIME);
+        assert!(
+            successes >= 10,
+            "the connection must have carried healthy requests"
+        );
+        assert!(!drain.is_draining());
+        assert!(!registry.0.lock().unwrap().sealed);
+        drop(client);
+        drain.begin();
+        tokio::time::timeout(Duration::from_secs(3), supervisor)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(registry.0.lock().unwrap().sockets.is_empty());
+    });
+}
