@@ -398,6 +398,18 @@
         "C5"
       ],
       "description": "AuthenticateCustom source candidate needs owned separate PG/CR actual lookup/autocommit/uniqueness race and cancellation/late completion rows, canonical Rust HTTP paired immutable Nakama outcomes and independent security/database/runtime review. Existing source/mocks do not activate AccountsV5 or admit compatibility; Email remains blocked on reviewed bcrypt dependency/micro/CPU evidence."
+    },
+    {
+      "id": "REQ-EV-NATIVE-GRPC-STORAGE-READ",
+      "blocking_gap": "GAP-P1-STORAGE-001",
+      "required_for": [
+        "C1",
+        "C2",
+        "C5",
+        "SG5"
+      ],
+      "description": "Native gRPC ReadStorageObjects requires exact PostgreSQL/CockroachDB and immutable Nakama process/SDK pairing, ordering/multiplicity and historical timestamp resolution, hooks, resource-policy review and independent acceptance. Six complete-upstream protobuf vectors and Rust synthetic-repository/loopback tests are diagnostics only. No old HTTP evidence transfers.",
+      "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_read"
     }
   ],
   "accepted_entry_count": 0,

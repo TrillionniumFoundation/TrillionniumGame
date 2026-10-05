@@ -16,7 +16,8 @@
     "generated gRPC Healthcheck and four capture-gated native authentication method sources; 85-RPC denominator unchanged",
     "bounded WebSocket JSON and protobuf-envelope source",
     "access-token session refresh and logout source",
-    "schema migration and startup validation source"
+    "schema migration and startup validation source",
+    "bounded native gRPC ReadStorageObjects over the existing admitted readonly storage repository; six represented signatures out of the unchanged 85-RPC denominator"
   ],
   "not_implemented": [
     "canonical process authority transfer from trnm-persistence-pg",

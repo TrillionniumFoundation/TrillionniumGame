@@ -3179,6 +3179,8 @@ NATIVE_GRPC_AUTH_SOURCES = {
     "crates/trnm-server/proto/nakama-healthcheck.proto",
     "crates/trnm-server/src/runtime/server.rs", "crates/trnm-server/src/runtime/grpc.rs",
     "crates/trnm-server/src/runtime/grpc_auth.rs", "crates/trnm-server/src/runtime/grpc_auth_tests.rs",
+    "crates/trnm-server/src/runtime/grpc_storage.rs", "crates/trnm-server/src/runtime/grpc_storage_tests.rs",
+    "contracts/grpc/nakama-storage-read-protobuf-fixtures.json", "scripts/check-grpc-storage-protobuf-reference.py",
     "crates/trnm-server/src/runtime/grpc_transport.rs", "crates/trnm-server/src/runtime/grpc_transport_tests.rs",
 }
 
@@ -3188,7 +3190,7 @@ def validate_native_grpc_auth_source() -> None:
     if set(bindings) != NATIVE_GRPC_AUTH_SOURCES:
         fail("native gRPC source inventory drift")
     validate_reviewed_complete_production_files(bindings)
-    if contract.get("methods") != ["Healthcheck", "AuthenticateDevice", "AuthenticateCustom", "SessionRefresh", "SessionLogout"] or contract.get("full_rpc_denominator") != 85 or contract.get("remaining_non_healthcheck_rpc_obligations") != 80:
+    if contract.get("methods") != ["Healthcheck", "AuthenticateDevice", "AuthenticateCustom", "SessionRefresh", "SessionLogout", "ReadStorageObjects"] or contract.get("full_rpc_denominator") != 85 or contract.get("remaining_non_healthcheck_rpc_obligations") != 79:
         fail("native gRPC official denominator drift")
     for claim in ("native_grpc_executed", "oracle_paired", "compatibility_credit", "full_replacement", "production_ready", "accepted_independent_review"):
         if contract.get("claims", {}).get(claim) is not False:
@@ -3205,9 +3207,29 @@ def validate_native_grpc_auth_source() -> None:
     require_markers("native gRPC owned transport", transport, ("MAX_CONNECTIONS: usize = 32", "MAX_CONNECTION_LIFETIME: Duration = Duration::from_secs(30)", "GRACEFUL_DRAIN: Duration = Duration::from_secs(1)", "registry.close_expired(Instant::now())", "registry.close_all();", "server.abort();", "impl Drop for OwnedSocket"))
     if "cancel_inflight" in auth or "cancel_inflight" in transport:
         fail("native gRPC must not globally cancel another RPC")
+    storage = (ROOT / "crates/trnm-server/src/runtime/grpc_storage.rs").read_text()
+    read_policy = contract.get("storage_read", {})
+    for name, value in {"max_batch": 100, "max_collection_key_characters": 128, "max_encoded_response_bytes": 2097152, "empty_read_queries": 0, "nonempty_repository_calls": 1}.items():
+        if type(read_policy.get(name)) is not int or read_policy[name] != value:
+            fail("native gRPC storage bound drift: " + name)
+    for name in ("new_store", "public_v5_gate_change", "http_json_roundtrip", "generic_retry_added"):
+        if read_policy.get(name) is not False:
+            fail("native gRPC storage authority drift: " + name)
+    if any(value is not False for value in read_policy.get("claims", {}).values()) or set(read_policy.get("claims", {})) != {"accepted", "compatibility_credit", "production_ready", "native_database_qualified", "oracle_paired"}:
+        fail("native gRPC storage unearned qualification")
+    require_markers("native gRPC storage authority", auth, ('"/nakama.api.Nakama/ReadStorageObjects" => true', "async fn read_storage_objects(", "storage::read_objects(repository.0, input, principal.user())"))
+    require_markers("native gRPC storage read", storage, ("const MAX_BATCH: usize = 100;", "if user.is_zero()", "if keys.is_empty()", "StorageActor::User(user)", "allows_batch_read(object.key.user_id() == user)", ".verify_integrity()", "String::from_utf8(object.value)", "object.version.as_str()", ".validate()", "nanos: 0", "*total <= MAX_RESPONSE_BYTES"))
+    if storage.count(".read_storage_objects(") != 1 or any(marker in storage for marker in ("Actor::Server", "apply_storage_batch", "serde_json::from", "sort(", "dedup(")):
+        fail("native gRPC storage query/projection drift")
+    fixtures = json.loads((ROOT / "contracts/grpc/nakama-storage-read-protobuf-fixtures.json").read_text())
+    if fixtures.get("upstream_blob") != "ddd2744739a252c268b2be004ff0e45c498adb35" or len(fixtures.get("cases", [])) != 6:
+        fail("native gRPC storage reference inventory drift")
     status = json.loads((ROOT / "docs/status/TRNM_SERVER_STATUS.json").read_text())
     if status.get("native_grpc_auth_source_candidate") != {"contract": NATIVE_GRPC_AUTH_CONTRACT, "status": "locally-checked-source-candidate", "native_auth_grpc_qualified": False, "production_gate": False}:
         fail("native gRPC status binding drift")
+    expected_storage_status = {"contract": NATIVE_GRPC_AUTH_CONTRACT + "#/storage_read", "status": "source-candidate", "method": "ReadStorageObjects", "source": "crates/trnm-server/src/runtime/grpc_storage.rs", "tests": "crates/trnm-server/src/runtime/grpc_storage_tests.rs", "full_rpc_denominator": 85, "represented_signatures": 6, "production_gate": False, "accepted": False, "compatibility_credit": False, "native_database_qualified": False, "oracle_paired": False}
+    if not same_typed_value(status.get("native_grpc_storage_read_source_candidate"), expected_storage_status):
+        fail("native gRPC storage status binding drift")
 
 
 def main(arguments: list[str] | None = None) -> int:

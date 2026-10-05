@@ -1,21 +1,24 @@
 // Copyright 2018 The Nakama Authors
+// Copyright 2019 The Nakama Authors (api message definitions)
 // Licensed under the Apache License, Version 2.0.
 //
 // Exact method signature derived from:
 // heroiclabs/nakama@d4d92f93f78bbbe62c7fc50a3f85c772ec121a09
 // apigrpc/apigrpc.proto blob 1cc63aae1aaa5dc56ede9c9d0b6f9a95ff91361c
 //
-// Auth messages derive from nakama-common v1.47.0 / 449b77ecc8789aa466c36b67f6e498033dfcd9c5,
+// Auth and storage messages derive from nakama-common v1.47.0 / 449b77ecc8789aa466c36b67f6e498033dfcd9c5,
 // api/api.proto, vendored blob ddd2744739a252c268b2be004ff0e45c498adb35.
-// Modified by Trillionnium Foundation: bounded five-method Rust service subset.
-// This file intentionally contains Healthcheck and four auth methods. It is not the
-// complete Nakama service denominator and grants no broad gRPC compatibility.
+// Modified by Trillionnium Foundation: bounded six-method Rust service subset.
+// This file intentionally contains Healthcheck, four auth methods and
+// ReadStorageObjects. It is not the complete Nakama service denominator and
+// grants no broad gRPC compatibility.
 syntax = "proto3";
 
 package nakama.api;
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/wrappers.proto";
+import "google/protobuf/timestamp.proto";
 
 message AccountDevice {
   string id = 1;
@@ -49,6 +52,46 @@ message Session {
   string refresh_token = 3;
 }
 
+message ReadStorageObjectId {
+  // The collection which stores the object.
+  string collection = 1;
+  // The key of the object within the collection.
+  string key = 2;
+  // The user owner of the object.
+  string user_id = 3;
+}
+
+message ReadStorageObjectsRequest {
+  // Batch of storage objects.
+  repeated ReadStorageObjectId object_ids = 1;
+}
+
+message StorageObject {
+  // The collection which stores the object.
+  string collection = 1;
+  // The key of the object within the collection.
+  string key = 2;
+  // The user owner of the object.
+  string user_id = 3;
+  // The value of the object.
+  string value = 4;
+  // The version hash of the object.
+  string version = 5;
+  // The read access permissions for the object.
+  int32 permission_read = 6;
+  // The write access permissions for the object.
+  int32 permission_write = 7;
+  // The UNIX time (for gRPC clients) or ISO string (for REST clients) when the object was created.
+  google.protobuf.Timestamp create_time = 8;
+  // The UNIX time (for gRPC clients) or ISO string (for REST clients) when the object was last updated.
+  google.protobuf.Timestamp update_time = 9;
+}
+
+message StorageObjects {
+  // The batch of storage objects.
+  repeated StorageObject objects = 1;
+}
+
 service Nakama {
   // A healthcheck which load balancers can use to check the service.
   rpc Healthcheck (google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -56,4 +99,5 @@ service Nakama {
   rpc AuthenticateCustom (AuthenticateCustomRequest) returns (Session);
   rpc SessionRefresh (SessionRefreshRequest) returns (Session);
   rpc SessionLogout (SessionLogoutRequest) returns (google.protobuf.Empty);
+  rpc ReadStorageObjects (ReadStorageObjectsRequest) returns (StorageObjects);
 }

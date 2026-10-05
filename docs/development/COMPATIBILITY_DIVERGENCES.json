@@ -417,7 +417,9 @@
       "contract": "contracts/storage/nakama-http-storage-v1.json",
       "upstream_leaf_ids": [
         "TG-D1-46DC42DFD49DB606"
-      ]
+      ],
+      "native_grpc_scope": "The ReadStorageObjects source adapter uses the same per-key repository. Caller order/duplicate multiplicity is preserved, not qualified against upstream. Native gRPC also rejects unknown timestamps, caps input at 100 keys/128 characters and output at 2 MiB; no normalization or accepted credit.",
+      "native_grpc_contract": "contracts/grpc/nakama-native-auth-source.json#/storage_read"
     },
     {
       "id": "DIV-LEGACY-HTTP-DECODE-ORDER-001",

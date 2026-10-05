@@ -1,0 +1,44 @@
+{
+  "schema": "trillionnium.grpc-storage-read-codec-fixtures.v1",
+  "upstream_blob": "ddd2744739a252c268b2be004ff0e45c498adb35",
+  "protoc": "libprotoc 31.1",
+  "scope": "Complete pinned upstream api.proto codec reference; no Nakama API, process or native DB execution.",
+  "cases": [
+    {
+      "id": "empty-read",
+      "message": "ReadStorageObjectsRequest",
+      "textproto": "",
+      "hex": ""
+    },
+    {
+      "id": "global-read",
+      "message": "ReadStorageObjectsRequest",
+      "textproto": "object_ids { collection: \"profile\" key: \"global\" }",
+      "hex": "0a110a0770726f66696c651206676c6f62616c"
+    },
+    {
+      "id": "owner-duplicate-read",
+      "message": "ReadStorageObjectsRequest",
+      "textproto": "object_ids { collection: \"profile\" key: \"k\" user_id: \"07070707-0707-0707-0707-070707070707\" }\nobject_ids { collection: \"profile\" key: \"k\" user_id: \"07070707-0707-0707-0707-070707070707\" }",
+      "hex": "0a320a0770726f66696c6512016b1a2430373037303730372d303730372d303730372d303730372d3037303730373037303730370a320a0770726f66696c6512016b1a2430373037303730372d303730372d303730372d303730372d303730373037303730373037"
+    },
+    {
+      "id": "empty-response",
+      "message": "StorageObjects",
+      "textproto": "",
+      "hex": ""
+    },
+    {
+      "id": "full-response",
+      "message": "StorageObjects",
+      "textproto": "objects { collection: \"profile\" key: \"k\" user_id: \"07070707-0707-0707-0707-070707070707\" value: \" {\\\"amount\\\": 9007199254740993, \\\"tiny\\\": 0.0000000000000000001} \" version: \"OpaqueABC\" permission_read: 1 permission_write: 32767 create_time { seconds: -1 } update_time { seconds: 1700000000 } }",
+      "hex": "0a97010a0770726f66696c6512016b1a2430373037303730372d303730372d303730372d303730372d303730373037303730373037223d207b22616d6f756e74223a20393030373139393235343734303939332c202274696e79223a20302e303030303030303030303030303030303030317d202a094f7061717565414243300138ffff01420b08ffffffffffffffffff014a060880e2cfaa06"
+    },
+    {
+      "id": "global-epoch-response",
+      "message": "StorageObjects",
+      "textproto": "objects { collection: \"profile\" key: \"global\" user_id: \"00000000-0000-0000-0000-000000000000\" value: \"null\" version: \"\" permission_read: 2 create_time {} update_time {} }",
+      "hex": "0a430a0770726f66696c651206676c6f62616c1a2430303030303030302d303030302d303030302d303030302d30303030303030303030303022046e756c6c300242004a00"
+    }
+  ]
+}

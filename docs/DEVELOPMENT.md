@@ -536,12 +536,29 @@ The gRPC source contract and transitive native-admission source inventory must
 be rebound together after reviewed source edits. This does not qualify native
 authentication over gRPC or replace exact PostgreSQL/CockroachDB oracle execution.
 
-The source-validation inventory includes all 44 canonical runtime modules, including
-the four native gRPC auth/transport modules. `grpc-health-source` retains diagnostic
+The source-validation inventory includes all 46 canonical runtime modules, including
+the native gRPC auth/transport/read-storage modules. `grpc-health-source` retains diagnostic
 Healthcheck tests/lint and additionally runs canonical native gRPC tests/lint; it
-checks the five-signature source contract without changing the 85-RPC denominator.
+checks the six-signature source contract without changing the 85-RPC denominator.
 Workflow source bytes must be rebound only in the current overlay, not its immutable
 base manifest. The active-client regression deliberately records that the existing
 absolute 30-second policy also closes healthy clients. Removing that bound requires
 a mature transport send-custody deadline, including zero/tiny response windows under
 concurrent traffic. Request-future completion or response Body drop is insufficient.
+
+The ReadStorageObjects source adapter uses the same generated native gRPC
+service and existing repository method; it does not route through HTTP/JSON.
+`cargo test --offline --locked -p trnm-server --lib runtime::grpc::auth::storage`
+runs its synthetic-repository, ACL/integrity/timestamp/resource negatives and
+actual generated-client loopback tests. The six retained wire vectors are in
+`contracts/grpc/nakama-storage-read-protobuf-fixtures.json`. Reproduce their
+comparison with `scripts/check-grpc-storage-protobuf-reference.py`, passing
+`--upstream-api-proto` for the complete pinned api.proto, `--protoc` for the
+reviewed vendored compiler and `--include` for its well-known-type directory.
+The runner verifies the complete upstream Git blob before comparing bytes; it
+does not download sources or execute Nakama. These diagnostics confer no native
+database, immutable process, SDK, runtime-hook or independent acceptance.
+Rollback the RPC/proto/adapter/tests and bindings together; there is no data or
+credential migration. The existing transport lifetime and AccountsV5 gate stay
+unchanged. GetAccount's full-row and online-status authority dependencies remain
+open.

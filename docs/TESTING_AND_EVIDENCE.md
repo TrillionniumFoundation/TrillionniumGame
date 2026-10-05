@@ -703,3 +703,15 @@ continues successful Healthchecks, and observes expiry of that exact accepted so
 generation without triggering process drain. This confirms a known divergence; it
 does not claim lifetime parity. Request-aware idle alone would leave stalled response
 streams alive under concurrent traffic, so the finite safety policy remains in place.
+
+The native ReadStorageObjects slice adds twelve Rust regressions: whole-batch
+validation and error precedence, owner/global identity, exact ACL integers,
+opaque version/raw JSON text, negative seconds and fractional truncation,
+inconsistent rows, corrupt data, unknown times, actual encoded-byte caps,
+authentication-before-protobuf/business handling, shared logout revocation,
+drain refusal and a generated-client HTTP/2 read. Their repository is synthetic.
+Six independent codec vectors are reproduced from the complete pinned common
+api.proto with protoc and compared with the native prost projection. This is
+schema-level differential only. PostgreSQL/CockroachDB, immutable Nakama,
+hooks/SDK and independent review remain pending; existing read order/duplicate
+and resource-policy differences are not normalized or granted parity credit.

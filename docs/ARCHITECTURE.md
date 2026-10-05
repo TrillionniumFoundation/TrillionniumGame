@@ -433,8 +433,9 @@ remain pending; no public activation or oracle-parity claim is granted.
 The canonical process now has a locally checked tonic/prost source adapter for
 AuthenticateDevice, AuthenticateCustom, SessionRefresh and SessionLogout, sharing
 the installed legacy keys/blacklist and the existing admitted native repository.
-Healthcheck remains unauthenticated; the 85-RPC denominator still leaves 80 other
-non-Healthcheck obligations. The persistence lib-test generates the same canonical
+ReadStorageObjects adds a sixth represented signature over the same selected Legacy
+authority and existing storage repository. Healthcheck remains unauthenticated;
+the unchanged 85-RPC denominator leaves 79 unrepresented signatures. The persistence lib-test generates the same canonical
 proto into a separate output directory; its diagnostic Healthcheck-only service
 is unchanged. No parallel account store, auth15 import, schema activation or
 compiler upgrade is included.
@@ -456,3 +457,23 @@ aborted by this adapter, retried, or compensated.
 checks and residuals. Native auth RPC database/oracle pairing, runtime hooks,
 long-lived-connection equivalence, exact-head CI and independent acceptance remain
 open. HTTP auth15 results confer no gRPC credit; public AccountsV5 remains closed.
+
+The native `ReadStorageObjects` adapter authenticates before business validation,
+validates all keys before one repository call, and never treats Basic/server
+credentials, a refresh token or an omitted object owner as a player identity.
+Omitted owner selects global storage. The existing read-only snapshot retains
+schema/import/writer admission and its pool deadline. The adapter checks returned
+identity/multiplicity, exact owner/read ACL, integrity, UTF-8 and timestamps, then
+moves the native JSONB text into generated protobuf without parsing its value or
+recomputing its public version. It preserves repository result order. The local
+bounds are 100 keys, 128 Unicode characters per key component and 2 MiB of actual
+encoded response; excess rejects without partial results. This adds no SQL, schema,
+store, retry policy or production activation.
+
+The current gRPC profile remains NakamaLegacy-only. Its closed AccountsV5 startup
+gate remains authoritative. Native per-key read ordering/duplicate multiplicity,
+missing historical timestamps, runtime hooks and actual database/oracle pairing
+remain unqualified. GetAccount remains unimplemented until the full native account
+projection and canonical online-status authority exist; false online state is not
+fabricated. `contracts/grpc/nakama-native-auth-source.json#/storage_read` records
+the finite scope, residuals, fixtures and no-data-migration rollback.
