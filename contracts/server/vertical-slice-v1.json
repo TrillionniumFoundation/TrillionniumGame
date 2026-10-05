@@ -13,7 +13,7 @@
     "PostgreSQL repository composition source",
     "acknowledgement construction after commit or exact receipt replay",
     "bounded retry pool acquisition and cancellation source",
-    "generated gRPC Healthcheck service source",
+    "generated gRPC Healthcheck and four capture-gated native authentication method sources; 85-RPC denominator unchanged",
     "bounded WebSocket JSON and protobuf-envelope source",
     "access-token session refresh and logout source",
     "schema migration and startup validation source"

@@ -35,7 +35,7 @@
   "base_manifest_path": "docs/governance/REQUIRED_WORKFLOWS_V1.json",
   "composed_external_workflow_count": 55,
   "event": "pull_request",
-  "overlay_sha256": "fffe7408c4b262499556fa427c2e65b756d4f59c3cdebcf907d332be1128ef36",
+  "overlay_sha256": "172eb9f771cc03c23920df869bae708a591e66d9befd09ada5bae2af2470015e",
   "remove_workflow_ids": [],
   "replace_workflows": [
     {
@@ -492,7 +492,7 @@
       "allowed_events": [
         "pull_request"
       ],
-      "git_blob_sha1": "6998e894864f31ca0709ae339b06e56558db2467",
+      "git_blob_sha1": "af0ac10dd656e085856a08cc3ca722168a85be45",
       "minimum_successful_execution_jobs": 1,
       "name": "grpc-health-source",
       "path": ".github/workflows/grpc-health-source.yml",

@@ -683,7 +683,7 @@ remain pending; no public activation or oracle-parity claim is granted.
 ## Native gRPC source and transport evidence
 
 The bounded four-auth-RPC source adapter has local Rust 1.85.1 compilation and
-strict Clippy checks. Its 23 focused tests cover protobuf presence/field numbers,
+strict Clippy checks. Its 24 focused tests cover protobuf presence/field numbers,
 metadata precedence/repetition, native job ownership, cancelled/abandoned panic
 fencing, deterministic runtime joining, and actual tonic HTTP/2 transport. Real
 HTTP/2 regressions cover a zero response window blocking graceful flushing and
@@ -697,3 +697,9 @@ without configuration and explicitly ignored tests provide no live evidence.
 HTTP auth15 provides no gRPC evidence. The malformed-protobuf authentication
 precedence difference and fixed 30-second connection lifetime remain explicit.
 The public AccountsV5 gate, production and full-replacement claims remain false.
+
+The added active-client diagnostic uses the unchanged production 30-second budget,
+continues successful Healthchecks, and observes expiry of that exact accepted socket
+generation without triggering process drain. This confirms a known divergence; it
+does not claim lifetime parity. Request-aware idle alone would leave stalled response
+streams alive under concurrent traffic, so the finite safety policy remains in place.

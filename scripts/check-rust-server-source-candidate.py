@@ -22,6 +22,10 @@ EXPECTED_RUNTIME_FILES = {
     "cors_transport_tests.rs",
     "error.rs",
     "grpc.rs",
+    "grpc_auth.rs",
+    "grpc_auth_tests.rs",
+    "grpc_transport.rs",
+    "grpc_transport_tests.rs",
     "healthcheck_form.rs",
     "http.rs",
     "json.rs",
@@ -191,7 +195,7 @@ def main() -> int:
             "gRPC transport": "tonic::transport::Server",
             "WebSocket route": "websocket::serve_once",
             "access verifier": "AccessTokenVerifier",
-            "generated protobuf": 'tonic::include_proto!("nakama.api")',
+            "generated protobuf": '"/canonical-grpc/nakama.api.rs"',
         }
         for label, marker in markers.items():
             require(marker in source, f"server source missing {label}: {marker}")

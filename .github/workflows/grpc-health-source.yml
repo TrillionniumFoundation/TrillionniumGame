@@ -14,6 +14,11 @@ on:
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/mod.rs'
       - 'crates/trnm-persistence-pg/src/bin/trnm_server/server.rs'
       - 'contracts/grpc/nakama-healthcheck-v1.json'
+      - 'contracts/grpc/nakama-native-auth-source.json'
+      - 'crates/trnm-server/**'
+      - 'testdata/grpc/**'
+      - 'tests/control_plane/test_native_grpc_auth_source.py'
+      - 'scripts/check-rust-server-source-candidate.py'
       - 'docs/ARCHITECTURE.md'
       - 'docs/COMPATIBILITY.md'
       - 'docs/DOCUMENTATION_AUTHORITY.json'
@@ -58,7 +63,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'The current gRPC implementation represents only the pinned Nakama `Healthcheck' docs/ARCHITECTURE.md
+          grep -q '^## Bounded native gRPC authentication source$' docs/ARCHITECTURE.md
+          python3 scripts/check-trnm-server.py
+          python3 scripts/check-rust-server-source-candidate.py
+          python3 -m unittest discover -s tests/control_plane -p 'test_native_grpc_auth_source.py'
           grep -q 'A Healthcheck source implementation' docs/COMPATIBILITY.md
           jq -e '
             .status == "source-candidate" and
@@ -101,6 +109,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Test generated service and process integration
         run: cargo test --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked
+      - name: Test canonical native gRPC and owned transport
+        run: cargo test --package trnm-server --lib --locked runtime::grpc
+      - name: Strict lint canonical native gRPC
+        run: cargo clippy --package trnm-server --all-targets --locked -- -D warnings
       - name: Strict lint generated service and process integration
         run: cargo clippy --package trnm-persistence-pg --features diagnostic-compat-server --bin trnm-pg-compat-server --locked -- -D warnings
       - name: Recheck source contracts
