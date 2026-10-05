@@ -102,7 +102,7 @@ class NativeGrpcSourceTests(unittest.TestCase):
                 with patch.object(M, "ROOT", root), self.assertRaises(SystemExit):
                     M.validate_native_grpc_auth_source()
 
-    def test_storage_claims_bounds_and_eight_method_inventory_remain_fail_closed(self):
+    def test_storage_claims_bounds_and_nine_method_inventory_remain_fail_closed(self):
         for path, value in [("claims.native_database_qualified", True), ("claims.accepted", True), ("max_encoded_response_bytes", 4194304), ("max_batch", 101), ("empty_read_queries", False), ("new_store", True), ("public_v5_gate_change", True)]:
             with self.subTest(path=path), tempfile.TemporaryDirectory() as directory:
                 root = self.fixture(directory)
@@ -117,9 +117,9 @@ class NativeGrpcSourceTests(unittest.TestCase):
                 with patch.object(M, "ROOT", root), self.assertRaises(SystemExit):
                     M.validate_native_grpc_auth_source()
         document = json.loads((ROOT / M.NATIVE_GRPC_AUTH_CONTRACT).read_text())
-        self.assertEqual(len(document["methods"]), 8)
+        self.assertEqual(len(document["methods"]), 9)
         self.assertEqual(document["full_rpc_denominator"], 85)
-        self.assertEqual(document["remaining_non_healthcheck_rpc_obligations"], 77)
+        self.assertEqual(document["remaining_non_healthcheck_rpc_obligations"], 76)
 
     def test_storage_component_status_cannot_claim_acceptance(self):
         for field, value in [("accepted", True), ("represented_signatures", 85), ("production_gate", True)]:
@@ -193,7 +193,7 @@ class NativeGrpcSourceTests(unittest.TestCase):
                 with patch.object(M, "ROOT", root), self.assertRaises(SystemExit):
                     M.validate_native_grpc_auth_source()
 
-    def test_all_mutation_statuses_preserve_eight_of_eighty_five_and_closed_claims(self):
+    def test_all_mutation_statuses_preserve_nine_of_eighty_five_and_closed_claims(self):
         for relative in M.NATIVE_GRPC_STATUS_PATHS:
             for field, value in [("accepted", True), ("production_gate", True),
                                  ("represented_signatures", 6), ("unrepresented_signatures", 79),
@@ -229,5 +229,76 @@ class NativeGrpcSourceTests(unittest.TestCase):
             document = json.loads(path.read_text())
             document["active_source_inventory"]["represented_signatures"] = 6
             path.write_text(json.dumps(document))
+            with patch.object(M, "ROOT", root), self.assertRaises(SystemExit):
+                M.validate_native_grpc_auth_source()
+
+    def test_list_rebound_scope_cursor_projection_and_bounds_drift_is_rejected(self):
+        cases = [
+            ("grpc_storage_list.rs", "StorageActor::User(user)", "StorageActor::Server"),
+            ("grpc_storage_list.rs", "input.limit.as_ref().map_or(1, |value| value.value)", "input.limit.as_ref().map_or(100, |value| value.value)"),
+            ("grpc_storage_list.rs", "allows_foreign_listing()", "allows_owner_listing()"),
+            ("grpc_storage_list.rs", "object.key.user_id() == owner", "true"),
+            ("grpc_storage_list.rs", "next != StorageListPosition", "next == StorageListPosition"),
+            ("grpc_storage_list.rs", "encoded == input.cursor", "true"),
+            ("grpc_storage_list.rs", "let mut bytes = result.encoded_len();", "let mut bytes = 0;"),
+            ("grpc_storage_list.rs", "*total <= MAX_RESPONSE_BYTES", "*total <= usize::MAX"),
+            ("grpc_storage_list.rs", "nanos: 0", "nanos: value.nanos as i32"),
+            ("grpc_auth.rs", '"/nakama.api.Nakama/ListStorageObjects"', '"/nakama.api.Nakama/ListStorageObjectsRemoved"'),
+            ("grpc_auth.rs", "storage_list::list_objects(repository.0, input, principal.user())", "storage_list::list_objects(repository.0, input, UserId::ZERO)"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(name=name, old=old), tempfile.TemporaryDirectory() as directory:
+                root = self.fixture(directory)
+                relative = "crates/trnm-server/src/runtime/" + name
+                path = root / relative
+                self.assertIn(old, path.read_text())
+                path.write_text(path.read_text().replace(old, new))
+                contract = root / M.NATIVE_GRPC_AUTH_CONTRACT
+                document = json.loads(contract.read_text())
+                document["candidate_source_sha256"][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+                contract.write_text(json.dumps(document))
+                with patch.object(M, "ROOT", root), self.assertRaises(SystemExit):
+                    M.validate_native_grpc_auth_source()
+
+    def test_list_controls_cannot_expand_authority_or_qualification(self):
+        for field, value in [("default_limit", 100), ("max_limit", 101),
+                             ("max_collection_bytes", 8192), ("max_encoded_response_bytes", 4194304),
+                             ("repository_calls", 2), ("new_store", True),
+                             ("public_v5_gate_change", True), ("http_json_roundtrip", True),
+                             ("generic_retry_added", True), ("claims.accepted", True)]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = self.fixture(directory)
+                path = root / M.NATIVE_GRPC_AUTH_CONTRACT
+                document = json.loads(path.read_text())
+                current = document["storage_list"]
+                parts = field.split(".")
+                for part in parts[:-1]:
+                    current = current[part]
+                current[parts[-1]] = value
+                path.write_text(json.dumps(document))
+                with patch.object(M, "ROOT", root), self.assertRaises(SystemExit):
+                    M.validate_native_grpc_auth_source()
+        for relative in M.NATIVE_GRPC_STATUS_PATHS:
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as directory:
+                root = self.fixture(directory)
+                path = root / relative
+                document = json.loads(path.read_text())
+                document["native_grpc_storage_list_source_candidate"]["accepted"] = True
+                path.write_text(json.dumps(document))
+                with patch.object(M, "ROOT", root), self.assertRaises(SystemExit):
+                    M.validate_native_grpc_auth_source()
+
+    def test_rebound_list_fixture_omission_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            relative = "contracts/grpc/nakama-storage-list-protobuf-fixtures.json"
+            path = root / relative
+            fixture = json.loads(path.read_text())
+            fixture["cases"].pop()
+            path.write_text(json.dumps(fixture))
+            contract = root / M.NATIVE_GRPC_AUTH_CONTRACT
+            document = json.loads(contract.read_text())
+            document["candidate_source_sha256"][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+            contract.write_text(json.dumps(document))
             with patch.object(M, "ROOT", root), self.assertRaises(SystemExit):
                 M.validate_native_grpc_auth_source()

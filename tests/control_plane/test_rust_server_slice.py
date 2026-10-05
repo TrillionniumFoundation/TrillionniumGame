@@ -53,7 +53,7 @@ class RustServerSliceContractTests(unittest.TestCase):
         self.assertEqual(result["schema"], "trillionnium.server-source-check.v3")
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["binary"], "trnm-server")
-        self.assertEqual(result["runtime_module_count"], 48)
+        self.assertEqual(result["runtime_module_count"], 50)
         self.assertGreaterEqual(result["source_marker_count"], 20)
         self.assertFalse(result["claims"]["compiled"])
         self.assertFalse(result["claims"]["live_process_executed"])
@@ -77,7 +77,8 @@ class RustServerSliceContractTests(unittest.TestCase):
                         "cors.rs", "cors_transport_tests.rs", "grpc_auth.rs", "grpc_auth_tests.rs",
                         "grpc_transport.rs", "grpc_transport_tests.rs",
                         "grpc_storage.rs", "grpc_storage_tests.rs",
-                        "grpc_storage_mutation.rs", "grpc_storage_mutation_tests.rs"):
+                        "grpc_storage_mutation.rs", "grpc_storage_mutation_tests.rs",
+                        "grpc_storage_list.rs", "grpc_storage_list_tests.rs"):
             with self.subTest(omitted=omitted), self.assertRaisesRegex(module.ValidationError, "file set drift"):
                 module.validate_runtime_file_inventory(actual - {omitted})
         with self.assertRaisesRegex(module.ValidationError, "file set drift"):

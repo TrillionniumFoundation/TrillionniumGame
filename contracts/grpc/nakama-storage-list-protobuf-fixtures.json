@@ -1,0 +1,95 @@
+{
+  "schema": "trillionnium.grpc-storage-list-codec-fixtures.v1",
+  "upstream_commit": "449b77ecc8789aa466c36b67f6e498033dfcd9c5",
+  "upstream_blob": "ddd2744739a252c268b2be004ff0e45c498adb35",
+  "protoc": "libprotoc 31.1",
+  "full_rpc_denominator": 85,
+  "scope": "Complete pinned upstream schema codec only. No API, process, SQL, SDK or independent qualification.",
+  "compatibility_credit": false,
+  "cases": [
+    {
+      "id": "list-defaults",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "",
+      "hex": ""
+    },
+    {
+      "id": "list-collection",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "collection: \"profile\"",
+      "hex": "120770726f66696c65"
+    },
+    {
+      "id": "list-limit-zero",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "limit {}",
+      "hex": "1a00"
+    },
+    {
+      "id": "list-limit-one",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "limit { value: 1 }",
+      "hex": "1a020801"
+    },
+    {
+      "id": "list-limit-max",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "limit { value: 100 }",
+      "hex": "1a020864"
+    },
+    {
+      "id": "list-limit-negative",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "limit { value: -1 }",
+      "hex": "1a0b08ffffffffffffffffff01"
+    },
+    {
+      "id": "list-limit-overflow",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "limit { value: 101 }",
+      "hex": "1a020865"
+    },
+    {
+      "id": "list-owner",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "user_id: \"07070707-0707-0707-0707-070707070707\" collection: \"profile\" limit { value: 2 }",
+      "hex": "0a2430373037303730372d303730372d303730372d303730372d303730373037303730373037120770726f66696c651a020802"
+    },
+    {
+      "id": "list-zero-owner",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "user_id: \"00000000-0000-0000-0000-000000000000\"",
+      "hex": "0a2430303030303030302d303030302d303030302d303030302d303030303030303030303030"
+    },
+    {
+      "id": "list-exact-cursor",
+      "message": "ListStorageObjectsRequest",
+      "textproto": "collection: \"\u70b9/\\n\" cursor: \"untrusted-_\\r\\n\"",
+      "hex": "1205e782b92f0a220d756e747275737465642d5f0d0a"
+    },
+    {
+      "id": "list-empty-response",
+      "message": "StorageObjectList",
+      "textproto": "",
+      "hex": ""
+    },
+    {
+      "id": "list-cursor-response",
+      "message": "StorageObjectList",
+      "textproto": "cursor: \"cursor-_\"",
+      "hex": "1208637572736f722d5f"
+    },
+    {
+      "id": "list-full-response",
+      "message": "StorageObjectList",
+      "textproto": "objects { collection: \"profile\" key: \"k\" user_id: \"07070707-0707-0707-0707-070707070707\" value: \" {\\\"amount\\\": 9007199254740993, \\\"tiny\\\": 0.0000000000000000001} \" version: \"OpaqueABC\" permission_read: 1 permission_write: 32767 create_time { seconds: -1 } update_time { seconds: 1700000000 } }",
+      "hex": "0a97010a0770726f66696c6512016b1a2430373037303730372d303730372d303730372d303730372d303730373037303730373037223d207b22616d6f756e74223a20393030373139393235343734303939332c202274696e79223a20302e303030303030303030303030303030303030317d202a094f7061717565414243300138ffff01420b08ffffffffffffffffff014a060880e2cfaa06"
+    },
+    {
+      "id": "list-repeated-response",
+      "message": "StorageObjectList",
+      "textproto": "objects { key: \"second\" permission_read: 3 } objects { key: \"first\" permission_read: 2 }",
+      "hex": "0a0a12067365636f6e6430030a09120566697273743002"
+    }
+  ]
+}

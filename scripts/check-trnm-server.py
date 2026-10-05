@@ -3181,6 +3181,8 @@ NATIVE_GRPC_AUTH_SOURCES = {
     "crates/trnm-server/src/runtime/grpc_auth.rs", "crates/trnm-server/src/runtime/grpc_auth_tests.rs",
     "crates/trnm-server/src/runtime/grpc_storage.rs", "crates/trnm-server/src/runtime/grpc_storage_tests.rs",
     "crates/trnm-server/src/runtime/grpc_storage_mutation.rs", "crates/trnm-server/src/runtime/grpc_storage_mutation_tests.rs",
+    "crates/trnm-server/src/runtime/grpc_storage_list.rs", "crates/trnm-server/src/runtime/grpc_storage_list_tests.rs",
+    "contracts/grpc/nakama-storage-list-protobuf-fixtures.json",
     "contracts/grpc/nakama-storage-mutation-protobuf-fixtures.json",
     "contracts/grpc/nakama-storage-read-protobuf-fixtures.json", "scripts/check-grpc-storage-protobuf-reference.py",
     "crates/trnm-server/src/runtime/grpc_transport.rs", "crates/trnm-server/src/runtime/grpc_transport_tests.rs",
@@ -3199,9 +3201,9 @@ def validate_native_grpc_auth_source() -> None:
     if set(bindings) != NATIVE_GRPC_AUTH_SOURCES:
         fail("native gRPC source inventory drift")
     validate_reviewed_complete_production_files(bindings)
-    if contract.get("methods") != ["Healthcheck", "AuthenticateDevice", "AuthenticateCustom", "SessionRefresh", "SessionLogout", "ReadStorageObjects", "WriteStorageObjects", "DeleteStorageObjects"] or contract.get("full_rpc_denominator") != 85 or contract.get("remaining_non_healthcheck_rpc_obligations") != 77:
+    if contract.get("methods") != ["Healthcheck", "AuthenticateDevice", "AuthenticateCustom", "SessionRefresh", "SessionLogout", "ReadStorageObjects", "WriteStorageObjects", "DeleteStorageObjects", "ListStorageObjects"] or contract.get("full_rpc_denominator") != 85 or contract.get("remaining_non_healthcheck_rpc_obligations") != 76:
         fail("native gRPC official denominator drift")
-    if not same_typed_value(contract.get("active_source_inventory"), {"runtime_modules": 48, "represented_signatures": 8, "unrepresented_signatures": 77, "full_rpc_denominator": 85}):
+    if not same_typed_value(contract.get("active_source_inventory"), {"runtime_modules": 50, "represented_signatures": 9, "unrepresented_signatures": 76, "full_rpc_denominator": 85}):
         fail("native gRPC active inventory drift")
     proto = (ROOT / "crates/trnm-server/proto/nakama-healthcheck.proto").read_text()
     if re.findall(r"\brpc\s+(\w+)\s*\(", proto) != contract["methods"]:
@@ -3281,12 +3283,39 @@ def validate_native_grpc_auth_source() -> None:
     mutation_fixtures = json.loads((ROOT / "contracts/grpc/nakama-storage-mutation-protobuf-fixtures.json").read_text())
     if mutation_fixtures.get("schema") != "trillionnium.grpc-storage-mutation-codec-fixtures.v1" or mutation_fixtures.get("upstream_blob") != "ddd2744739a252c268b2be004ff0e45c498adb35" or len(mutation_fixtures.get("cases", [])) != 24 or mutation_fixtures.get("full_rpc_denominator") != 85:
         fail("native gRPC storage mutation reference inventory drift")
-    expected_storage_status = {"contract": NATIVE_GRPC_AUTH_CONTRACT + "#/storage_read", "status": "source-candidate", "method": "ReadStorageObjects", "source": "crates/trnm-server/src/runtime/grpc_storage.rs", "tests": "crates/trnm-server/src/runtime/grpc_storage_tests.rs", "full_rpc_denominator": 85, "represented_signatures": 8, "production_gate": False, "accepted": False, "compatibility_credit": False, "native_database_qualified": False, "oracle_paired": False}
-    expected_mutation_status = {"contract": NATIVE_GRPC_AUTH_CONTRACT + "#/storage_mutations", "status": "source-candidate", "methods": ["WriteStorageObjects", "DeleteStorageObjects"], "source": "crates/trnm-server/src/runtime/grpc_storage_mutation.rs", "tests": "crates/trnm-server/src/runtime/grpc_storage_mutation_tests.rs", "full_rpc_denominator": 85, "represented_signatures": 8, "unrepresented_signatures": 77, "production_gate": False, "accepted": False, "compatibility_credit": False, "native_database_qualified": False, "oracle_paired": False}
+    listing = (ROOT / "crates/trnm-server/src/runtime/grpc_storage_list.rs").read_text()
+    list_policy = contract.get("storage_list", {})
+    for name, value in {"default_limit": 1, "max_limit": 100, "max_collection_bytes": 4096, "max_encoded_response_bytes": 2097152, "repository_calls": 1}.items():
+        if type(list_policy.get(name)) is not int or list_policy[name] != value:
+            fail("native gRPC storage list bound drift: " + name)
+    for name in ("new_store", "public_v5_gate_change", "http_json_roundtrip", "generic_retry_added"):
+        if list_policy.get(name) is not False:
+            fail("native gRPC storage list authority drift: " + name)
+    if list_policy.get("method_path") != "/nakama.api.Nakama/ListStorageObjects" or not same_typed_value(list_policy.get("claims"), dict.fromkeys(("accepted", "compatibility_credit", "production_ready", "native_database_qualified", "oracle_paired"), False)):
+        fail("native gRPC storage list qualification drift")
+    require_markers("native gRPC list authority", auth, ('"/nakama.api.Nakama/ListStorageObjects"', "async fn list_storage_objects(", "storage_list::list_objects(repository.0, input, principal.user())"))
+    require_markers("native gRPC list projection", listing, (
+        "const MAX_COLLECTION_BYTES: usize = 4096;", "if user.is_zero()", "input.limit.as_ref().map_or(1, |value| value.value)",
+        "if !(1..=100).contains(&limit)", "parse_uuid(&input.user_id)", "decode_cursor(&input.cursor)",
+        "StorageActor::User(user)", "page.objects.len() > limit", "page.objects.len() != limit",
+        "next != StorageListPosition", "encode_cursor(&next)", "encoded == input.cursor",
+        "allows_public_listing()", "allows_owner_listing()", "allows_foreign_listing()",
+        "object.key.user_id() == owner", "!keys.insert(object.key.clone())", "object.key.collection() != input.collection",
+        ".verify_integrity()", "String::from_utf8(object.value)", "object.version.as_str()", ".validate()", "nanos: 0", "*total <= MAX_RESPONSE_BYTES", "let mut bytes = result.encoded_len();"))
+    if listing.count(".list_storage_objects_nakama(") != 1 or any(marker in listing for marker in ("StorageActor::Server", "apply_storage_batch", "serde_json::from", ".sort(", ".dedup(", "storage_list_api")):
+        fail("native gRPC list query/projection drift")
+    list_fixtures = json.loads((ROOT / "contracts/grpc/nakama-storage-list-protobuf-fixtures.json").read_text())
+    if list_fixtures.get("schema") != "trillionnium.grpc-storage-list-codec-fixtures.v1" or list_fixtures.get("upstream_blob") != "ddd2744739a252c268b2be004ff0e45c498adb35" or len(list_fixtures.get("cases", [])) != 14 or list_fixtures.get("full_rpc_denominator") != 85:
+        fail("native gRPC storage list reference inventory drift")
+    expected_storage_status = {"contract": NATIVE_GRPC_AUTH_CONTRACT + "#/storage_read", "status": "source-candidate", "method": "ReadStorageObjects", "source": "crates/trnm-server/src/runtime/grpc_storage.rs", "tests": "crates/trnm-server/src/runtime/grpc_storage_tests.rs", "full_rpc_denominator": 85, "represented_signatures": 9, "production_gate": False, "accepted": False, "compatibility_credit": False, "native_database_qualified": False, "oracle_paired": False}
+    expected_mutation_status = {"contract": NATIVE_GRPC_AUTH_CONTRACT + "#/storage_mutations", "status": "source-candidate", "methods": ["WriteStorageObjects", "DeleteStorageObjects"], "source": "crates/trnm-server/src/runtime/grpc_storage_mutation.rs", "tests": "crates/trnm-server/src/runtime/grpc_storage_mutation_tests.rs", "full_rpc_denominator": 85, "represented_signatures": 9, "unrepresented_signatures": 76, "production_gate": False, "accepted": False, "compatibility_credit": False, "native_database_qualified": False, "oracle_paired": False}
+    expected_list_status = {'contract': 'contracts/grpc/nakama-native-auth-source.json#/storage_list', 'status': 'source-candidate', 'method': 'ListStorageObjects', 'source': 'crates/trnm-server/src/runtime/grpc_storage_list.rs', 'tests': 'crates/trnm-server/src/runtime/grpc_storage_list_tests.rs', 'full_rpc_denominator': 85, 'represented_signatures': 9, 'unrepresented_signatures': 76, 'production_gate': False, 'accepted': False, 'compatibility_credit': False, 'native_database_qualified': False, 'oracle_paired': False}
     for path in sorted(NATIVE_GRPC_STATUS_PATHS):
         component = json.loads((ROOT / path).read_text())
         if not same_typed_value(component.get("native_grpc_storage_read_source_candidate"), expected_storage_status):
             fail("native gRPC storage status binding drift: " + path)
+        if not same_typed_value(component.get("native_grpc_storage_list_source_candidate"), expected_list_status):
+            fail("native gRPC storage list status binding drift: " + path)
         if not same_typed_value(component.get("native_grpc_storage_mutation_source_candidate"), expected_mutation_status):
             fail("native gRPC storage mutation status binding drift: " + path)
 

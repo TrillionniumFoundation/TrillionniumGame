@@ -57,6 +57,26 @@ FIXTURES = (
             "write-acks-repeated": "StorageObjectAcks",
         },
     ),
+    (
+        "contracts/grpc/nakama-storage-list-protobuf-fixtures.json",
+        "trillionnium.grpc-storage-list-codec-fixtures.v1",
+        {
+            'list-defaults': 'ListStorageObjectsRequest',
+            'list-collection': 'ListStorageObjectsRequest',
+            'list-limit-zero': 'ListStorageObjectsRequest',
+            'list-limit-one': 'ListStorageObjectsRequest',
+            'list-limit-max': 'ListStorageObjectsRequest',
+            'list-limit-negative': 'ListStorageObjectsRequest',
+            'list-limit-overflow': 'ListStorageObjectsRequest',
+            'list-owner': 'ListStorageObjectsRequest',
+            'list-zero-owner': 'ListStorageObjectsRequest',
+            'list-exact-cursor': 'ListStorageObjectsRequest',
+            'list-empty-response': 'StorageObjectList',
+            'list-cursor-response': 'StorageObjectList',
+            'list-full-response': 'StorageObjectList',
+            'list-repeated-response': 'StorageObjectList',
+        },
+    ),
 )
 
 
@@ -96,7 +116,7 @@ def main():
                 or len(cases) != len(expected_cases)
                 or {case["id"]: case["message"] for case in cases} != expected_cases):
             raise SystemExit("protobuf fixture inventory mismatch: " + relative_path)
-        if "mutation" in schema and fixture["full_rpc_denominator"] != 85:
+        if ("mutation" in schema or "list" in schema) and fixture["full_rpc_denominator"] != 85:
             raise SystemExit("protobuf fixture denominator mismatch: " + relative_path)
         if fixture["protoc"] != version:
             raise SystemExit("protobuf fixture toolchain mismatch: " + relative_path)
@@ -114,6 +134,7 @@ def main():
         "cases": sum(item["cases"] for item in summaries),
         "read_cases": summaries[0]["cases"],
         "mutation_cases": summaries[1]["cases"],
+        "list_cases": summaries[2]["cases"],
         "upstream_blob": identity,
         "protoc": version,
         "fixtures": summaries,

@@ -24,12 +24,15 @@ use crate::runtime::legacy_http_api::{self as wire, LegacyGatewayError, LegacyHt
 use super::generated::google::protobuf::Empty;
 use super::generated::nakama::api::{
     nakama_server::Nakama, AuthenticateCustomRequest, AuthenticateDeviceRequest,
-    DeleteStorageObjectsRequest, ReadStorageObjectsRequest, Session, SessionLogoutRequest,
-    SessionRefreshRequest, StorageObjectAcks, StorageObjects, WriteStorageObjectsRequest,
+    DeleteStorageObjectsRequest, ListStorageObjectsRequest, ReadStorageObjectsRequest, Session,
+    SessionLogoutRequest, SessionRefreshRequest, StorageObjectAcks, StorageObjectList,
+    StorageObjects, WriteStorageObjectsRequest,
 };
 
 #[path = "grpc_storage.rs"]
 mod storage;
+#[path = "grpc_storage_list.rs"]
+mod storage_list;
 #[path = "grpc_storage_mutation.rs"]
 mod storage_mutation;
 
@@ -88,6 +91,7 @@ fn authorize_method(
         | "/nakama.api.Nakama/SessionRefresh" => false,
         "/nakama.api.Nakama/SessionLogout"
         | "/nakama.api.Nakama/ReadStorageObjects"
+        | "/nakama.api.Nakama/ListStorageObjects"
         | "/nakama.api.Nakama/WriteStorageObjects"
         | "/nakama.api.Nakama/DeleteStorageObjects" => true,
         _ => return Ok(()), // Generated router owns unknown-method Unimplemented.
@@ -338,6 +342,22 @@ impl<R: Repository + Clone + Send + 'static> Nakama for NativeGrpcService<R> {
         let input = request.into_inner();
         self.run(move |_, repository| storage::read_objects(repository.0, input, principal.user()))
             .await
+    }
+    async fn list_storage_objects(
+        &self,
+        request: Request<ListStorageObjectsRequest>,
+    ) -> Result<Response<StorageObjectList>, Status> {
+        let principal = wire::require_legacy_access_bearer(
+            self.legacy()?.1,
+            authorization(request.metadata(), true)?,
+            LegacyHttpLimits::default(),
+        )
+        .map_err(status)?;
+        let input = request.into_inner();
+        self.run(move |_, repository| {
+            storage_list::list_objects(repository.0, input, principal.user())
+        })
+        .await
     }
     async fn write_storage_objects(
         &self,

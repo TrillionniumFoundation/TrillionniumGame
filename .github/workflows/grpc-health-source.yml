@@ -17,6 +17,7 @@ on:
       - 'contracts/grpc/nakama-native-auth-source.json'
       - 'contracts/grpc/nakama-storage-read-protobuf-fixtures.json'
       - 'contracts/grpc/nakama-storage-mutation-protobuf-fixtures.json'
+      - 'contracts/grpc/nakama-storage-list-protobuf-fixtures.json'
       - 'scripts/check-grpc-storage-protobuf-reference.py'
       - 'crates/trnm-server/**'
       - 'testdata/grpc/**'

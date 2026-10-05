@@ -433,9 +433,9 @@ remain pending; no public activation or oracle-parity claim is granted.
 The canonical process now has a locally checked tonic/prost source adapter for
 AuthenticateDevice, AuthenticateCustom, SessionRefresh and SessionLogout, sharing
 the installed legacy keys/blacklist and the existing admitted native repository.
-ReadStorageObjects, WriteStorageObjects and DeleteStorageObjects use the same
+ReadStorageObjects, WriteStorageObjects, DeleteStorageObjects and ListStorageObjects use the same
 selected Legacy authority and existing storage repository. Healthcheck remains
-unauthenticated; eight represented signatures leave 77 unrepresented signatures
+unauthenticated; nine represented signatures leave 76 unrepresented signatures
 in the unchanged 85-RPC denominator. The persistence lib-test generates the same canonical
 proto into a separate output directory; its diagnostic Healthcheck-only service
 is unchanged. No parallel account store, auth15 import, schema activation or
@@ -508,3 +508,24 @@ unchanged. `contracts/grpc/nakama-native-auth-source.json#/storage_mutations`
 binds the two methods, 24 additional schema-codec vectors, scoped local Rust
 diagnostics and rollback. Actual PostgreSQL/CockroachDB, immutable process, SDK,
 hook/index-effect and independent qualification remain open.
+
+
+The native `ListStorageObjects` adapter is the ninth represented signature out
+of the unchanged 85-RPC denominator across 14 families. It calls the existing
+`list_storage_objects_nakama` repository directly, retaining the read-only native
+snapshot, schema/import/writer fences, ACL-before-limit+1 and SQL text order.
+Absent owner lists read>=2; the authenticated owner's filter lists read>=1;
+a foreign or explicit zero owner lists only read=2. The cursor is the existing
+bounded unsigned gob/base64 offset, never caller authority. Omitted limit means
+1; present zero is invalid. Empty collection remains valid; collections over
+4096 bytes are an explicit local resource-policy rejection.
+
+The adapter checks returned scope, ACL, uniqueness, native integrity/UTF-8 and
+known finite timestamps. It moves native JSONB text without reparse, retains raw
+ACL/opaque versions and projects floor seconds. A continuation must identify the
+last row of a full page. Literal input/output cursor equality clears continuation;
+equivalent encodings are not normalized. The actual 2 MiB protobuf cap includes
+cursor bytes. No sorting, new SQL, retry, HTTP roundtrip or state authority is
+introduced. Full Go gob grammar and process-global type IDs, live database/SDK/
+oracle pairing, hooks and historical timestamps remain open. This source subset
+confers no compatibility or production qualification and leaves AccountsV5 closed.

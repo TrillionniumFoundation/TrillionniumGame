@@ -536,10 +536,10 @@ The gRPC source contract and transitive native-admission source inventory must
 be rebound together after reviewed source edits. This does not qualify native
 authentication over gRPC or replace exact PostgreSQL/CockroachDB oracle execution.
 
-The source-validation inventory includes all 48 canonical runtime modules, including
-the native gRPC auth/transport/read-storage/mutation modules. `grpc-health-source` retains diagnostic
+The source-validation inventory includes all 50 canonical runtime modules, including
+the native gRPC auth/transport/read-storage/mutation/list modules. `grpc-health-source` retains diagnostic
 Healthcheck tests/lint and additionally runs canonical native gRPC tests/lint; it
-checks the eight-signature source contract without changing the 85-RPC denominator.
+checks the nine-signature source contract without changing the 85-RPC denominator.
 Workflow source bytes must be rebound only in the current overlay, not its immutable
 base manifest. The active-client regression deliberately records that the existing
 absolute 30-second policy also closes healthy clients. Removing that bound requires
@@ -587,3 +587,23 @@ execution of this eight-method candidate; the mutation contract records scoped
 Rust results and the known Unix-socket aggregate blocker separately. Exact-head
 CI and accepted native qualification remain pending. No gap, milestone, denominator
 or production/compatibility claim is promoted.
+
+
+`grpc_storage_list.rs` and `grpc_storage_list_tests.rs` add the bounded native list
+source slice. Its focused command is
+`cargo test --offline --locked -p trnm-server --lib runtime::grpc::auth::storage_list`.
+The shared protobuf reference runner compares 44 vectors: six reads, 24 mutations
+and 14 lists from `contracts/grpc/nakama-storage-list-protobuf-fixtures.json`.
+Negative/out-of-range limit vectors prove codec preservation, not API acceptance.
+Synthetic tests cover wrapper presence, validation precedence, zero-owner filters,
+public/own/foreign ACL, raw projection, literal cursor guards, malformed pages,
+redacted failures, the exact encoded budget, shared logout and generated-client
+loopback. Source mutation controls bind these fences and all five component states.
+
+The list contract records current validation separately; previous eight-method
+results are historical. Actual two-profile SQL continuation/ACL, immutable Nakama
+process-global gob IDs, official SDKs, runtime hooks and independent acceptance
+remain mandatory. Keep the full denominator and all fail-closed gates unchanged.
+Rollback removes the new RPC/messages/adapter/tests and associated bindings
+without data or credential migration. No changes to the separate native database
+probe are part of this slice.
