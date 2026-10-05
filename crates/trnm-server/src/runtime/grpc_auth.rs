@@ -23,9 +23,13 @@ use crate::runtime::legacy_http_api::{self as wire, LegacyGatewayError, LegacyHt
 
 use super::generated::google::protobuf::Empty;
 use super::generated::nakama::api::{
-    nakama_server::Nakama, AuthenticateCustomRequest, AuthenticateDeviceRequest, Session,
-    SessionLogoutRequest, SessionRefreshRequest,
+    nakama_server::Nakama, AuthenticateCustomRequest, AuthenticateDeviceRequest,
+    ReadStorageObjectsRequest, Session, SessionLogoutRequest, SessionRefreshRequest,
+    StorageObjects,
 };
+
+#[path = "grpc_storage.rs"]
+mod storage;
 
 pub(super) const MAX_AUTH_JOBS: usize = 16;
 pub(super) const MAX_REQUEST_BYTES: usize = 512 * 1024;
@@ -80,7 +84,7 @@ fn authorize_method(
         "/nakama.api.Nakama/AuthenticateDevice"
         | "/nakama.api.Nakama/AuthenticateCustom"
         | "/nakama.api.Nakama/SessionRefresh" => false,
-        "/nakama.api.Nakama/SessionLogout" => true,
+        "/nakama.api.Nakama/SessionLogout" | "/nakama.api.Nakama/ReadStorageObjects" => true,
         _ => return Ok(()), // Generated router owns unknown-method Unimplemented.
     };
     let AuthAuthorityRuntime::NakamaLegacy {
@@ -313,6 +317,22 @@ impl<R: Repository + Clone + Send + 'static> Nakama for NativeGrpcService<R> {
                 .map_err(|e| status(wire::legacy_gateway_error(&e)))
         })
         .await
+    }
+    async fn read_storage_objects(
+        &self,
+        request: Request<ReadStorageObjectsRequest>,
+    ) -> Result<Response<StorageObjects>, Status> {
+        // Same installed access authority and blacklist as HTTP/Logout. Basic
+        // server credentials and refresh tokens never become a player principal.
+        let principal = wire::require_legacy_access_bearer(
+            self.legacy()?.1,
+            authorization(request.metadata(), true)?,
+            LegacyHttpLimits::default(),
+        )
+        .map_err(status)?;
+        let input = request.into_inner();
+        self.run(move |_, repository| storage::read_objects(repository.0, input, principal.user()))
+            .await
     }
     async fn session_logout(
         &self,

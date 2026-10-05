@@ -944,5 +944,19 @@
     "status": "locally-checked-source-candidate",
     "native_auth_grpc_qualified": false,
     "production_gate": false
+  },
+  "native_grpc_storage_read_source_candidate": {
+    "contract": "contracts/grpc/nakama-native-auth-source.json#/storage_read",
+    "status": "source-candidate",
+    "method": "ReadStorageObjects",
+    "source": "crates/trnm-server/src/runtime/grpc_storage.rs",
+    "tests": "crates/trnm-server/src/runtime/grpc_storage_tests.rs",
+    "full_rpc_denominator": 85,
+    "represented_signatures": 6,
+    "production_gate": false,
+    "accepted": false,
+    "compatibility_credit": false,
+    "native_database_qualified": false,
+    "oracle_paired": false
   }
 }

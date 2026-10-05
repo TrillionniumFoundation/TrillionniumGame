@@ -24,6 +24,8 @@ EXPECTED_RUNTIME_FILES = {
     "grpc.rs",
     "grpc_auth.rs",
     "grpc_auth_tests.rs",
+    "grpc_storage.rs",
+    "grpc_storage_tests.rs",
     "grpc_transport.rs",
     "grpc_transport_tests.rs",
     "healthcheck_form.rs",

@@ -56,6 +56,20 @@
       "path": "vendor/github.com/heroiclabs/nakama-common/api/api.proto",
       "blob": "ddd2744739a252c268b2be004ff0e45c498adb35",
       "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/vendor/github.com/heroiclabs/nakama-common/api/api.proto"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/api_storage.go",
+      "blob": "698cccf47c6ba4e9cdd461a8d93ea8094edf9ab7",
+      "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/api_storage.go"
+    },
+    {
+      "repository": "heroiclabs/nakama",
+      "commit": "d4d92f93f78bbbe62c7fc50a3f85c772ec121a09",
+      "path": "server/core_storage.go",
+      "blob": "23cb77e991124629c9c780ac981e6393313f0769",
+      "url": "https://github.com/heroiclabs/nakama/blob/d4d92f93f78bbbe62c7fc50a3f85c772ec121a09/server/core_storage.go"
     }
   ],
   "common": {
@@ -68,7 +82,8 @@
     "AuthenticateDevice",
     "AuthenticateCustom",
     "SessionRefresh",
-    "SessionLogout"
+    "SessionLogout",
+    "ReadStorageObjects"
   ],
   "full_rpc_denominator": 85,
   "bounds": {
@@ -133,7 +148,8 @@
       "silent_healthcheck_rpc_timeout_seconds": 3,
       "generated_context_isolation": "separate canonical-grpc output in canonical server and persistence lib-test; diagnostic Healthcheck service unchanged and all-target check/tests/Clippy passed"
     },
-    "strict_clippy": "offline locked two-crate all-targets -D warnings passed"
+    "strict_clippy": "offline locked two-crate all-targets -D warnings passed",
+    "scope": "Historical auth-only source observations retained from PR204/PR205. Current ReadStorageObjects diagnostics are separately recorded below; no prior native execution or independent acceptance transfers."
   },
   "claims": {
     "compiled": true,
@@ -149,7 +165,7 @@
     "Started blocking native work is not individually aborted by RPC cancellation; existing per-lease budget remains. Result after response abandonment may be committed or unknown.",
     "Generated Go handler decodes protobuf before security interceptor; candidate intentionally authenticates metadata first, so malformed-body/auth error precedence is not qualified.",
     "Native runtime before/after hooks are absent.",
-    "Only five signatures are represented, without shrinking the 85-method denominator. No grpc-gateway generated annotations, TLS, reflection, HTTP2 attack/load, SDK, multi-node, HA or production qualification.",
+    "Only six signatures are represented, without shrinking the 85-method denominator. No grpc-gateway generated annotations, TLS, reflection, HTTP2 attack/load, SDK, multi-node, HA or production qualification.",
     "Generic Repository interface does not itself certify finite I/O; production PooledRepository retains configured existing pool timeout/cancellation semantics. Cancellation dispatch race remains upstream native residual.",
     "Native gRPC database/oracle evidence must use actual admitted native engines for PostgreSQL and CockroachDB; HTTP auth15 cannot be credited.",
     "Resource caps are local limits, not a claim of Nakama limit equivalence.",
@@ -161,20 +177,24 @@
     "Independent review of compiled integration delta, generated output isolation, metadata boundary, exact source bindings and local evidence.",
     "Publish only after review and applicable exact-head/prospective-merge checks; no merge or deployment authority is granted.",
     "Actual native PostgreSQL and CockroachDB Device/Custom/Refresh/Logout gRPC plus immutable Nakama oracle pairing remains required; HTTP auth15 provides no gRPC credit.",
-    "Runtime hooks, all remaining 80 RPC obligations, malformed-protobuf/auth precedence residual and explicit 30-second connection lifetime remain unqualified.",
+    "Runtime hooks, all remaining 79 RPC obligations, malformed-protobuf/auth precedence residual and explicit 30-second connection lifetime remain unqualified.",
     "Full make check and target-native CI are not replaced by scoped two-crate local checks. All production/public AccountsV5 and repository-wide compatibility gates remain false."
   ],
-  "remaining_non_healthcheck_rpc_obligations": 80,
+  "remaining_non_healthcheck_rpc_obligations": 79,
   "candidate_source_sha256": {
     "crates/trnm-server/build.rs": "50499a795b3ea32daf6401792359c2614d7501033b13408384acafe7de8447d9",
     "crates/trnm-persistence-pg/build.rs": "e7a25e6fb79c1696f8b3343d38766eb9e7ed3939a1efb531e7f1f3e2f54cc3a4",
-    "crates/trnm-server/proto/nakama-healthcheck.proto": "29491ae128c76936a24d00f7636a8e0f89af8aca87fbab80100721779d38d7ab",
+    "crates/trnm-server/proto/nakama-healthcheck.proto": "e2fe54055da189f05cf277e308776ef9376de2cdac9a0aa6b6820ff940ab326e",
     "crates/trnm-server/src/runtime/server.rs": "a66fd7295e3721d57ee0cfd240c4ba0ffe061120cddfc69cc9621daeabecd55f",
     "crates/trnm-server/src/runtime/grpc.rs": "913d472b63e4e9f6c978faa49c906ead7bf38ed1e0f775d4a6f3be645a7f1aad",
-    "crates/trnm-server/src/runtime/grpc_auth.rs": "1ab43c8e4a417e11823ad532f7347bee18ba7134fc85faef889214cf4667c146",
+    "crates/trnm-server/src/runtime/grpc_auth.rs": "77fb2bbe9c16bd0a8d20e1edf505723ad8bf6ee6d6b2f656b790c17845a26565",
     "crates/trnm-server/src/runtime/grpc_auth_tests.rs": "47c096be63e440e37f8bd450f082a274c3845c33cedc8625e8e3e9283655d5a0",
     "crates/trnm-server/src/runtime/grpc_transport.rs": "30bac44cfc17695c05d44f12ecbf1b60e8be7230ae9da8853e386ea9d5861ebf",
-    "crates/trnm-server/src/runtime/grpc_transport_tests.rs": "980e5ece0884b9aa59d2014e5aa1fb0a7685a230eece4dc06940b9b24b5dcf47"
+    "crates/trnm-server/src/runtime/grpc_transport_tests.rs": "980e5ece0884b9aa59d2014e5aa1fb0a7685a230eece4dc06940b9b24b5dcf47",
+    "crates/trnm-server/src/runtime/grpc_storage.rs": "31b8d1c3957f6029888ca1e68c3511a3dad5b3b04175c718e32d5227c4cc5985",
+    "crates/trnm-server/src/runtime/grpc_storage_tests.rs": "85df63d48f26071a2fe64ab9596e4cd3d36e75b652b9b3ab92349c25fbdc108f",
+    "contracts/grpc/nakama-storage-read-protobuf-fixtures.json": "c6ed8ab40189667e926ddd91235a5a203acaf539f819df6af281e1b5975e56d6",
+    "scripts/check-grpc-storage-protobuf-reference.py": "3836e1c8a4493f099566901aa865334e623022cb851f27b9f07a9dbad3456e8e"
   },
   "review_checklist": [
     "Confirm AuthBoundary response body and Service bounds match generated tonic/prost 0.14.5 APIs, plus BoolValue and BTreeMap code generation.",
@@ -234,6 +254,87 @@
       "keepalive_timeout_seconds": 20,
       "HTTP_gateway_idle_setting_is_native_grpc_lifetime": false,
       "immutable_process_executed": false
+    },
+    "historical_scope": "PR205 source-only CI repair: its five-method/44-module observations remain historical. The storage_read subsection records the new sixth method and 46-module inventory; no old execution transfers."
+  },
+  "storage_read": {
+    "status": "source-candidate",
+    "method_path": "/nakama.api.Nakama/ReadStorageObjects",
+    "task_ids": [
+      "TG-W4-002",
+      "TG-V3-010"
+    ],
+    "gap_ids": [
+      "GAP-P0-SERVER-001",
+      "GAP-P1-STORAGE-001"
+    ],
+    "parity_ids": [
+      "TG-D1-46DC42DFD49DB606"
+    ],
+    "scope": "Native protobuf transport over the existing storage read repository using the selected NakamaLegacy authority. Existing HTTP and persistence implementations are unchanged.",
+    "authority": "Same installed access verifier and blacklist as HTTP/Logout; Disabled and DurableFamily remain unsupported in this bounded native gRPC profile. Legacy startup still requires the closed AccountsV5 gate.",
+    "new_store": false,
+    "public_v5_gate_change": false,
+    "http_json_roundtrip": false,
+    "generic_retry_added": false,
+    "max_batch": 100,
+    "max_collection_key_characters": 128,
+    "max_encoded_response_bytes": 2097152,
+    "empty_read_queries": 0,
+    "nonempty_repository_calls": 1,
+    "omitted_owner": "global-zero-user; never caller",
+    "explicit_zero_owner": "InvalidArgument",
+    "row_projection": [
+      "exact native JSONB text string without reparse",
+      "exact stored opaque version",
+      "exact raw read/write permission integers",
+      "canonical UUID owner",
+      "floor seconds with nanos zero; unknown or invalid timestamps reject"
+    ],
+    "response_defense": [
+      "requested identity/multiplicity",
+      "exact read=2 or owner-and-read=1 ACL",
+      "integrity and UTF8",
+      "timestamp validity",
+      "actual protobuf encoded length before tonic allocation"
+    ],
+    "fixtures": "contracts/grpc/nakama-storage-read-protobuf-fixtures.json",
+    "reference_runner": "scripts/check-grpc-storage-protobuf-reference.py",
+    "reference_scope": "Six codec vectors encoded from the complete pinned upstream api.proto by protoc; no Go API, process or native DB execution.",
+    "get_account_dependency": "GetAccount remains unimplemented: full account row projection/bounded device reading and canonical online-status registry authority are absent. Do not fabricate online=false or expose disable_time.",
+    "residuals": [
+      "Per-key native reads preserve caller order and repetition; upstream single-SELECT ordering and query-shape duplicate multiplicity remain unqualified. No sorting or deduplication is added.",
+      "Local request count, key length and response caps are explicit resource-policy differences; the pinned API itself checks only required keys/owner UUID.",
+      "Unknown historical timestamps fail closed rather than inventing epoch values. Native infinity and complete historical migration semantics remain unqualified.",
+      "Runtime before/after hooks, immutable Nakama process pairing, native PostgreSQL/CockroachDB, official SDK and independent review remain open.",
+      "Existing metadata-before-protobuf precedence and fixed thirty-second connection lifetime remain unchanged."
+    ],
+    "migration_impact": "None. No schema, migration, writer, storage transaction, dependency, session issuer or production gate changes.",
+    "rollback": "Revert the read RPC, protobuf subset, new adapter/tests and corresponding source/status bindings together. No durable data or credential rollback.",
+    "local_validation": {
+      "rust_tests": 12,
+      "complete_upstream_schema_codec_cases": 6,
+      "loopback_generated_client_synthetic_repository": true,
+      "live_database_executed": false,
+      "immutable_process_executed": false,
+      "independent_review_accepted": false,
+      "toolchain": "Rust 1.85.1",
+      "two_crate_all_targets": "passed: server library 339 passed; persistence library 511 passed/2 ignored; auxiliary targets passed. Persistence includes the canonical runtime tests, so counts overlap. Environment-gated DB tests grant no live credit.",
+      "strict_two_crate_clippy": "passed -D warnings",
+      "format": "passed",
+      "immutable_scope": "Gap-register and roadmap scope locks are unchanged; linked task/gap IDs remain open. Source progress is recorded in component/execution/current/risk/divergence/evidence requirements.",
+      "python_tests": "1313 passed",
+      "source_and_documentation_checks": "passed, including immutable plan/gap/roadmap contracts",
+      "make_check": "failed at five pre-existing trnm-token-crypto-provider remote_unix fixture binds: container OS PermissionDenied. Aggregate is not passed; subsequent aggregate stages did not run. Scoped two-crate tests/Clippy and Python ran separately.",
+      "remote_exact_head": "not run",
+      "independent_acceptance": "not granted"
+    },
+    "claims": {
+      "accepted": false,
+      "compatibility_credit": false,
+      "production_ready": false,
+      "native_database_qualified": false,
+      "oracle_paired": false
     }
   }
 }
