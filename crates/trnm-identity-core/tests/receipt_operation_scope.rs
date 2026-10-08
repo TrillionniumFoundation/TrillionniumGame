@@ -166,7 +166,7 @@ fn attempt(
         Operation::Create => registry.create_account(
             command(200),
             fingerprint(200),
-            account(9),
+            account(1),
             Username::new("attempted-user").expect("valid username"),
             DisplayName::new("Attempted User").expect("valid display name"),
             provider(IdentityProvider::Steam, "attempted-steam"),
@@ -232,5 +232,63 @@ fn receipt_replay_is_scoped_to_the_exact_public_operation() {
                 "replay must not mutate: stored={stored:?}, attempted={attempted:?}"
             );
         }
+    }
+}
+
+#[test]
+fn account_bound_replay_cannot_be_forwarded_to_another_account() {
+    for stored in [
+        Operation::Create,
+        Operation::Link,
+        Operation::Unlink,
+        Operation::Update,
+        Operation::SetStatus,
+        Operation::Delete,
+    ] {
+        let (mut registry, _receipt, _primary, secondary) = seed_receipt(stored);
+        let snapshot = registry.clone();
+        let result = match stored {
+            Operation::Create => registry.create_account(
+                command(200),
+                fingerprint(200),
+                account(2),
+                Username::new("forwarded-user").expect("valid username"),
+                DisplayName::new("Forwarded User").expect("valid display name"),
+                provider(IdentityProvider::Steam, "forwarded-steam"),
+            ),
+            Operation::Link => registry.link_provider(
+                command(200),
+                fingerprint(200),
+                account(2),
+                1,
+                secondary.clone(),
+            ),
+            Operation::Unlink => {
+                registry.unlink_provider(command(200), fingerprint(200), account(2), 2, &secondary)
+            }
+            Operation::Update => registry.update_profile(
+                command(200),
+                fingerprint(200),
+                account(2),
+                1,
+                None,
+                Some(DisplayName::new("Forwarded Update").expect("valid display name")),
+            ),
+            Operation::SetStatus => registry.set_status(
+                command(200),
+                fingerprint(200),
+                account(2),
+                1,
+                AccountStatus::Banned,
+            ),
+            Operation::Delete => {
+                registry.delete_account(command(200), fingerprint(200), account(2), 1)
+            }
+            Operation::Authenticate => unreachable!("authenticate has no account argument"),
+        };
+        let error = result.expect_err("replay must be bound to its original account");
+        assert_eq!(error.code(), IdentityErrorCode::Conflict);
+        assert_eq!(error.reason(), "command_account_mismatch");
+        assert_eq!(registry, snapshot);
     }
 }

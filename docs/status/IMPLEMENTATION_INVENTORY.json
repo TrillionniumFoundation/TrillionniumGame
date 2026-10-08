@@ -116,6 +116,7 @@
         "typed account and provider identities for nine provider classes",
         "unique username and provider reverse-index invariants",
         "exact command receipt replay and changed-fingerprint rejection",
+        "account-bound replay fencing for account-bearing operations",
         "account revision fencing and checked overflow",
         "link unlink and last-provider protection",
         "active disabled banned and terminal deleted states",

@@ -373,9 +373,12 @@ impl IdentityRegistry {
         display_name: DisplayName,
         provider: ProviderIdentity,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) =
-            self.existing_receipt(command, fingerprint, ReceiptOutcome::Created)?
-        {
+        if let Some(receipt) = self.existing_receipt_for_account(
+            command,
+            fingerprint,
+            ReceiptOutcome::Created,
+            account,
+        )? {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -504,9 +507,12 @@ impl IdentityRegistry {
         expected_revision: u64,
         provider: ProviderIdentity,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) =
-            self.existing_receipt(command, fingerprint, ReceiptOutcome::Linked)?
-        {
+        if let Some(receipt) = self.existing_receipt_for_account(
+            command,
+            fingerprint,
+            ReceiptOutcome::Linked,
+            account,
+        )? {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -564,9 +570,12 @@ impl IdentityRegistry {
         expected_revision: u64,
         provider: &ProviderIdentity,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) =
-            self.existing_receipt(command, fingerprint, ReceiptOutcome::Unlinked)?
-        {
+        if let Some(receipt) = self.existing_receipt_for_account(
+            command,
+            fingerprint,
+            ReceiptOutcome::Unlinked,
+            account,
+        )? {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -622,9 +631,12 @@ impl IdentityRegistry {
         username: Option<Username>,
         display_name: Option<DisplayName>,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) =
-            self.existing_receipt(command, fingerprint, ReceiptOutcome::Updated)?
-        {
+        if let Some(receipt) = self.existing_receipt_for_account(
+            command,
+            fingerprint,
+            ReceiptOutcome::Updated,
+            account,
+        )? {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -706,9 +718,12 @@ impl IdentityRegistry {
         expected_revision: u64,
         target: AccountStatus,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) =
-            self.existing_receipt(command, fingerprint, ReceiptOutcome::StatusChanged)?
-        {
+        if let Some(receipt) = self.existing_receipt_for_account(
+            command,
+            fingerprint,
+            ReceiptOutcome::StatusChanged,
+            account,
+        )? {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -761,9 +776,12 @@ impl IdentityRegistry {
         account: AccountId,
         expected_revision: u64,
     ) -> Result<CommandReceipt, IdentityError> {
-        if let Some(receipt) =
-            self.existing_receipt(command, fingerprint, ReceiptOutcome::Deleted)?
-        {
+        if let Some(receipt) = self.existing_receipt_for_account(
+            command,
+            fingerprint,
+            ReceiptOutcome::Deleted,
+            account,
+        )? {
             return Ok(receipt);
         }
         self.ensure_receipt_capacity()?;
@@ -888,6 +906,26 @@ impl IdentityRegistry {
         }
         Ok(Some(*receipt))
     }
+
+    fn existing_receipt_for_account(
+        &self,
+        command: CommandId,
+        fingerprint: Fingerprint,
+        expected_outcome: ReceiptOutcome,
+        account: AccountId,
+    ) -> Result<Option<CommandReceipt>, IdentityError> {
+        let Some(receipt) = self.existing_receipt(command, fingerprint, expected_outcome)? else {
+            return Ok(None);
+        };
+        if receipt.account != account {
+            return Err(IdentityError::new(
+                IdentityErrorCode::Conflict,
+                "command_account_mismatch",
+            ));
+        }
+        Ok(Some(receipt))
+    }
+
     fn ensure_receipt_capacity(&self) -> Result<(), IdentityError> {
         if self.receipts.len() >= self.config.max_receipts {
             return Err(IdentityError::new(
@@ -1026,7 +1064,7 @@ mod tests {
             .create_account(
                 command(1),
                 fingerprint(1),
-                account(2),
+                account(1),
                 Username::new("ignored").unwrap(),
                 DisplayName::new("ignored").unwrap(),
                 identity(IdentityProvider::Email, "ignored@example.invalid"),
