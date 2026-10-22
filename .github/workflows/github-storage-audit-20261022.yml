@@ -1,0 +1,85 @@
+name: One-time GitHub Actions storage audit (read-only)
+
+on:
+  push:
+    branches:
+      - ops/github-storage-audit-20261022
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  storage-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Inventory artifact and cache bytes without deletion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys, urllib.request
+          from datetime import datetime, timezone
+          from urllib.error import HTTPError
+
+          repo = os.environ["GH_REPO"]
+          token = os.environ["GH_TOKEN"]
+          now = datetime.now(timezone.utc)
+
+          def gather(endpoint, key, pages=150):
+              result = []
+              for page in range(1, pages + 1):
+                  url = "https://api.github.com/repos/%s/actions/%s?per_page=100&page=%d" % (repo, endpoint, page)
+                  request = urllib.request.Request(url, headers={
+                      "Authorization": "Bearer " + token,
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2026-03-10",
+                      "User-Agent": "github-storage-audit",
+                  })
+                  try:
+                      with urllib.request.urlopen(request, timeout=35) as response:
+                          body = json.load(response)
+                  except HTTPError as error:
+                      print("ERROR %s HTTP %s: %s" % (endpoint, error.code, error.read(300)), file=sys.stderr)
+                      raise
+                  items = body.get(key, [])
+                  result.extend(items)
+                  if len(items) < 100:
+                      return result, False
+              return result, True
+
+          artifacts, artifact_truncated = gather("artifacts", "artifacts")
+          caches, cache_truncated = gather("caches", "actions_caches")
+          def gib(value):
+              return round(value / 1073741824, 3)
+          def summary(items, title, timestamp):
+              total = sum(int(x.get("size_in_bytes") or 0) for x in items)
+              stats = {}
+              for days in (7, 14, 30, 60):
+                  count = size = 0
+                  for a in items:
+                      date = a.get(timestamp)
+                      if not date:
+                          continue
+                      created = datetime.fromisoformat(date.replace("Z", "+00:00"))
+                      if (now - created).days >= days:
+                          count += 1
+                          size += int(a.get("size_in_bytes") or 0)
+                  stats[str(days)] = {"count": count, "GiB": gib(size)}
+              print(json.dumps({"kind": title, "count": len(items), "GiB": gib(total), "older_than_days": stats}, ensure_ascii=False))
+              top = sorted(items, key=lambda x: int(x.get("size_in_bytes") or 0), reverse=True)[:20]
+              for x in top:
+                  print(json.dumps({"kind": title, "id": x.get("id"), "name_or_key": x.get("name", x.get("key")), "GiB": gib(int(x.get("size_in_bytes") or 0)), "created_at": x.get("created_at"), "expires_at": x.get("expires_at"), "last_accessed_at": x.get("last_accessed_at"), "ref": x.get("ref"), "workflow_run": (x.get("workflow_run") or {}).get("id")}, ensure_ascii=False))
+              return total
+          a = summary(artifacts, "artifact", "created_at")
+          c = summary(caches, "cache", "last_accessed_at")
+          result = {"repository": repo, "artifact_count": len(artifacts), "artifact_gib": gib(a), "artifact_listing_truncated": artifact_truncated, "cache_count": len(caches), "cache_gib": gib(c), "cache_listing_truncated": cache_truncated, "TOTAL_GiB": gib(a+c), "mutated": False}
+          print("STORAGE_AUDIT_RESULT=" + json.dumps(result, sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("## Storage audit — no objects deleted\n\n")
+              out.write("```json\n" + json.dumps(result, indent=2) + "\n```\n")
+          PY
