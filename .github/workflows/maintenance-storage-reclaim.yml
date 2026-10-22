@@ -1,0 +1,131 @@
+name: One-time safe Actions storage reclaim
+on:
+  push:
+    branches:
+      - maintenance/actions-storage-reclaim-20261022
+    paths:
+      - .github/workflows/maintenance-storage-reclaim.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: maintenance-storage-reclaim
+  cancel-in-progress: false
+jobs:
+  reclaim:
+    if: github.repository_owner == 'TrillionniumFoundation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Inventory and delete only stale disposable files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime as dt
+          import json
+          import os
+          import re
+          import urllib.request
+
+          base = 'https://api.github.com/repos/' + os.environ['GH_REPO']
+          token = os.environ['GH_TOKEN']
+          now = dt.datetime.now(dt.timezone.utc)
+          artifact_cutoff = now - dt.timedelta(days=14)
+          branch_cache_cutoff = now - dt.timedelta(days=7)
+          primary_cache_cutoff = now - dt.timedelta(days=30)
+
+          def stamp(s):
+              return dt.datetime.fromisoformat(s.replace('Z', '+00:00'))
+
+          def api(method, path):
+              req = urllib.request.Request(
+                  base + path,
+                  headers={
+                      'Accept': 'application/vnd.github+json',
+                      'Authorization': 'Bearer ' + token,
+                      'X-GitHub-Api-Version': '2022-11-28',
+                  },
+                  method=method,
+              )
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  body = resp.read()
+                  return json.loads(body) if body else {}
+
+          def inventory(path, key, max_pages=100):
+              found = []
+              total = 0
+              for page in range(1, max_pages + 1):
+                  data = api('GET', path + '?per_page=100&page=' + str(page))
+                  if page == 1:
+                      total = data.get('total_count', 0)
+                  part = data.get(key, [])
+                  found.extend(part)
+                  if len(part) < 100:
+                      break
+              if len(found) < total:
+                  print('WARNING: inventory truncated: ' + str(len(found)) + '/' + str(total))
+              return found, total
+
+          def gib(n):
+              return round(n / (1024 ** 3), 4)
+
+          preserve = re.compile(
+              r'release|publish|deploy|evidence|proof|attest|signat|signed|sbom|'
+              r'provenance|audit|secur|ledger|checkpoint|backup|recover|rollback|'
+              r'baseline|benchmark|perf|snapshot|model|package|binar|receipt|'
+              r'report|results|qualif|host|paper|manuscript|certif|metric|'
+              r'test.result|debug.log|trace', re.I)
+          disposable = re.compile(
+              r'(^|[-_.])(tmp|temp|temporary|scratch|cache|debug|intermediate)([-_.]|$)', re.I)
+
+          before = api('GET', '/actions/cache/usage')
+          print('CACHE BEFORE: ' + json.dumps(before, sort_keys=True))
+          artifacts, artifact_total = inventory('/actions/artifacts', 'artifacts')
+          caches, cache_total = inventory('/actions/caches', 'actions_caches')
+          print('INVENTORY artifacts=' + str(artifact_total) + ', caches=' + str(cache_total))
+
+          art_candidates = [a for a in artifacts if
+              not a.get('expired', False)
+              and stamp(a['created_at']) < artifact_cutoff
+              and disposable.search(a['name'])
+              and not preserve.search(a['name'])]
+          cache_candidates = [c for c in caches if
+              not c.get('ref', '').startswith('refs/tags/')
+              and stamp(c.get('last_accessed_at') or c['created_at']) <
+                  (primary_cache_cutoff if c.get('ref') in
+                   ('refs/heads/main', 'refs/heads/master') else branch_cache_cutoff)]
+
+          art_candidates.sort(key=lambda a: a.get('size_in_bytes', 0), reverse=True)
+          cache_candidates.sort(key=lambda c: c.get('size_in_bytes', 0), reverse=True)
+          print('ELIGIBLE artifacts=' + str(len(art_candidates)) +
+                ' candidate_GiB=' + str(gib(sum(a.get('size_in_bytes', 0) for a in art_candidates))))
+          print('ELIGIBLE caches=' + str(len(cache_candidates)) +
+                ' candidate_GiB=' + str(gib(sum(c.get('size_in_bytes', 0) for c in cache_candidates))))
+
+          deleted_artifacts = []
+          deleted_caches = []
+          for a in art_candidates[:500]:
+              api('DELETE', '/actions/artifacts/' + str(a['id']))
+              deleted_artifacts.append(a)
+          for c in cache_candidates[:500]:
+              api('DELETE', '/actions/caches/' + str(c['id']))
+              deleted_caches.append(c)
+
+          result = {
+              'artifact_deleted_count': len(deleted_artifacts),
+              'artifact_deleted_reported_GiB': gib(sum(a.get('size_in_bytes', 0) for a in deleted_artifacts)),
+              'cache_deleted_count': len(deleted_caches),
+              'cache_deleted_reported_GiB': gib(sum(c.get('size_in_bytes', 0) for c in deleted_caches)),
+              'eligible_remaining_due_to_limit': max(0, len(art_candidates)-500) + max(0, len(cache_candidates)-500),
+              'note': 'Reported object bytes are not billed/free capacity; cache usage API has reporting lag.'
+          }
+          print('RECLAIM RESULT: ' + json.dumps(result, sort_keys=True))
+          if 'GITHUB_STEP_SUMMARY' in os.environ:
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+                  f.write('## Safe Actions storage reclamation\n\n' + json.dumps(result, indent=2) + '\n')
+          PY
